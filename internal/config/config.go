@@ -207,7 +207,7 @@ func DefaultConfig() *Config {
 					Model:     "anthropic/claude-sonnet-4-5-20250514",
 					Sandbox:   "none",
 					Tools: ToolPolicy{
-						Allow: []string{"read_file", "write_file", "edit_file", "bash"},
+						Allow: []string{"read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "send_message", "cron"},
 					},
 				},
 			},
