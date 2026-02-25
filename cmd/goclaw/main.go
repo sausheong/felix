@@ -9,8 +9,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -617,6 +619,50 @@ func runChat(agentID, configPath, modelOverride string) error {
 			return nil
 		}
 
+		// Handle /screenshot command
+		if strings.HasPrefix(input, "/screenshot") {
+			prompt := strings.TrimSpace(strings.TrimPrefix(input, "/screenshot"))
+			if prompt == "" {
+				prompt = "What's in this screenshot?"
+			}
+			img, err := captureScreenshot()
+			if err != nil {
+				fmt.Printf("\033[31mScreenshot failed: %v\033[0m\n", err)
+				continue
+			}
+			fmt.Printf("\033[90m[captured screenshot]\033[0m\n")
+			events, err := rt.Run(ctx, prompt, []llm.ImageContent{img})
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+				continue
+			}
+			var responseText strings.Builder
+			for event := range events {
+				switch event.Type {
+				case agent.EventTextDelta:
+					responseText.WriteString(event.Text)
+				case agent.EventToolCallStart:
+					fmt.Printf("\n\033[36m[tool: %s]\033[0m\n", event.ToolCall.Name)
+				case agent.EventToolResult:
+					if event.Result.Error != "" {
+						fmt.Printf("\033[31m[error: %s]\033[0m\n", event.Result.Error)
+					}
+				case agent.EventError:
+					fmt.Printf("\n\033[31mError: %v\033[0m\n", event.Error)
+				case agent.EventDone:
+					if responseText.Len() > 0 {
+						rendered, err := glamour.Render(responseText.String(), "dark")
+						if err != nil {
+							fmt.Print(responseText.String())
+						} else {
+							fmt.Print(rendered)
+						}
+					}
+				}
+			}
+			continue
+		}
+
 		// Extract image paths from input (supports drag-and-drop)
 		text, images := extractImagesFromInput(input)
 		if len(images) > 0 {
@@ -786,6 +832,59 @@ func splitRespectingEscapes(s string) []string {
 		tokens = append(tokens, current.String())
 	}
 	return tokens
+}
+
+// captureScreenshot takes an interactive screenshot and returns the image content.
+// On macOS: uses screencapture with interactive window selection.
+// On Linux: tries maim, gnome-screenshot, or scrot.
+func captureScreenshot() (llm.ImageContent, error) {
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("goclaw-screenshot-%d.png", time.Now().UnixNano()))
+	defer os.Remove(tmpFile)
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		// -i: interactive mode, -w: window selection only
+		fmt.Println("Click on a window to capture it...")
+		cmd = exec.Command("screencapture", "-i", "-w", tmpFile)
+	case "linux":
+		// Try common screenshot tools in order of preference
+		if path, err := exec.LookPath("maim"); err == nil {
+			fmt.Println("Click and drag to select an area, or click a window...")
+			cmd = exec.Command(path, "-s", tmpFile)
+		} else if path, err := exec.LookPath("gnome-screenshot"); err == nil {
+			fmt.Println("Click on a window to capture it...")
+			cmd = exec.Command(path, "-w", "-f", tmpFile)
+		} else if path, err := exec.LookPath("scrot"); err == nil {
+			fmt.Println("Click on a window to capture it...")
+			cmd = exec.Command(path, "-s", tmpFile)
+		} else {
+			return llm.ImageContent{}, fmt.Errorf("no screenshot tool found (install maim, gnome-screenshot, or scrot)")
+		}
+	default:
+		return llm.ImageContent{}, fmt.Errorf("screenshots not supported on %s", runtime.GOOS)
+	}
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return llm.ImageContent{}, fmt.Errorf("screenshot command failed: %w", err)
+	}
+
+	// Check if the file was created (user may have cancelled)
+	info, err := os.Stat(tmpFile)
+	if err != nil || info.Size() == 0 {
+		return llm.ImageContent{}, fmt.Errorf("screenshot cancelled")
+	}
+
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		return llm.ImageContent{}, fmt.Errorf("read screenshot: %w", err)
+	}
+
+	return llm.ImageContent{MimeType: "image/png", Data: data}, nil
 }
 
 func runStatus() error {

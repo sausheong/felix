@@ -84,6 +84,7 @@ Inside a `goclaw chat` session:
 ```
 > Hello, what files are in this directory?
 > Describe this image ~/Downloads/photo.png
+> /screenshot What's in this window?
 > /quit
 > /exit
 ```
@@ -261,6 +262,33 @@ In `goclaw chat`, include an image file path in your message. GoClaw detects ima
 ```
 
 **Supported image formats:** `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp` (max 10MB)
+
+### Screenshots
+
+Use the `/screenshot` command in `goclaw chat` to interactively capture a window and send it to the LLM.
+
+```bash
+# Capture a window (click to select) and ask the LLM about it
+> /screenshot
+
+# Capture with a specific prompt
+> /screenshot What's wrong with this UI?
+> /screenshot Summarize the text in this window
+> /screenshot Convert this table to CSV
+```
+
+**How it works:**
+
+1. Type `/screenshot` (optionally followed by a prompt)
+2. Your cursor changes to a crosshair — click on the window you want to capture
+3. The screenshot is captured, sent to the LLM, and the LLM responds
+
+**Platform support:**
+
+| Platform | Tool used | Selection mode |
+|----------|-----------|----------------|
+| macOS | `screencapture` (built-in) | Click a window |
+| Linux | `maim`, `gnome-screenshot`, or `scrot` | Click a window or drag to select |
 
 ### Telegram
 
