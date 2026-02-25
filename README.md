@@ -89,56 +89,8 @@ The wizard walks you through choosing an LLM provider, entering your API key, an
 
 ## Architecture
 
-```
-        Telegram / WhatsApp / CLI
-                    |
-                    v
-      +---------------------------+
-      |         Gateway           |
-      |  (HTTP + WebSocket on     |
-      |   127.0.0.1:18789)        |
-      |                           |
-      |  +---------------------+  |
-      |  |  Message Router     |  |
-      |  |  (Bindings Engine)  |  |
-      |  +----------+----------+  |
-      |             |              |
-      |  +----------v----------+  |
-      |  |  Session Manager    |  |
-      |  |  (DAG-based JSONL)  |  |
-      |  +----------+----------+  |
-      |             |              |
-      |  +----------v----------+  |
-      |  |   Agent Runtime     |  |
-      |  |                     |  |
-      |  |  Context Assembler  |  |
-      |  |  LLM Client         |  |
-      |  |  Tool Executor      |  |
-      |  |  Skill Loader       |  |
-      |  +---------------------+  |
-      |                           |
-      |  +---------------------+  |
-      |  |  Memory Manager     |  |
-      |  |  (BM25 search)      |  |
-      |  +---------------------+  |
-      |                           |
-      |  +---------------------+  |
-      |  |  Heartbeat + Cron   |  |
-      |  +---------------------+  |
-      |                           |
-      |  +---------------------+  |
-      |  |  Config Manager     |  |
-      |  |  (fsnotify watch)   |  |
-      |  +---------------------+  |
-      +---------------------------+
-                    |
-        +-----------+-----------+
-        v           v           v
-   ~/.goclaw/   LLM APIs     Docker
-   (local fs)  (Anthropic,   (sandbox)
-               OpenAI,
-               Ollama...)
-```
+![Architecture](architecture.jpg)
+
 
 Single-process, hub-and-spoke design. All components run in one binary.
 
