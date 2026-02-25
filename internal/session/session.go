@@ -49,10 +49,11 @@ type ToolCallData struct {
 
 // ToolResultData holds the result of a tool call.
 type ToolResultData struct {
-	ToolCallID string `json:"tool_call_id"`
-	Output     string `json:"output"`
-	Error      string `json:"error,omitempty"`
-	IsError    bool   `json:"is_error,omitempty"`
+	ToolCallID string      `json:"tool_call_id"`
+	Output     string      `json:"output"`
+	Error      string      `json:"error,omitempty"`
+	IsError    bool        `json:"is_error,omitempty"`
+	Images     []ImageData `json:"images,omitempty"`
 }
 
 // Session holds a conversation session with DAG-structured entries.
@@ -261,12 +262,13 @@ func ToolCallEntry(toolCallID, toolName string, input json.RawMessage) SessionEn
 }
 
 // ToolResultEntry creates a tool result entry.
-func ToolResultEntry(toolCallID, output, errMsg string) SessionEntry {
+func ToolResultEntry(toolCallID, output, errMsg string, images []ImageData) SessionEntry {
 	data, _ := json.Marshal(ToolResultData{
 		ToolCallID: toolCallID,
 		Output:     output,
 		Error:      errMsg,
 		IsError:    errMsg != "",
+		Images:     images,
 	})
 	return SessionEntry{
 		Type: EntryTypeToolResult,

@@ -69,7 +69,7 @@ func TestAssembleMessagesUserAndAssistant(t *testing.T) {
 
 func TestAssembleMessagesToolCallAndResult(t *testing.T) {
 	tc := session.ToolCallEntry("tc_1", "bash", json.RawMessage(`{"command":"echo hi"}`))
-	tr := session.ToolResultEntry("tc_1", "hi\n", "")
+	tr := session.ToolResultEntry("tc_1", "hi\n", "", nil)
 
 	history := []session.SessionEntry{
 		session.UserMessageEntry("run echo hi"),

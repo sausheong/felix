@@ -42,9 +42,40 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 		case "user":
 			if m.ToolCallID != "" {
 				// This is a tool result message
-				msgs = append(msgs, anthropic.NewUserMessage(
-					anthropic.NewToolResultBlock(m.ToolCallID, m.Content, m.IsError),
-				))
+				if len(m.Images) > 0 {
+					// Tool result with images: build content blocks with images + text
+					var content []anthropic.ToolResultBlockParamContentUnion
+					for _, img := range m.Images {
+						encoded := base64.StdEncoding.EncodeToString(img.Data)
+						content = append(content, anthropic.ToolResultBlockParamContentUnion{
+							OfImage: &anthropic.ImageBlockParam{
+								Source: anthropic.ImageBlockParamSourceUnion{
+									OfBase64: &anthropic.Base64ImageSourceParam{
+										Data:      encoded,
+										MediaType: anthropic.Base64ImageSourceMediaType(img.MimeType),
+									},
+								},
+							},
+						})
+					}
+					if m.Content != "" {
+						content = append(content, anthropic.ToolResultBlockParamContentUnion{
+							OfText: &anthropic.TextBlockParam{Text: m.Content},
+						})
+					}
+					toolBlock := anthropic.ToolResultBlockParam{
+						ToolUseID: m.ToolCallID,
+						IsError:   anthropic.Bool(m.IsError),
+						Content:   content,
+					}
+					msgs = append(msgs, anthropic.NewUserMessage(
+						anthropic.ContentBlockParamUnion{OfToolResult: &toolBlock},
+					))
+				} else {
+					msgs = append(msgs, anthropic.NewUserMessage(
+						anthropic.NewToolResultBlock(m.ToolCallID, m.Content, m.IsError),
+					))
+				}
 			} else if len(m.Images) > 0 {
 				var blocks []anthropic.ContentBlockParamUnion
 				for _, img := range m.Images {

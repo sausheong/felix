@@ -19,9 +19,10 @@ type Tool interface {
 
 // ToolResult holds the output of a tool execution.
 type ToolResult struct {
-	Output   string         `json:"output"`
-	Error    string         `json:"error,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	Output   string             `json:"output"`
+	Error    string             `json:"error,omitempty"`
+	Metadata map[string]any     `json:"metadata,omitempty"`
+	Images   []llm.ImageContent `json:"-"` // image attachments (not JSON-serialized)
 }
 
 // Executor is the interface used by agent runtime for tool operations.

@@ -66,7 +66,7 @@ func TestToolCallEntries(t *testing.T) {
 
 	sess.Append(UserMessageEntry("run ls"))
 	sess.Append(ToolCallEntry("tc_1", "bash", []byte(`{"command":"ls"}`)))
-	sess.Append(ToolResultEntry("tc_1", "file1\nfile2", ""))
+	sess.Append(ToolResultEntry("tc_1", "file1\nfile2", "", nil))
 	sess.Append(AssistantMessageEntry("Here are the files."))
 
 	history := sess.History()

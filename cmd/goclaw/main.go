@@ -644,8 +644,14 @@ func runChat(agentID, configPath, modelOverride string) error {
 				case agent.EventToolCallStart:
 					fmt.Printf("\n\033[36m[tool: %s]\033[0m\n", event.ToolCall.Name)
 				case agent.EventToolResult:
+					header := formatToolCallHeader(event.ToolCall.Name, event.ToolCall.Input)
+					if header != "" {
+						fmt.Printf("\033[90m  %s\033[0m\n", header)
+					}
 					if event.Result.Error != "" {
-						fmt.Printf("\033[31m[error: %s]\033[0m\n", event.Result.Error)
+						fmt.Printf("\033[31m  error: %s\033[0m\n", event.Result.Error)
+					} else if out := formatToolOutput(event.Result.Output); out != "" {
+						fmt.Printf("\033[90m  %s\033[0m\n", strings.ReplaceAll(out, "\n", "\n  "))
 					}
 				case agent.EventError:
 					fmt.Printf("\n\033[31mError: %v\033[0m\n", event.Error)
@@ -683,8 +689,14 @@ func runChat(agentID, configPath, modelOverride string) error {
 			case agent.EventToolCallStart:
 				fmt.Printf("\n\033[36m[tool: %s]\033[0m\n", event.ToolCall.Name)
 			case agent.EventToolResult:
+				header := formatToolCallHeader(event.ToolCall.Name, event.ToolCall.Input)
+				if header != "" {
+					fmt.Printf("\033[90m  %s\033[0m\n", header)
+				}
 				if event.Result.Error != "" {
-					fmt.Printf("\033[31m[error: %s]\033[0m\n", event.Result.Error)
+					fmt.Printf("\033[31m  error: %s\033[0m\n", event.Result.Error)
+				} else if out := formatToolOutput(event.Result.Output); out != "" {
+					fmt.Printf("\033[90m  %s\033[0m\n", strings.ReplaceAll(out, "\n", "\n  "))
 				}
 			case agent.EventError:
 				fmt.Printf("\n\033[31mError: %v\033[0m\n", event.Error)
@@ -701,6 +713,91 @@ func runChat(agentID, configPath, modelOverride string) error {
 			}
 		}
 	}
+}
+
+const maxToolOutputDisplay = 1000 // max chars of tool output to show in chat
+
+// formatToolCallHeader returns a short summary of what the tool is doing,
+// extracted from the tool call input JSON.
+func formatToolCallHeader(name string, input json.RawMessage) string {
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(input, &fields)
+	get := func(key string) string {
+		v, ok := fields[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return strings.Trim(string(v), `"`)
+		}
+		return s
+	}
+
+	switch name {
+	case "bash":
+		if cmd := get("command"); cmd != "" {
+			return fmt.Sprintf("$ %s", cmd)
+		}
+	case "read_file":
+		if p := get("path"); p != "" {
+			return p
+		}
+	case "write_file":
+		if p := get("path"); p != "" {
+			return p
+		}
+	case "edit_file":
+		if p := get("path"); p != "" {
+			return p
+		}
+	case "web_fetch":
+		if u := get("url"); u != "" {
+			return u
+		}
+	case "web_search":
+		if q := get("query"); q != "" {
+			return fmt.Sprintf("%q", q)
+		}
+	case "browser":
+		action := get("action")
+		if u := get("url"); u != "" {
+			return fmt.Sprintf("%s %s", action, u)
+		}
+		if sel := get("selector"); sel != "" {
+			return fmt.Sprintf("%s %s", action, sel)
+		}
+		return action
+	case "cron":
+		action := get("action")
+		if n := get("name"); n != "" {
+			return fmt.Sprintf("%s %s", action, n)
+		}
+		return action
+	case "send_message":
+		ch := get("channel")
+		id := get("chat_id")
+		if ch != "" && id != "" {
+			return fmt.Sprintf("→ %s/%s", ch, id)
+		}
+	}
+	return ""
+}
+
+// formatToolOutput returns a possibly-truncated version of the tool output.
+func formatToolOutput(output string) string {
+	if output == "" {
+		return ""
+	}
+	if len(output) > maxToolOutputDisplay {
+		// Try to truncate at a line boundary
+		truncated := output[:maxToolOutputDisplay]
+		if idx := strings.LastIndex(truncated, "\n"); idx > maxToolOutputDisplay/2 {
+			truncated = truncated[:idx]
+		}
+		return truncated + "\n…(truncated)"
+	}
+	return output
 }
 
 // imageExtensions is the set of file extensions treated as images.

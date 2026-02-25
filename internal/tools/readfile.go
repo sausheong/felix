@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/sausheong/goclaw/internal/llm"
 )
 
 // ReadFileTool reads the contents of a file.
@@ -17,7 +21,7 @@ type readFileInput struct {
 func (t *ReadFileTool) Name() string { return "read_file" }
 
 func (t *ReadFileTool) Description() string {
-	return "Read the contents of a file at the given path. Returns the file contents as text."
+	return "Read the contents of a file at the given path. Returns the file contents as text. For image files (jpg, png, gif, webp, bmp), returns the image for visual inspection."
 }
 
 func (t *ReadFileTool) Parameters() json.RawMessage {
@@ -33,6 +37,16 @@ func (t *ReadFileTool) Parameters() json.RawMessage {
 	}`)
 }
 
+// imageExtMap maps file extensions to MIME types for image files.
+var imageExtMap = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".bmp":  "image/bmp",
+}
+
 func (t *ReadFileTool) Execute(_ context.Context, input json.RawMessage) (ToolResult, error) {
 	var in readFileInput
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -46,6 +60,17 @@ func (t *ReadFileTool) Execute(_ context.Context, input json.RawMessage) (ToolRe
 	data, err := os.ReadFile(in.Path)
 	if err != nil {
 		return ToolResult{Error: fmt.Sprintf("failed to read file: %v", err)}, nil
+	}
+
+	// Check if this is an image file
+	ext := strings.ToLower(filepath.Ext(in.Path))
+	if mimeType, ok := imageExtMap[ext]; ok {
+		return ToolResult{
+			Output: fmt.Sprintf("Image file: %s (%d bytes)", filepath.Base(in.Path), len(data)),
+			Images: []llm.ImageContent{
+				{MimeType: mimeType, Data: data},
+			},
+		}, nil
 	}
 
 	return ToolResult{Output: string(data)}, nil

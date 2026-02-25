@@ -2,13 +2,13 @@ package tools
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/sausheong/goclaw/internal/llm"
 )
 
 const browserTimeout = 60 * time.Second
@@ -227,10 +227,11 @@ func (t *BrowserTool) screenshot(ctx context.Context, in browserInput) (ToolResu
 		return ToolResult{Error: fmt.Sprintf("screenshot failed: %v", err)}, nil
 	}
 
-	encoded := base64.StdEncoding.EncodeToString(buf)
-
 	return ToolResult{
-		Output: fmt.Sprintf("Screenshot captured (%d bytes). Base64-encoded PNG data:\n%s", len(buf), encoded),
+		Output: fmt.Sprintf("Screenshot captured (%d bytes). The image is attached for visual inspection.", len(buf)),
+		Images: []llm.ImageContent{
+			{MimeType: "image/png", Data: buf},
+		},
 		Metadata: map[string]any{
 			"format": "png",
 			"size":   len(buf),

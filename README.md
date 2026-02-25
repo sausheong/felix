@@ -1,3 +1,5 @@
+![GoClaw](goclaw.jpg)
+
 # GoClaw
 
 A self-hosted AI agent gateway written in Go. Single binary, low memory, fast startup.

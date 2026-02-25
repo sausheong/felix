@@ -165,8 +165,17 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					result = tools.ToolResult{Error: err.Error()}
 				}
 
+				// Convert tool result images to session image data
+				var imgData []session.ImageData
+				for _, img := range result.Images {
+					imgData = append(imgData, session.ImageData{
+						MimeType: img.MimeType,
+						Data:     base64.StdEncoding.EncodeToString(img.Data),
+					})
+				}
+
 				// Save tool result to session
-				r.Session.Append(session.ToolResultEntry(tc.ID, result.Output, result.Error))
+				r.Session.Append(session.ToolResultEntry(tc.ID, result.Output, result.Error, imgData))
 
 				events <- AgentEvent{
 					Type:     EventToolResult,

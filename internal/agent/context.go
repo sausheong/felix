@@ -14,7 +14,7 @@ import (
 
 const maxToolResultLen = 10000 // truncate tool results longer than this
 
-const defaultIdentity = `You are a helpful AI assistant called GoClaw. You can read files, write files, edit files, execute bash commands on the user's machine, fetch web pages, search the web, automate a headless browser, send messages to other channels, and schedule recurring tasks. Be concise and helpful. When executing tasks, think step by step and use your tools to accomplish the user's goals. When asked to access websites, use the web_fetch tool or the browser tool for interactive pages. When asked to search for information, use the web_search tool. When asked to schedule recurring tasks, use the cron tool. When asked to send messages to other users or channels, use the send_message tool.`
+const defaultIdentity = `You are a helpful AI assistant called GoClaw. You can read files, write files, edit files, execute bash commands on the user's machine, fetch web pages, search the web, automate a headless browser, send messages to other channels, and schedule recurring tasks. You have vision capabilities — you can see and analyze images. Be concise and helpful. When executing tasks, think step by step and use your tools to accomplish the user's goals. When asked to access websites, use the web_fetch tool or the browser tool for interactive pages. When asked to search for information, use the web_search tool. When asked to schedule recurring tasks, use the cron tool. When asked to send messages to other users or channels, use the send_message tool. When you need to visually inspect images (screenshots, photos, camera feeds, etc.), use read_file on the image file or use the browser tool's screenshot action — both return the image for you to see and describe. Do not say you cannot see or analyze images.`
 
 // assembleSystemPrompt builds the system prompt from the workspace identity file.
 func assembleSystemPrompt(workspace string) string {
@@ -112,12 +112,24 @@ func assembleMessages(history []session.SessionEntry) []llm.Message {
 			if content == "" {
 				content = "(no output)"
 			}
-			msgs = append(msgs, llm.Message{
+			msg := llm.Message{
 				Role:       "user",
 				Content:    content,
 				ToolCallID: tr.ToolCallID,
 				IsError:    tr.IsError,
-			})
+			}
+			// Convert session images to LLM image content
+			for _, img := range tr.Images {
+				data, err := base64.StdEncoding.DecodeString(img.Data)
+				if err != nil {
+					continue
+				}
+				msg.Images = append(msg.Images, llm.ImageContent{
+					MimeType: img.MimeType,
+					Data:     data,
+				})
+			}
+			msgs = append(msgs, msg)
 		}
 	}
 
