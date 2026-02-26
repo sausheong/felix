@@ -4,11 +4,20 @@ VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 LDFLAGS   := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
-.PHONY: build run test test-race test-v lint fmt vet tidy clean snapshot install
+.PHONY: build build-small run test test-race test-v lint fmt vet tidy clean snapshot install
 
 ## build: compile the binary
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)
+
+## build-small: compile a smaller, statically-linked binary (+ UPX on Linux)
+build-small:
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)
+	@if [ "$$(uname)" = "Linux" ] && command -v upx >/dev/null 2>&1; then \
+		upx --best --lzma $(BINARY); \
+	elif [ "$$(uname)" = "Linux" ]; then \
+		echo "tip: install upx for further compression (apt install upx)"; \
+	fi
 
 ## run: build and start the gateway
 run: build
