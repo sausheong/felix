@@ -3,6 +3,7 @@ package skill
 import (
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -10,12 +11,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// openclawMetadata holds OpenClaw-compatible metadata from YAML frontmatter.
+type openclawMetadata struct {
+	OpenClaw struct {
+		Requires struct {
+			Bins []string `yaml:"bins"`
+		} `yaml:"requires"`
+	} `yaml:"openclaw"`
+}
+
 // Skill represents a loaded skill with YAML frontmatter metadata and Markdown body.
 type Skill struct {
 	// From YAML frontmatter
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Tags        []string `yaml:"tags,omitempty"`
+	Name        string           `yaml:"name"`
+	Description string           `yaml:"description"`
+	Tags        []string         `yaml:"tags,omitempty"`
+	Metadata    openclawMetadata `yaml:"metadata,omitempty"`
 
 	// Parsed content
 	Body     string // Markdown body (after frontmatter)
@@ -51,7 +62,12 @@ func (l *Loader) LoadFrom(dirs ...string) error {
 			if d.IsDir() {
 				return nil
 			}
-			if strings.ToUpper(d.Name()) != "SKILL.MD" {
+			// Accept both <dir>/SKILL.md (OpenClaw convention) and
+			// any *.md file directly in the skills directory.
+			name := d.Name()
+			isSkillMD := strings.ToUpper(name) == "SKILL.MD"
+			isDirectMD := strings.HasSuffix(strings.ToLower(name), ".md") && filepath.Dir(path) == dir
+			if !isSkillMD && !isDirectMD {
 				return nil
 			}
 
@@ -59,6 +75,21 @@ func (l *Loader) LoadFrom(dirs ...string) error {
 			if err != nil {
 				slog.Warn("failed to parse skill file", "path", path, "error", err)
 				return nil
+			}
+
+			// Skip skills whose required binaries are not installed
+			if bins := skill.Metadata.OpenClaw.Requires.Bins; len(bins) > 0 {
+				missing := false
+				for _, bin := range bins {
+					if _, err := exec.LookPath(bin); err != nil {
+						slog.Info("skill skipped (missing binary)", "name", skill.Name, "binary", bin)
+						missing = true
+						break
+					}
+				}
+				if missing {
+					return nil
+				}
 			}
 
 			loaded = append(loaded, skill)
@@ -184,9 +215,13 @@ func parseSkillFile(path string) (Skill, error) {
 	skill.Body = strings.TrimSpace(body)
 	skill.FilePath = path
 
-	// Default name from directory name if not set
+	// Default name from directory name (for SKILL.md) or filename stem (for *.md)
 	if skill.Name == "" {
-		skill.Name = filepath.Base(filepath.Dir(path))
+		if strings.ToUpper(filepath.Base(path)) == "SKILL.MD" {
+			skill.Name = filepath.Base(filepath.Dir(path))
+		} else {
+			skill.Name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		}
 	}
 
 	return skill, nil

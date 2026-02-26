@@ -109,6 +109,95 @@ func TestLoaderLoadFrom(t *testing.T) {
 	assert.Len(t, skills, 2)
 }
 
+func TestLoaderLoadFromDirectMD(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a skill as a direct .md file (not in a subdirectory)
+	content := `---
+name: gog
+description: Google Workspace CLI for Gmail, Calendar, Drive
+tags:
+  - gmail
+  - calendar
+  - google
+---
+
+# gog
+
+Use gog for Gmail/Calendar/Drive.
+`
+	os.WriteFile(filepath.Join(dir, "gog.md"), []byte(content), 0o644)
+
+	// Also create a SKILL.md in a subdirectory (should still work)
+	skillDir := filepath.Join(dir, "web-search")
+	os.MkdirAll(skillDir, 0o755)
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: web-search\n---\nBody"), 0o644)
+
+	loader := NewLoader()
+	err := loader.LoadFrom(dir)
+	require.NoError(t, err)
+
+	skills := loader.Skills()
+	assert.Len(t, skills, 2)
+
+	// Find the direct .md skill
+	var gogSkill *Skill
+	for i := range skills {
+		if skills[i].Name == "gog" {
+			gogSkill = &skills[i]
+			break
+		}
+	}
+	require.NotNil(t, gogSkill)
+	assert.Equal(t, "Google Workspace CLI for Gmail, Calendar, Drive", gogSkill.Description)
+	assert.Contains(t, gogSkill.Tags, "gmail")
+}
+
+func TestLoaderLoadFromDirectMDDefaultName(t *testing.T) {
+	dir := t.TempDir()
+
+	// Skill file without a name in frontmatter — should use filename stem
+	content := "---\ndescription: A test skill\n---\n\nBody here"
+	os.WriteFile(filepath.Join(dir, "my-skill.md"), []byte(content), 0o644)
+
+	loader := NewLoader()
+	err := loader.LoadFrom(dir)
+	require.NoError(t, err)
+
+	skills := loader.Skills()
+	require.Len(t, skills, 1)
+	assert.Equal(t, "my-skill", skills[0].Name)
+}
+
+func TestLoaderSkipsMissingBinary(t *testing.T) {
+	dir := t.TempDir()
+
+	// Skill that requires a binary that doesn't exist
+	content := `---
+name: fake-tool
+description: Requires a nonexistent binary
+metadata:
+  openclaw:
+    requires:
+      bins: ["this-binary-does-not-exist-xyz"]
+---
+
+Body here
+`
+	os.WriteFile(filepath.Join(dir, "fake-tool.md"), []byte(content), 0o644)
+
+	// Skill with no binary requirement (should load fine)
+	os.WriteFile(filepath.Join(dir, "simple.md"), []byte("---\nname: simple\n---\nBody"), 0o644)
+
+	loader := NewLoader()
+	err := loader.LoadFrom(dir)
+	require.NoError(t, err)
+
+	skills := loader.Skills()
+	assert.Len(t, skills, 1)
+	assert.Equal(t, "simple", skills[0].Name)
+}
+
 func TestLoaderLoadFromNonexistent(t *testing.T) {
 	loader := NewLoader()
 	err := loader.LoadFrom("/nonexistent/path")
