@@ -199,7 +199,102 @@ Interactive terminal chat with Markdown rendering. Available via `goclaw chat` w
 
 All configuration lives in `~/.goclaw/goclaw.json5` (JSON5 format for comments and trailing commas).
 
-### Example
+### LLM Providers
+
+GoClaw supports three provider kinds. Each provider is defined in the `providers` section of the config with a unique name, a `kind`, and connection details.
+
+| Kind | Description | Requires |
+|------|-------------|----------|
+| `anthropic` | Anthropic's Claude API | `api_key` |
+| `openai` | OpenAI's API (GPT models) | `api_key` |
+| `openai-compatible` | Any OpenAI-compatible API (Ollama, LM Studio, DeepSeek, LiteLLM, etc.) | `base_url`, optionally `api_key` |
+
+**Standard providers (Anthropic, OpenAI):**
+
+```json5
+{
+  "providers": {
+    "anthropic": {
+      "kind": "anthropic",
+      "api_key": "sk-ant-api03-..."
+    },
+    "openai": {
+      "kind": "openai",
+      "api_key": "sk-proj-..."
+    }
+  }
+}
+```
+
+**Custom / OpenAI-compatible providers:**
+
+Any service exposing an OpenAI-compatible API (e.g., `/v1/chat/completions`) works with kind `openai-compatible`. Set the `base_url` to the API root.
+
+```json5
+{
+  "providers": {
+    // Ollama — local models, no API key needed
+    "ollama": {
+      "kind": "openai-compatible",
+      "base_url": "http://localhost:11434/v1"
+    },
+
+    // LM Studio — local models
+    "lmstudio": {
+      "kind": "openai-compatible",
+      "base_url": "http://localhost:1234/v1"
+    },
+
+    // DeepSeek — cloud API with OpenAI-compatible endpoint
+    "deepseek": {
+      "kind": "openai-compatible",
+      "api_key": "sk-...",
+      "base_url": "https://api.deepseek.com/v1"
+    },
+
+    // Google Gemini — via OpenAI-compatible endpoint
+    "gemini": {
+      "kind": "openai-compatible",
+      "api_key": "AIza...",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"
+    },
+
+    // LiteLLM — proxy for multiple providers
+    "litellm": {
+      "kind": "openai-compatible",
+      "base_url": "http://localhost:4000/v1"
+    }
+  }
+}
+```
+
+### Model references
+
+Agents reference models as `provider/model-name`, where the provider name matches a key in the `providers` section:
+
+```json5
+"model": "anthropic/claude-sonnet-4-5-20250514"   // Anthropic Claude
+"model": "openai/gpt-4o"                          // OpenAI GPT-4o
+"model": "ollama/llama3"                           // Ollama local model
+"model": "deepseek/deepseek-chat"                  // DeepSeek
+"model": "gemini/gemini-2.0-flash"                 // Google Gemini
+"model": "lmstudio/qwen2.5-coder-14b"             // LM Studio local model
+```
+
+### API keys via environment variables
+
+API keys can be set via environment variables instead of the config file. Environment variables take precedence.
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+export OPENAI_API_KEY="sk-proj-..."
+export DEEPSEEK_API_KEY="sk-..."
+export GEMINI_API_KEY="AIza..."
+```
+
+The naming convention is `{PROVIDER}_API_KEY` (or `{PROVIDER}_AUTH_TOKEN`), and `{PROVIDER}_BASE_URL` for custom endpoints — where `{PROVIDER}` is the uppercased provider name from your config.
+
+### Full config example
 
 ```json5
 {
@@ -240,8 +335,6 @@ All configuration lives in `~/.goclaw/goclaw.json5` (JSON5 format for comments a
   }
 }
 ```
-
-API keys can also be set via environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.), which take precedence over config values.
 
 ---
 

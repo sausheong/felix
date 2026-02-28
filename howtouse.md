@@ -8,6 +8,7 @@ GoClaw is a self-hosted AI agent gateway. It runs as a single binary on your mac
 - [CLI Commands](#cli-commands)
 - [macOS Menu Bar App](#macos-menu-bar-app)
 - [Configuration](#configuration)
+- [LLM Providers](#llm-providers)
 - [Messaging Channels](#messaging-channels)
 - [Image / Vision Support](#image--vision-support)
 - [Multiple Agents](#multiple-agents)
@@ -215,11 +216,314 @@ export OPENAI_API_KEY="sk-..."
 export OLLAMA_BASE_URL="http://localhost:11434/v1"
 ```
 
-The naming convention is `{PROVIDER}_API_KEY` or `{PROVIDER}_AUTH_TOKEN`, and `{PROVIDER}_BASE_URL` for custom endpoints.
+The naming convention is `{PROVIDER}_API_KEY` or `{PROVIDER}_AUTH_TOKEN`, and `{PROVIDER}_BASE_URL` for custom endpoints. The `{PROVIDER}` part is the uppercased version of the provider name from your config (e.g., a provider named `"deepseek"` uses `DEEPSEEK_API_KEY`).
 
 ### Config hot-reload
 
 GoClaw watches the config file for changes. When you edit `goclaw.json5` while the gateway is running, it hot-reloads automatically — no restart needed.
+
+---
+
+## LLM Providers
+
+GoClaw supports multiple LLM providers simultaneously. Each provider is defined in the `providers` section of the config with a unique name and a `kind` that determines how GoClaw communicates with it.
+
+### Provider kinds
+
+| Kind | Description | Use for |
+|------|-------------|---------|
+| `anthropic` | Anthropic's native API (custom SSE streaming) | Claude models |
+| `openai` | OpenAI's native API | GPT models |
+| `openai-compatible` | Any API that implements the OpenAI chat completions spec | Ollama, LM Studio, DeepSeek, Google Gemini, LiteLLM, vLLM, and more |
+
+### Provider config fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | string | Required. One of `"anthropic"`, `"openai"`, or `"openai-compatible"` |
+| `api_key` | string | API key or auth token. Not needed for local servers like Ollama |
+| `base_url` | string | Custom API endpoint. Required for `"openai-compatible"`, optional for others |
+
+### Setting up standard providers
+
+#### Anthropic (Claude)
+
+1. Get an API key from [console.anthropic.com](https://console.anthropic.com/)
+2. Add to your config:
+
+```json5
+{
+  "providers": {
+    "anthropic": {
+      "kind": "anthropic",
+      "api_key": "sk-ant-api03-..."
+    }
+  }
+}
+```
+
+Or set via environment variable:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+```
+
+Available models (use with `"model": "anthropic/<model-name>"`):
+
+| Model | Description |
+|-------|-------------|
+| `claude-sonnet-4-5-20250514` | Best balance of speed and capability |
+| `claude-opus-4-0-20250514` | Most capable, best for complex tasks |
+| `claude-haiku-3-5-20241022` | Fastest, best for simple tasks |
+
+Example agent config:
+
+```json5
+{
+  "id": "default",
+  "model": "anthropic/claude-sonnet-4-5-20250514"
+}
+```
+
+#### OpenAI (GPT)
+
+1. Get an API key from [platform.openai.com](https://platform.openai.com/api-keys)
+2. Add to your config:
+
+```json5
+{
+  "providers": {
+    "openai": {
+      "kind": "openai",
+      "api_key": "sk-proj-..."
+    }
+  }
+}
+```
+
+Or set via environment variable:
+
+```bash
+export OPENAI_API_KEY="sk-proj-..."
+```
+
+Available models (use with `"model": "openai/<model-name>"`):
+
+| Model | Description |
+|-------|-------------|
+| `gpt-4o` | Most capable GPT model |
+| `gpt-4o-mini` | Faster, cheaper alternative |
+| `gpt-4-turbo` | Previous generation |
+| `o3-mini` | Reasoning model |
+
+Example agent config:
+
+```json5
+{
+  "id": "researcher",
+  "model": "openai/gpt-4o"
+}
+```
+
+### Setting up custom / OpenAI-compatible providers
+
+Any service that exposes an OpenAI-compatible API (i.e., a `/v1/chat/completions` endpoint) can be used with kind `"openai-compatible"`. Set `base_url` to the API root (the part before `/chat/completions`).
+
+#### Ollama (local models)
+
+[Ollama](https://ollama.com/) runs open-source models locally. No API key needed.
+
+1. Install and start Ollama: `ollama serve`
+2. Pull a model: `ollama pull llama3`
+3. Add to your config:
+
+```json5
+{
+  "providers": {
+    "ollama": {
+      "kind": "openai-compatible",
+      "base_url": "http://localhost:11434/v1"
+    }
+  }
+}
+```
+
+Example agent config:
+
+```json5
+{
+  "id": "local",
+  "model": "ollama/llama3"
+}
+```
+
+Popular Ollama models: `llama3`, `llama3.1`, `mistral`, `codellama`, `qwen2.5`, `deepseek-coder`, `phi3`, `gemma2`.
+
+For vision-capable models, use `llava` or `bakllava`.
+
+#### LM Studio (local models)
+
+[LM Studio](https://lmstudio.ai/) provides a GUI for running local models with a built-in OpenAI-compatible server.
+
+1. Download and install LM Studio
+2. Load a model and start the local server (default port: 1234)
+3. Add to your config:
+
+```json5
+{
+  "providers": {
+    "lmstudio": {
+      "kind": "openai-compatible",
+      "base_url": "http://localhost:1234/v1"
+    }
+  }
+}
+```
+
+Example agent config:
+
+```json5
+{
+  "id": "local",
+  "model": "lmstudio/qwen2.5-coder-14b"
+}
+```
+
+The model name after the slash should match what LM Studio reports for the loaded model.
+
+#### DeepSeek
+
+[DeepSeek](https://platform.deepseek.com/) offers cloud-hosted models with an OpenAI-compatible API.
+
+1. Get an API key from [platform.deepseek.com](https://platform.deepseek.com/)
+2. Add to your config:
+
+```json5
+{
+  "providers": {
+    "deepseek": {
+      "kind": "openai-compatible",
+      "api_key": "sk-...",
+      "base_url": "https://api.deepseek.com/v1"
+    }
+  }
+}
+```
+
+Or set via environment variables:
+
+```bash
+export DEEPSEEK_API_KEY="sk-..."
+export DEEPSEEK_BASE_URL="https://api.deepseek.com/v1"
+```
+
+Example agent config:
+
+```json5
+{
+  "id": "coder",
+  "model": "deepseek/deepseek-chat"
+}
+```
+
+Available models: `deepseek-chat`, `deepseek-coder`, `deepseek-reasoner`.
+
+#### Google Gemini
+
+Google Gemini can be used via its [OpenAI-compatible endpoint](https://ai.google.dev/gemini-api/docs/openai).
+
+1. Get an API key from [aistudio.google.com](https://aistudio.google.com/apikey)
+2. Add to your config:
+
+```json5
+{
+  "providers": {
+    "gemini": {
+      "kind": "openai-compatible",
+      "api_key": "AIza...",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"
+    }
+  }
+}
+```
+
+Or set via environment variables:
+
+```bash
+export GEMINI_API_KEY="AIza..."
+export GEMINI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
+```
+
+Example agent config:
+
+```json5
+{
+  "id": "default",
+  "model": "gemini/gemini-2.0-flash"
+}
+```
+
+Available models: `gemini-2.0-flash`, `gemini-2.0-flash-lite`, `gemini-1.5-pro`, `gemini-1.5-flash`.
+
+#### LiteLLM / Other proxies
+
+[LiteLLM](https://github.com/BerriAI/litellm) is a proxy that exposes 100+ LLMs through a single OpenAI-compatible API. The same pattern works for vLLM, Anyscale, Together AI, or any OpenAI-compatible proxy.
+
+```json5
+{
+  "providers": {
+    "litellm": {
+      "kind": "openai-compatible",
+      "base_url": "http://localhost:4000/v1"
+    }
+  }
+}
+```
+
+### Model reference format
+
+Agents reference models as `provider/model-name`, where the provider name matches a key in your `providers` section:
+
+```
+anthropic/claude-sonnet-4-5-20250514    → uses the "anthropic" provider
+openai/gpt-4o                          → uses the "openai" provider
+ollama/llama3                           → uses the "ollama" provider
+deepseek/deepseek-chat                  → uses the "deepseek" provider
+gemini/gemini-2.0-flash                 → uses the "gemini" provider
+lmstudio/qwen2.5-coder-14b             → uses the "lmstudio" provider
+```
+
+You can override the model for a CLI chat session without changing the config:
+
+```bash
+goclaw chat -m openai/gpt-4o
+goclaw chat -m ollama/codellama
+```
+
+### Using multiple providers
+
+You can configure multiple providers and assign different agents to different models:
+
+```json5
+{
+  "providers": {
+    "anthropic": { "kind": "anthropic", "api_key": "sk-ant-..." },
+    "openai":    { "kind": "openai",    "api_key": "sk-..." },
+    "ollama":    { "kind": "openai-compatible", "base_url": "http://localhost:11434/v1" },
+    "deepseek":  { "kind": "openai-compatible", "api_key": "sk-...", "base_url": "https://api.deepseek.com/v1" }
+  },
+  "agents": {
+    "list": [
+      { "id": "default",  "model": "anthropic/claude-sonnet-4-5-20250514" },
+      { "id": "reviewer", "model": "openai/gpt-4o" },
+      { "id": "quick",    "model": "ollama/llama3" },
+      { "id": "coder",    "model": "deepseek/deepseek-chat" }
+    ]
+  }
+}
+```
+
+Only providers that are actually referenced by agents are initialized at startup.
 
 ---
 
