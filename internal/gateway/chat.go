@@ -197,6 +197,17 @@ body {
 }
 .tool-call-output.show { display: block; }
 .tool-call-output.error { color: var(--error); }
+.tool-call-header .tool-detail {
+	color: var(--text-muted);
+	font-family: "SF Mono", "Fira Code", monospace;
+	font-size: 0.9em;
+	max-width: 500px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	display: inline-block;
+	vertical-align: bottom;
+}
 #input-area {
 	background: var(--bg-header);
 	padding: 0.75rem 1.5rem;
@@ -368,10 +379,10 @@ body {
 					appendToAssistant(r.text);
 					break;
 				case 'tool_call_start':
-					addToolCall(r.tool, r.id);
+					addToolCall(r.tool, r.id, r.input);
 					break;
 				case 'tool_result':
-					updateToolResult(r.tool, r.output, r.error);
+					updateToolResult(r.tool, r.id, r.input, r.output, r.error);
 					break;
 				case 'done':
 					if (currentAssistant) {
@@ -426,16 +437,59 @@ body {
 		scrollToBottom();
 	}
 
-	var lastToolEl = null;
+	var toolEls = {};
 
-	function addToolCall(toolName, toolId) {
+	function toolSummary(toolName, input) {
+		if (!input) return escHtml(toolName);
+		try {
+			var p = (typeof input === 'string') ? JSON.parse(input) : input;
+			switch (toolName) {
+			case 'bash':
+				if (p.command) return escHtml(toolName) + ': <span class="tool-detail">' + escHtml(p.command) + '</span>';
+				break;
+			case 'read_file':
+				if (p.path) return escHtml(toolName) + ': <span class="tool-detail">' + escHtml(p.path) + '</span>';
+				break;
+			case 'write_file':
+				if (p.path) return escHtml(toolName) + ': <span class="tool-detail">' + escHtml(p.path) + '</span>';
+				break;
+			case 'edit_file':
+				if (p.path) return escHtml(toolName) + ': <span class="tool-detail">' + escHtml(p.path) + '</span>';
+				break;
+			case 'web_fetch':
+				if (p.url) return escHtml(toolName) + ': <span class="tool-detail">' + escHtml(p.url) + '</span>';
+				break;
+			case 'web_search':
+				if (p.query) return escHtml(toolName) + ': <span class="tool-detail">' + escHtml(p.query) + '</span>';
+				break;
+			case 'browser':
+				if (p.action) {
+					var detail = p.action;
+					if (p.url) detail += ' ' + p.url;
+					else if (p.selector) detail += ' ' + p.selector;
+					return escHtml(toolName) + ': <span class="tool-detail">' + escHtml(detail) + '</span>';
+				}
+				break;
+			case 'send_message':
+				if (p.channel) return escHtml(toolName) + ': <span class="tool-detail">' + escHtml(p.channel + ' → ' + (p.chat_id || '')) + '</span>';
+				break;
+			case 'cron':
+				if (p.action) return escHtml(toolName) + ': <span class="tool-detail">' + escHtml(p.action + (p.name ? ' ' + p.name : '')) + '</span>';
+				break;
+			}
+		} catch(e) {}
+		return escHtml(toolName);
+	}
+
+	function addToolCall(toolName, toolId, input) {
 		var div = document.createElement('div');
 		div.className = 'tool-call';
-		div.dataset.toolId = toolId || toolName;
+		var id = toolId || toolName;
+		div.dataset.toolId = id;
 
 		var header = document.createElement('div');
 		header.className = 'tool-call-header';
-		header.innerHTML = '<span class="arrow">&#9654;</span> ' + escHtml(toolName);
+		header.innerHTML = '<span class="arrow">&#9654;</span> ' + toolSummary(toolName, input);
 		header.onclick = function() {
 			var arrow = header.querySelector('.arrow');
 			var output = div.querySelector('.tool-call-output');
@@ -451,13 +505,29 @@ body {
 		div.appendChild(header);
 		div.appendChild(output);
 		messagesEl.appendChild(div);
-		lastToolEl = div;
+		toolEls[id] = div;
 		scrollToBottom();
 	}
 
-	function updateToolResult(toolName, outputText, errorText) {
-		var el = lastToolEl;
+	function updateToolResult(toolName, toolId, input, outputText, errorText) {
+		var el = toolEls[toolId] || toolEls[toolName];
 		if (!el) return;
+
+		// Update header with input if we now have it
+		if (input) {
+			var header = el.querySelector('.tool-call-header');
+			if (header) {
+				var arrow = header.querySelector('.arrow');
+				var isOpen = arrow && arrow.classList.contains('open');
+				header.innerHTML = '<span class="arrow' + (isOpen ? ' open' : '') + '">&#9654;</span> ' + toolSummary(toolName, input);
+				header.onclick = function() {
+					var a = header.querySelector('.arrow');
+					var o = el.querySelector('.tool-call-output');
+					if (o) { o.classList.toggle('show'); a.classList.toggle('open'); }
+				};
+			}
+		}
+
 		var output = el.querySelector('.tool-call-output');
 		if (!output) return;
 		if (errorText) {

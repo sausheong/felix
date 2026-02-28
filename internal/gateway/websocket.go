@@ -208,9 +208,9 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		case agent.EventTextDelta:
 			result = map[string]any{"type": "text_delta", "text": event.Text}
 		case agent.EventToolCallStart:
-			result = map[string]any{"type": "tool_call_start", "tool": event.ToolCall.Name, "id": event.ToolCall.ID}
+			result = map[string]any{"type": "tool_call_start", "tool": event.ToolCall.Name, "id": event.ToolCall.ID, "input": event.ToolCall.Input}
 		case agent.EventToolResult:
-			result = map[string]any{"type": "tool_result", "tool": event.ToolCall.Name, "output": event.Result.Output, "error": event.Result.Error}
+			result = map[string]any{"type": "tool_result", "tool": event.ToolCall.Name, "id": event.ToolCall.ID, "input": event.ToolCall.Input, "output": event.Result.Output, "error": event.Result.Error}
 		case agent.EventDone:
 			result = map[string]any{"type": "done"}
 		case agent.EventError:

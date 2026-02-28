@@ -158,11 +158,22 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 
 			// Execute tools
 			for _, tc := range toolCalls {
-				slog.Info("executing tool", "tool", tc.Name, "id", tc.ID)
+				slog.Info("executing tool", "tool", tc.Name, "id", tc.ID, "input", string(tc.Input))
 
 				result, err := r.Tools.Execute(ctx, tc.Name, tc.Input)
 				if err != nil {
 					result = tools.ToolResult{Error: err.Error()}
+				}
+
+				// Log tool result
+				if result.Error != "" {
+					slog.Warn("tool error", "tool", tc.Name, "id", tc.ID, "error", result.Error)
+				} else {
+					outPreview := result.Output
+					if len(outPreview) > 500 {
+						outPreview = outPreview[:500] + "...(truncated)"
+					}
+					slog.Info("tool result", "tool", tc.Name, "id", tc.ID, "output_len", len(result.Output), "output", outPreview)
 				}
 
 				// Convert tool result images to session image data

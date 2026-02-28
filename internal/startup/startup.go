@@ -148,6 +148,11 @@ func (a *CronSchedulerAdapter) ListJobs() []tools.JobInfo {
 // The caller is responsible for calling Result.Cleanup() on shutdown and
 // starting the HTTP server via Result.Server.Start() in a goroutine.
 func StartGateway(configPath, version string) (*Result, error) {
+	// Install a tee log handler that captures entries for the /logs page
+	// while forwarding to the original handler.
+	logBuf := gateway.NewLogBuffer(2000, slog.Default().Handler())
+	slog.SetDefault(slog.New(logBuf))
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
@@ -370,6 +375,7 @@ func StartGateway(configPath, version string) (*Result, error) {
 		MetricsHandler: metrics.Handler(),
 		UIHandler:      gateway.NewUIHandler(cfg, version),
 		ChatHandler:    gateway.NewChatHandler(cfg.Gateway.Port),
+		LogBuffer:      logBuf,
 	})
 
 	cleanup := func() {

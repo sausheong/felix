@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -25,10 +26,25 @@ var (
 )
 
 func main() {
+	// Write logs to a file so crashes are diagnosable (macOS .app has no stderr).
+	initLogFile()
+
 	// macOS .app bundles don't inherit shell env vars (e.g. API keys).
 	// Source the user's shell profile to pick them up.
 	loadShellEnv()
 	systray.Run(onReady, onQuit)
+}
+
+// initLogFile redirects slog to a log file in the data directory.
+func initLogFile() {
+	dir := config.DefaultDataDir()
+	os.MkdirAll(dir, 0o755)
+	f, err := os.OpenFile(filepath.Join(dir, "goclaw-app.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(f, nil)))
 }
 
 // loadShellEnv runs an interactive login shell to dump its environment,
@@ -61,7 +77,14 @@ func loadShellEnv() {
 }
 
 func onReady() {
-	systray.SetIcon(iconBytes)
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic in onReady", "error", r)
+			systray.Quit()
+		}
+	}()
+
+	systray.SetTemplateIcon(iconBytes, iconBytes)
 	systray.SetTooltip("GoClaw")
 
 	// Start gateway in the background
@@ -73,6 +96,11 @@ func onReady() {
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("panic in gateway server", "error", r)
+			}
+		}()
 		if err := result.Server.Start(); err != nil && err != http.ErrServerClosed {
 			slog.Error("gateway error", "error", err)
 		}
@@ -85,6 +113,7 @@ func onReady() {
 
 	// Menu items
 	mChat := systray.AddMenuItem("Open GoClaw Chat", "Open chat in browser")
+	mLogs := systray.AddMenuItem("Open GoClaw Logs", "Open logs in browser")
 	mSettings := systray.AddMenuItem("Settings", "Open config file")
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit GoClaw", "Shut down and exit")
@@ -94,6 +123,8 @@ func onReady() {
 			select {
 			case <-mChat.ClickedCh:
 				openURL("http://localhost:" + itoa(port) + "/chat")
+			case <-mLogs.ClickedCh:
+				openURL("http://localhost:" + itoa(port) + "/logs")
 			case <-mSettings.ClickedCh:
 				openFile(config.DefaultConfigPath())
 			case <-mQuit.ClickedCh:
