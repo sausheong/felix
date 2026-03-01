@@ -230,10 +230,10 @@ func (t *BrowserTool) screenshot(ctx context.Context, in browserInput) (ToolResu
 	return ToolResult{
 		Output: fmt.Sprintf("Screenshot captured (%d bytes). The image is attached for visual inspection.", len(buf)),
 		Images: []llm.ImageContent{
-			{MimeType: "image/png", Data: buf},
+			{MimeType: "image/jpeg", Data: buf},
 		},
 		Metadata: map[string]any{
-			"format": "png",
+			"format": "jpeg",
 			"size":   len(buf),
 		},
 	}, nil
