@@ -414,31 +414,32 @@ html.light #header .logo {
 		var html = '';
 		var inUl = false, inOl = false, inP = false;
 
+		function closeAll() {
+			if (inP) { html += '</p>'; inP = false; }
+			if (inUl) { html += '</ul>'; inUl = false; }
+			if (inOl) { html += '</ol>'; inOl = false; }
+		}
+
 		for (var i = 0; i < lines.length; i++) {
 			var t = lines[i].trim();
 
 			// Code block placeholder
 			if (/^__CB\d+__$/.test(t)) {
-				if (inP) { html += '</p>'; inP = false; }
-				if (inUl) { html += '</ul>'; inUl = false; }
-				if (inOl) { html += '</ol>'; inOl = false; }
+				closeAll();
 				html += t;
 				continue;
 			}
 
-			// Empty line
+			// Empty line — close paragraphs but keep lists open
+			// (loose list items separated by blank lines stay in the same list)
 			if (t === '') {
 				if (inP) { html += '</p>'; inP = false; }
-				if (inUl) { html += '</ul>'; inUl = false; }
-				if (inOl) { html += '</ol>'; inOl = false; }
 				continue;
 			}
 
 			// Horizontal rule (before list check so --- isn't a list item)
 			if (/^[-*_]{3,}$/.test(t)) {
-				if (inP) { html += '</p>'; inP = false; }
-				if (inUl) { html += '</ul>'; inUl = false; }
-				if (inOl) { html += '</ol>'; inOl = false; }
+				closeAll();
 				html += '<hr>';
 				continue;
 			}
@@ -446,9 +447,7 @@ html.light #header .logo {
 			// Heading
 			var hm = t.match(/^(#{1,6})\s+(.*)$/);
 			if (hm) {
-				if (inP) { html += '</p>'; inP = false; }
-				if (inUl) { html += '</ul>'; inUl = false; }
-				if (inOl) { html += '</ol>'; inOl = false; }
+				closeAll();
 				var lvl = hm[1].length;
 				html += '<h' + lvl + '>' + inlineMd(hm[2]) + '</h' + lvl + '>';
 				continue;
@@ -474,7 +473,7 @@ html.light #header .logo {
 				continue;
 			}
 
-			// Regular text
+			// Regular text — close any open list first
 			if (inUl) { html += '</ul>'; inUl = false; }
 			if (inOl) { html += '</ol>'; inOl = false; }
 			if (inP) {
