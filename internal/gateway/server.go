@@ -19,6 +19,7 @@ type ServerOptions struct {
 	MetricsHandler http.HandlerFunc // optional /metrics handler
 	UIHandler      http.Handler     // optional /ui handler
 	ChatHandler    http.HandlerFunc // optional /chat handler
+	JobsHandler    http.HandlerFunc // optional /jobs handler
 	LogBuffer      *LogBuffer       // optional log buffer for /logs
 }
 
@@ -80,6 +81,10 @@ func (s *Server) routes() {
 		s.router.Get("/", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/chat", http.StatusFound)
 		})
+	}
+
+	if s.opts.JobsHandler != nil {
+		s.router.Get("/jobs", s.opts.JobsHandler)
 	}
 
 	if s.opts.LogBuffer != nil {

@@ -13,6 +13,8 @@ import (
 
 	"fyne.io/systray"
 
+	"time"
+
 	"github.com/sausheong/goclaw/internal/config"
 	"github.com/sausheong/goclaw/internal/startup"
 )
@@ -89,7 +91,9 @@ func onReady() {
 	systray.SetTooltip("GoClaw")
 
 	// Start gateway in the background
-	result, err := startup.StartGateway("", version)
+	result, err := startup.StartGateway("", version, startup.Options{
+		ConnectTimeout: 30 * time.Second,
+	})
 	if err != nil {
 		slog.Error("failed to start gateway", "error", err)
 		systray.Quit()
@@ -114,6 +118,7 @@ func onReady() {
 
 	// Menu items
 	mChat := systray.AddMenuItem("Chat", "Open chat in browser")
+	mJobs := systray.AddMenuItem("Jobs", "Open jobs in browser")
 	mLogs := systray.AddMenuItem("Logs", "Open logs in browser")
 	mSettings := systray.AddMenuItem("Settings", "Open config file")
 	systray.AddSeparator()
@@ -124,6 +129,8 @@ func onReady() {
 			select {
 			case <-mChat.ClickedCh:
 				openURL("http://localhost:" + itoa(port) + "/chat")
+			case <-mJobs.ClickedCh:
+				openURL("http://localhost:" + itoa(port) + "/jobs")
 			case <-mLogs.ClickedCh:
 				openURL("http://localhost:" + itoa(port) + "/logs")
 			case <-mSettings.ClickedCh:

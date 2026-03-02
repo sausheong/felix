@@ -11,7 +11,11 @@ import (
 // The cron.Scheduler implements this via an adapter in main.go.
 type JobScheduler interface {
 	AddJob(name, schedule, prompt string) error
+	RemoveJob(name string) error
 	ListJobs() []JobInfo
+	PauseJob(name string) error
+	ResumeJob(name string) error
+	UpdateJobSchedule(name, schedule string) error
 }
 
 // JobInfo is a summary of a scheduled job, returned by ListJobs.
@@ -19,6 +23,7 @@ type JobInfo struct {
 	Name     string `json:"name"`
 	Schedule string `json:"schedule"`
 	Prompt   string `json:"prompt"`
+	Paused   bool   `json:"paused"`
 }
 
 // CronTool allows the agent to dynamically schedule recurring tasks.
@@ -27,8 +32,8 @@ type CronTool struct {
 }
 
 type cronInput struct {
-	Action   string `json:"action"`             // "add" or "list"
-	Name     string `json:"name,omitempty"`      // job name (for add)
+	Action   string `json:"action"`             // "add", "remove", or "list"
+	Name     string `json:"name,omitempty"`      // job name (for add/remove)
 	Schedule string `json:"schedule,omitempty"`  // interval e.g. "30m", "1h", "24h" (for add)
 	Prompt   string `json:"prompt,omitempty"`    // prompt to send to the agent (for add)
 }
@@ -36,8 +41,9 @@ type cronInput struct {
 func (t *CronTool) Name() string { return "cron" }
 
 func (t *CronTool) Description() string {
-	return `Schedule or list recurring tasks. Supports two actions:
+	return `Schedule, stop, or list recurring tasks. Supports three actions:
 - "add": Schedule a new recurring job. Requires "name" (unique identifier), "schedule" (Go duration string like "30m", "1h", "24h"), and "prompt" (the instruction to execute each interval).
+- "remove": Stop and remove a scheduled job. Requires "name".
 - "list": List all currently scheduled jobs.
 Use this to set up automated checks, reminders, or periodic tasks.`
 }
@@ -48,8 +54,8 @@ func (t *CronTool) Parameters() json.RawMessage {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["add", "list"],
-				"description": "The action to perform: add a new job or list existing jobs"
+				"enum": ["add", "remove", "list"],
+				"description": "The action to perform: add a new job, remove an existing job, or list all jobs"
 			},
 			"name": {
 				"type": "string",
@@ -81,10 +87,12 @@ func (t *CronTool) Execute(ctx context.Context, input json.RawMessage) (ToolResu
 	switch in.Action {
 	case "add":
 		return t.addJob(in)
+	case "remove":
+		return t.removeJob(in)
 	case "list":
 		return t.listJobs()
 	default:
-		return ToolResult{Error: fmt.Sprintf("unknown action: %q (valid: add, list)", in.Action)}, nil
+		return ToolResult{Error: fmt.Sprintf("unknown action: %q (valid: add, remove, list)", in.Action)}, nil
 	}
 }
 
@@ -109,6 +117,20 @@ func (t *CronTool) addJob(in cronInput) (ToolResult, error) {
 			"name":     in.Name,
 			"schedule": in.Schedule,
 		},
+	}, nil
+}
+
+func (t *CronTool) removeJob(in cronInput) (ToolResult, error) {
+	if in.Name == "" {
+		return ToolResult{Error: "name is required for remove action"}, nil
+	}
+
+	if err := t.Scheduler.RemoveJob(in.Name); err != nil {
+		return ToolResult{Error: fmt.Sprintf("failed to remove job: %v", err)}, nil
+	}
+
+	return ToolResult{
+		Output: fmt.Sprintf("Removed job %q", in.Name),
 	}, nil
 }
 

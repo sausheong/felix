@@ -15,8 +15,10 @@ type mockJobScheduler struct {
 	lastJobName     string
 	lastJobSchedule string
 	lastJobPrompt   string
+	removedName     string
 	jobs            []JobInfo
 	addErr          error
+	removeErr       error
 }
 
 func (m *mockJobScheduler) AddJob(name, schedule, prompt string) error {
@@ -26,8 +28,25 @@ func (m *mockJobScheduler) AddJob(name, schedule, prompt string) error {
 	return m.addErr
 }
 
+func (m *mockJobScheduler) RemoveJob(name string) error {
+	m.removedName = name
+	return m.removeErr
+}
+
 func (m *mockJobScheduler) ListJobs() []JobInfo {
 	return m.jobs
+}
+
+func (m *mockJobScheduler) PauseJob(name string) error {
+	return nil
+}
+
+func (m *mockJobScheduler) ResumeJob(name string) error {
+	return nil
+}
+
+func (m *mockJobScheduler) UpdateJobSchedule(name, schedule string) error {
+	return nil
 }
 
 func TestCronToolName(t *testing.T) {
