@@ -85,7 +85,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			}
 
 			// Assemble context with skills and memory
-			systemPrompt := assembleSystemPrompt(r.Workspace, r.SystemPrompt, r.AgentID, r.AgentName)
+			systemPrompt := assembleSystemPrompt(r.Workspace, r.SystemPrompt, r.AgentID, r.AgentName, r.Tools.Names())
 
 			// Inject relevant skills
 			if r.Skills != nil {

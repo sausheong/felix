@@ -41,15 +41,18 @@ func TestAssembleSystemPromptWithIdentity(t *testing.T) {
 	err := os.WriteFile(filepath.Join(dir, "IDENTITY.md"), []byte(identityContent), 0o644)
 	require.NoError(t, err)
 
-	result := assembleSystemPrompt(dir, "", "test", "Test Agent")
+	result := assembleSystemPrompt(dir, "", "test", "Test Agent", []string{"read_file", "bash"})
 	assert.Contains(t, result, identityContent)
 	assert.Contains(t, result, "configuration file")
 }
 
 func TestAssembleSystemPromptDefault(t *testing.T) {
 	dir := t.TempDir() // no IDENTITY.md
-	result := assembleSystemPrompt(dir, "", "default", "Assistant")
-	assert.Contains(t, result, defaultIdentity)
+	result := assembleSystemPrompt(dir, "", "default", "Assistant", []string{"read_file", "bash"})
+	assert.Contains(t, result, defaultIdentityBase)
+	assert.Contains(t, result, "read files")
+	assert.Contains(t, result, "bash commands")
+	assert.NotContains(t, result, "web_fetch")
 	assert.Contains(t, result, "data directory")
 }
 
@@ -60,15 +63,24 @@ func TestAssembleSystemPromptConfigOverride(t *testing.T) {
 	require.NoError(t, err)
 
 	configPrompt := "You are a custom agent from config."
-	result := assembleSystemPrompt(dir, configPrompt, "custom", "Custom Agent")
+	result := assembleSystemPrompt(dir, configPrompt, "custom", "Custom Agent", []string{"read_file"})
 	assert.Contains(t, result, configPrompt)
 	assert.NotContains(t, result, "identity file content")
 }
 
 func TestAssembleSystemPromptSelfIdentity(t *testing.T) {
 	dir := t.TempDir()
-	result := assembleSystemPrompt(dir, "", "supervisor", "Supervisor")
+	result := assembleSystemPrompt(dir, "", "supervisor", "Supervisor", nil)
 	assert.Contains(t, result, `"Supervisor" agent (id: supervisor)`)
+}
+
+func TestBuildDefaultIdentityToolSpecific(t *testing.T) {
+	result := buildDefaultIdentity([]string{"read_file", "web_search", "web_fetch"})
+	assert.Contains(t, result, "read files")
+	assert.Contains(t, result, "search the web")
+	assert.Contains(t, result, "fetch web pages")
+	assert.NotContains(t, result, "bash commands")
+	assert.NotContains(t, result, "send_message")
 }
 
 // --- assembleMessages tests ---

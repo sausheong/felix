@@ -33,7 +33,43 @@ func detectImageMIME(data []byte, hint string) string {
 	return hint
 }
 
-const defaultIdentity = `You are a helpful AI assistant called GoClaw. You can read files, write files, edit files, execute bash commands on the user's machine, fetch web pages, search the web, automate a headless browser, send messages to other channels, and schedule recurring tasks. You have vision capabilities — you can see and analyze images. Be concise and helpful. When executing tasks, think step by step and use your tools to accomplish the user's goals. When asked to access websites, use the web_fetch tool or the browser tool for interactive pages. When asked to search for information, use the web_search tool. When asked to schedule recurring tasks, use the cron tool. When asked to send messages to other users or channels, use the send_message tool. When you need to visually inspect images (screenshots, photos, camera feeds, etc.), use read_file on the image file or use the browser tool's screenshot action — both return the image for you to see and describe. Do not say you cannot see or analyze images.`
+const defaultIdentityBase = `You are a helpful AI assistant called GoClaw. Be concise and helpful. When executing tasks, think step by step and use your tools to accomplish the user's goals.`
+
+// toolHints maps tool names to usage guidance injected into the default identity.
+var toolHints = map[string]string{
+	"read_file":    "You can read files. You have vision capabilities — you can see and analyze images by using read_file on image files. Do not say you cannot see or analyze images.",
+	"write_file":   "You can create or overwrite files.",
+	"edit_file":    "You can make targeted edits to existing files.",
+	"bash":         "You can execute bash commands on the user's machine.",
+	"web_fetch":    "You can fetch web pages using the web_fetch tool.",
+	"web_search":   "You can search the web using the web_search tool.",
+	"browser":      "You can automate a headless browser for interactive pages using the browser tool.",
+	"send_message": "You can send messages to other users or channels using the send_message tool.",
+	"cron":         "You can schedule recurring tasks using the cron tool.",
+	"ask_agent":    "You can delegate tasks to other agents using the ask_agent tool.",
+}
+
+// buildDefaultIdentity constructs the default identity prompt tailored to
+// the tools actually available to this agent.
+func buildDefaultIdentity(toolNames []string) string {
+	if len(toolNames) == 0 {
+		return defaultIdentityBase
+	}
+	available := make(map[string]bool, len(toolNames))
+	for _, name := range toolNames {
+		available[name] = true
+	}
+	var hints []string
+	for _, name := range toolNames {
+		if h, ok := toolHints[name]; ok {
+			hints = append(hints, h)
+		}
+	}
+	if len(hints) == 0 {
+		return defaultIdentityBase
+	}
+	return defaultIdentityBase + " " + strings.Join(hints, " ")
+}
 
 // assembleSystemPrompt builds the system prompt. Priority:
 //  1. systemPrompt from config (if non-empty)
@@ -42,7 +78,7 @@ const defaultIdentity = `You are a helpful AI assistant called GoClaw. You can r
 //
 // The config and data directory paths are always appended so the agent
 // knows where to find its own configuration.
-func assembleSystemPrompt(workspace, systemPrompt, agentID, agentName string) string {
+func assembleSystemPrompt(workspace, systemPrompt, agentID, agentName string, toolNames []string) string {
 	var base string
 	if systemPrompt != "" {
 		base = systemPrompt
@@ -50,7 +86,7 @@ func assembleSystemPrompt(workspace, systemPrompt, agentID, agentName string) st
 		identityPath := filepath.Join(workspace, "IDENTITY.md")
 		data, err := os.ReadFile(identityPath)
 		if err != nil {
-			base = defaultIdentity
+			base = buildDefaultIdentity(toolNames)
 		} else {
 			base = string(data)
 		}
