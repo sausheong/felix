@@ -280,6 +280,17 @@ func runChat(agentID, configPath, modelOverride string) error {
 		}()
 	}
 
+	// Register ask_agent tool for inter-agent delegation.
+	// Build a full providers map so delegated agents can use different models.
+	allProviders := startup.InitProviders(cfg)
+	chatAgentRunner := gateway.NewAgentRunner(allProviders, cfg, sessionStore)
+	if len(sender.channels) > 0 {
+		chatAgentRunner.SetSender(sender)
+	}
+	chatAgentRunner.SetSkills(skillLoader)
+	chatAgentRunner.SetMemory(memMgr)
+	tools.RegisterAskAgent(toolReg, chatAgentRunner)
+
 	// Init cron scheduler for chat mode so the agent can use the cron tool
 	cronScheduler := cron.NewScheduler()
 
@@ -605,6 +616,10 @@ func formatToolCallHeader(name string, input json.RawMessage) string {
 		id := get("chat_id")
 		if ch != "" && id != "" {
 			return fmt.Sprintf("→ %s/%s", ch, id)
+		}
+	case "ask_agent":
+		if a := get("agent_id"); a != "" {
+			return fmt.Sprintf("→ %s", a)
 		}
 	}
 	return ""

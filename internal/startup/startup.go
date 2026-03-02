@@ -266,6 +266,13 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// Register send_message tool with channel manager as the sender
 	tools.RegisterSendMessage(toolReg, chanMgr)
 
+	// Register ask_agent tool for inter-agent delegation
+	agentRunner := gateway.NewAgentRunner(providers, cfg, sessionStore)
+	agentRunner.SetSender(chanMgr)
+	agentRunner.SetSkills(skillLoader)
+	agentRunner.SetMemory(memMgr)
+	tools.RegisterAskAgent(toolReg, agentRunner)
+
 	// Config hot-reload
 	var configWatcher *config.Watcher
 	if cfg.Path() != "" {
