@@ -179,6 +179,23 @@ html.light #header .logo {
 .msg.assistant .content a { color: var(--accent2); }
 .msg.assistant .content strong { color: var(--text-strong); }
 .msg.assistant .content em { color: var(--text-em); }
+.msg.assistant .content h1,
+.msg.assistant .content h2,
+.msg.assistant .content h3,
+.msg.assistant .content h4,
+.msg.assistant .content h5,
+.msg.assistant .content h6 {
+	margin: 0.75em 0 0.25em;
+	color: var(--text-strong);
+}
+.msg.assistant .content h1 { font-size: 1.4em; }
+.msg.assistant .content h2 { font-size: 1.2em; }
+.msg.assistant .content h3 { font-size: 1.05em; }
+.msg.assistant .content hr {
+	border: none;
+	border-top: 1px solid var(--border);
+	margin: 0.75em 0;
+}
 .msg.assistant .content ul, .msg.assistant .content ol {
 	margin: 0.5em 0 0.5em 1.5em;
 }
@@ -371,26 +388,113 @@ html.light #header .logo {
 	var sending = false;
 	var reconnectTimer = null;
 
-	// Simple markdown renderer (no CDN)
-	function renderMd(text) {
-		var html = text;
-		// Code blocks
-		html = html.replace(/` + "```" + `(\\w*)\n([\s\S]*?)` + "```" + `/g, function(_, lang, code) {
-			return '<pre><code>' + escHtml(code.trimEnd()) + '</code></pre>';
+	// Inline markdown: code, bold, italic, links
+	function inlineMd(s) {
+		s = s.replace(/` + "`" + `([^` + "`" + `]+)` + "`" + `/g, function(_, code) {
+			return '<code>' + escHtml(code) + '</code>';
 		});
-		// Inline code
-		html = html.replace(/` + "`" + `([^` + "`" + `]+)` + "`" + `/g, '<code>$1</code>');
-		// Bold
-		html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-		// Italic
-		html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-		// Links
-		html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-		// Paragraphs (split by double newlines)
-		html = html.replace(/\n\n+/g, '</p><p>');
-		// Single newlines to <br>
-		html = html.replace(/\n/g, '<br>');
-		return '<p>' + html + '</p>';
+		s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+		s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+		s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+		return s;
+	}
+
+	// Block-level markdown renderer
+	function renderMd(text) {
+		// 1. Extract code blocks into placeholders
+		var codeBlocks = [];
+		var s = text.replace(/` + "```" + `(\\w*)\n([\\s\\S]*?)` + "```" + `/g, function(_, lang, code) {
+			var idx = codeBlocks.length;
+			codeBlocks.push('<pre><code>' + escHtml(code.trimEnd()) + '</code></pre>');
+			return '__CB' + idx + '__';
+		});
+
+		// 2. Process lines
+		var lines = s.split('\n');
+		var html = '';
+		var inUl = false, inOl = false, inP = false;
+
+		for (var i = 0; i < lines.length; i++) {
+			var t = lines[i].trim();
+
+			// Code block placeholder
+			if (/^__CB\d+__$/.test(t)) {
+				if (inP) { html += '</p>'; inP = false; }
+				if (inUl) { html += '</ul>'; inUl = false; }
+				if (inOl) { html += '</ol>'; inOl = false; }
+				html += t;
+				continue;
+			}
+
+			// Empty line
+			if (t === '') {
+				if (inP) { html += '</p>'; inP = false; }
+				if (inUl) { html += '</ul>'; inUl = false; }
+				if (inOl) { html += '</ol>'; inOl = false; }
+				continue;
+			}
+
+			// Horizontal rule (before list check so --- isn't a list item)
+			if (/^[-*_]{3,}$/.test(t)) {
+				if (inP) { html += '</p>'; inP = false; }
+				if (inUl) { html += '</ul>'; inUl = false; }
+				if (inOl) { html += '</ol>'; inOl = false; }
+				html += '<hr>';
+				continue;
+			}
+
+			// Heading
+			var hm = t.match(/^(#{1,6})\s+(.*)$/);
+			if (hm) {
+				if (inP) { html += '</p>'; inP = false; }
+				if (inUl) { html += '</ul>'; inUl = false; }
+				if (inOl) { html += '</ol>'; inOl = false; }
+				var lvl = hm[1].length;
+				html += '<h' + lvl + '>' + inlineMd(hm[2]) + '</h' + lvl + '>';
+				continue;
+			}
+
+			// Unordered list item
+			var um = t.match(/^[-*]\s+(.*)$/);
+			if (um) {
+				if (inP) { html += '</p>'; inP = false; }
+				if (inOl) { html += '</ol>'; inOl = false; }
+				if (!inUl) { html += '<ul>'; inUl = true; }
+				html += '<li>' + inlineMd(um[1]) + '</li>';
+				continue;
+			}
+
+			// Ordered list item
+			var om = t.match(/^\d+[.)]\s+(.*)$/);
+			if (om) {
+				if (inP) { html += '</p>'; inP = false; }
+				if (inUl) { html += '</ul>'; inUl = false; }
+				if (!inOl) { html += '<ol>'; inOl = true; }
+				html += '<li>' + inlineMd(om[1]) + '</li>';
+				continue;
+			}
+
+			// Regular text
+			if (inUl) { html += '</ul>'; inUl = false; }
+			if (inOl) { html += '</ol>'; inOl = false; }
+			if (inP) {
+				html += '<br>' + inlineMd(t);
+			} else {
+				html += '<p>' + inlineMd(t);
+				inP = true;
+			}
+		}
+
+		if (inP) html += '</p>';
+		if (inUl) html += '</ul>';
+		if (inOl) html += '</ol>';
+
+		// 3. Restore code blocks
+		for (var i = 0; i < codeBlocks.length; i++) {
+			html = html.replace('__CB' + i + '__', codeBlocks[i]);
+		}
+
+		return html;
 	}
 
 	function escHtml(s) {
