@@ -100,7 +100,31 @@ html.light #header .logo {
 	color: var(--text);
 	transition: border-color 0.3s;
 }
-#theme-btn:hover { border-color: var(--accent); }
+#theme-btn:hover, #clear-btn:hover, #agent-select:hover { border-color: var(--accent); }
+#agent-select {
+	background: var(--bg-input);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.3rem 0.5rem;
+	font-size: 0.85rem;
+	color: var(--text);
+	font-family: inherit;
+	outline: none;
+	cursor: pointer;
+	transition: background 0.3s, border-color 0.3s, color 0.3s;
+}
+#agent-select:focus { border-color: var(--accent); }
+#clear-btn {
+	background: none;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.3rem 0.5rem;
+	cursor: pointer;
+	font-size: 0.8rem;
+	line-height: 1;
+	color: var(--text);
+	transition: border-color 0.3s;
+}
 #messages {
 	flex: 1;
 	overflow-y: auto;
@@ -248,13 +272,29 @@ html.light #header .logo {
 }
 #send-btn:hover { opacity: 0.85; }
 #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+#stop-btn {
+	background: var(--error);
+	color: #fff;
+	border: none;
+	border-radius: 8px;
+	padding: 0 1.25rem;
+	font-size: 0.95rem;
+	font-weight: 600;
+	cursor: pointer;
+	transition: opacity 0.2s, background 0.3s;
+	align-self: flex-end;
+	height: 40px;
+	display: none;
+}
+#stop-btn:hover { opacity: 0.85; }
 </style>
 </head>
 <body>
 <div id="header">
-	<img class="logo" src="data:image/png;base64,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" alt="GoClaw">
 	<h1>GoClaw</h1>
+	<select id="agent-select" title="Select agent"></select>
 	<span class="spacer"></span>
+	<button id="clear-btn" title="Clear session">Clear</button>
 	<button id="theme-btn" title="Toggle light/dark mode">&#9790;</button>
 	<span class="status" id="conn-status">connecting...</span>
 </div>
@@ -262,6 +302,7 @@ html.light #header .logo {
 <div id="input-area">
 	<textarea id="input" rows="1" placeholder="Type a message..." autofocus></textarea>
 	<button id="send-btn" disabled>Send</button>
+	<button id="stop-btn">Stop</button>
 </div>
 
 <script>
@@ -272,6 +313,9 @@ html.light #header .logo {
 	var sendBtn = document.getElementById('send-btn');
 	var connStatus = document.getElementById('conn-status');
 	var themeBtn = document.getElementById('theme-btn');
+	var clearBtn = document.getElementById('clear-btn');
+	var stopBtn = document.getElementById('stop-btn');
+	var agentSelect = document.getElementById('agent-select');
 
 	// Theme toggle
 	function setTheme(mode) {
@@ -293,6 +337,32 @@ html.light #header .logo {
 	themeBtn.addEventListener('click', function() {
 		var current = document.documentElement.classList.contains('light') ? 'light' : 'dark';
 		setTheme(current === 'light' ? 'dark' : 'light');
+	});
+
+	clearBtn.addEventListener('click', function() {
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		ws.send(JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'session.clear',
+			params: { agentId: agentSelect.value },
+			id: 'clear'
+		}));
+		messagesEl.innerHTML = '';
+		currentAssistant = null;
+		toolEls = {};
+	});
+
+	agentSelect.addEventListener('change', function() {
+		messagesEl.innerHTML = '';
+		currentAssistant = null;
+		toolEls = {};
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		ws.send(JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'session.history',
+			params: { agentId: agentSelect.value },
+			id: 'history'
+		}));
 	});
 
 	var ws = null;
@@ -341,6 +411,13 @@ html.light #header .logo {
 				clearTimeout(reconnectTimer);
 				reconnectTimer = null;
 			}
+			// Fetch available agents first, then load history
+			ws.send(JSON.stringify({
+				jsonrpc: '2.0',
+				method: 'agent.status',
+				params: {},
+				id: 'agents'
+			}));
 		};
 
 		ws.onclose = function() {
@@ -364,6 +441,54 @@ html.light #header .logo {
 					return;
 				}
 				if (!resp.result) return;
+
+				// Handle agent.status response
+				if (resp.id === 'agents') {
+					var agents = resp.result.agents || [];
+					agentSelect.innerHTML = '';
+					for (var i = 0; i < agents.length; i++) {
+						var opt = document.createElement('option');
+						opt.value = agents[i].id;
+						opt.textContent = agents[i].name || agents[i].id;
+						agentSelect.appendChild(opt);
+					}
+					if (agents.length === 0) {
+						var opt = document.createElement('option');
+						opt.value = 'default';
+						opt.textContent = 'default';
+						agentSelect.appendChild(opt);
+					}
+					// Load session history for the selected agent
+					ws.send(JSON.stringify({
+						jsonrpc: '2.0',
+						method: 'session.history',
+						params: { agentId: agentSelect.value },
+						id: 'history'
+					}));
+					return;
+				}
+
+				// Handle history response
+				if (resp.id === 'history') {
+					var entries = resp.result.entries || [];
+					for (var i = 0; i < entries.length; i++) {
+						var entry = entries[i];
+						if (entry.type === 'message' && entry.role === 'user') {
+							addUserMsg(entry.text);
+						} else if (entry.type === 'message' && entry.role === 'assistant') {
+							var bubble = addAssistantMsg();
+							bubble.raw = entry.text;
+							bubble.content.innerHTML = renderMd(entry.text);
+						} else if (entry.type === 'tool_call') {
+							addToolCall(entry.tool, entry.id, entry.input);
+						} else if (entry.type === 'tool_result') {
+							updateToolResult(null, entry.tool_call_id, null, entry.output, entry.error);
+						}
+					}
+					scrollToBottom();
+					return;
+				}
+
 				var r = resp.result;
 
 				switch (r.type) {
@@ -384,6 +509,14 @@ html.light #header .logo {
 					updateToolResult(r.tool, r.id, r.input, r.output, r.error);
 					break;
 				case 'done':
+					if (currentAssistant) {
+						finalizeAssistant();
+					}
+					currentAssistant = null;
+					sending = false;
+					updateSendBtn();
+					break;
+				case 'aborted':
 					if (currentAssistant) {
 						finalizeAssistant();
 					}
@@ -550,7 +683,14 @@ html.light #header .logo {
 	}
 
 	function updateSendBtn() {
-		sendBtn.disabled = sending || !ws || ws.readyState !== WebSocket.OPEN;
+		if (sending) {
+			sendBtn.style.display = 'none';
+			stopBtn.style.display = 'block';
+		} else {
+			sendBtn.style.display = 'block';
+			stopBtn.style.display = 'none';
+			sendBtn.disabled = !ws || ws.readyState !== WebSocket.OPEN;
+		}
 	}
 
 	function sendMessage() {
@@ -566,7 +706,7 @@ html.light #header .logo {
 		ws.send(JSON.stringify({
 			jsonrpc: '2.0',
 			method: 'chat.send',
-			params: { agentId: 'default', text: text },
+			params: { agentId: agentSelect.value, text: text },
 			id: msgId
 		}));
 
@@ -575,6 +715,16 @@ html.light #header .logo {
 	}
 
 	sendBtn.addEventListener('click', sendMessage);
+
+	stopBtn.addEventListener('click', function() {
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		ws.send(JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'chat.abort',
+			params: {},
+			id: 'abort'
+		}));
+	});
 
 	inputEl.addEventListener('keydown', function(e) {
 		if (e.key === 'Enter' && !e.shiftKey) {
