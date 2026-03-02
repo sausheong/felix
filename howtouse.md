@@ -20,6 +20,7 @@ GoClaw is a self-hosted AI agent gateway. It runs as a single binary on your mac
 - [Browser Tool](#browser-tool)
 - [Send Message Tool](#send-message-tool)
 - [Dynamic Cron Tool](#dynamic-cron-tool)
+- [Ask Agent Tool](#ask-agent-tool)
 - [Tool Policies](#tool-policies)
 - [WebSocket API](#websocket-api)
 - [Security](#security)
@@ -135,8 +136,11 @@ A claw machine icon appears in the menu bar. The gateway starts automatically in
 
 Clicking **Open GoClaw Chat** (or visiting `http://localhost:18789/chat` directly) opens a web-based chat interface with:
 
+- **Agent selector** — a dropdown in the header lists all configured agents; switch between them without leaving the page. Each agent maintains its own session history, which is loaded when you select it.
 - **Streaming responses** — text appears as the LLM generates it
+- **Abort** — click the Stop button to cancel a response in progress
 - **Light/dark mode** — toggle via the moon/sun button in the header; preference is saved across sessions
+- **Session management** — Clear button wipes the current agent's session; switching agents loads that agent's history
 - **Tool call display** — tool invocations appear inline with collapsible output
 - **Markdown rendering** — code blocks, bold, italic, and links are rendered
 - **Auto-reconnect** — if the WebSocket connection drops, it reconnects automatically
@@ -759,6 +763,10 @@ goclaw chat researcher
 goclaw chat local
 ```
 
+### Inter-agent delegation
+
+Agents can delegate subtasks to other agents using the `ask_agent` tool. This enables supervisor/worker patterns where a powerful model orchestrates cheaper or specialized models. See [Ask Agent Tool](#ask-agent-tool) for details.
+
 ### Agent identity
 
 Each agent can have a custom identity by placing an `IDENTITY.md` file in its workspace:
@@ -1126,6 +1134,101 @@ Both use the same underlying scheduler. Static jobs are ideal for always-on task
 
 ---
 
+## Ask Agent Tool
+
+The `ask_agent` tool lets an agent delegate a task to another configured agent and get back the result. This enables multi-agent workflows where a supervisor agent can orchestrate specialized worker agents — for example, a powerful model delegating subtasks to cheaper or faster models.
+
+### Enable for an agent
+
+Add `ask_agent` to the supervisor agent's tool allow list:
+
+```json5
+{
+  "tools": {
+    "allow": ["read_file", "bash", "ask_agent"]
+  }
+}
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `agent_id` | string | The ID of the agent to delegate to (must match an agent in config) |
+| `prompt` | string | The instruction or task for the target agent to perform |
+
+The tool's description dynamically lists all available agents so the LLM knows which agents it can delegate to.
+
+### Example conversation
+
+```
+You: Research the top 3 trending Go libraries this week, then have the coder agent
+     write a summary file.
+
+Supervisor: [uses ask_agent: agent_id="researcher", prompt="Find the top 3 trending
+             Go libraries this week with brief descriptions"]
+            [researcher agent uses web_search, returns results]
+            [uses ask_agent: agent_id="coder", prompt="Write a file at /tmp/trending-go.md
+             summarizing these libraries: 1. ..."]
+            [coder agent uses write_file, returns confirmation]
+            Done! I delegated the research to the researcher agent and had the coder
+            agent write the summary to /tmp/trending-go.md.
+```
+
+### Example config
+
+```json5
+{
+  "agents": {
+    "list": [
+      {
+        "id": "supervisor",
+        "name": "Supervisor",
+        "model": "anthropic/claude-sonnet-4-5-20250514",
+        "tools": {
+          "allow": ["read_file", "ask_agent"]
+        }
+      },
+      {
+        "id": "researcher",
+        "name": "Researcher",
+        "model": "openai/gpt-4o",
+        "tools": {
+          "allow": ["read_file", "web_fetch", "web_search"]
+        }
+      },
+      {
+        "id": "coder",
+        "name": "Coder",
+        "model": "anthropic/claude-haiku-3-5-20241022",
+        "tools": {
+          "allow": ["read_file", "write_file", "edit_file", "bash"]
+        }
+      }
+    ]
+  }
+}
+```
+
+### How it works
+
+- The delegated agent runs with its own **independent session** (keyed as `delegate_{agentID}`) so it doesn't pollute any channel session history
+- The delegated agent uses its own **tool policy** — it only gets the tools allowed by its own config
+- The delegated agent uses its own **model** — so you can have a powerful supervisor delegating to cheaper/faster workers
+
+### Recursion prevention
+
+To prevent infinite delegation loops, the delegated agent does **not** get the `ask_agent` tool registered in its tool set. Delegation is limited to one level deep: a supervisor can ask a worker, but the worker cannot further delegate.
+
+### Use cases
+
+- **Supervisor/worker** — A powerful model (Claude Opus) orchestrates cheaper models (Haiku) for subtasks like file I/O or simple lookups
+- **Specialized agents** — A general-purpose agent delegates coding tasks to a coder agent and research tasks to a researcher agent
+- **Cost optimization** — Use an expensive model only for orchestration while delegating the bulk of work to cheaper models
+- **Model mixing** — Combine strengths of different providers (e.g., Claude for reasoning, GPT for web search, Ollama for local-only tasks)
+
+---
+
 ## Tool Policies
 
 Each agent can have its own tool allow/deny list, controlling what actions it can perform.
@@ -1143,6 +1246,7 @@ Each agent can have its own tool allow/deny list, controlling what actions it ca
 | `browser` | Headless Chrome automation (navigate, click, type, screenshot, evaluate JS) |
 | `send_message` | Send a message to a user/group on any connected channel |
 | `cron` | Dynamically schedule or list recurring tasks |
+| `ask_agent` | Delegate a task to another agent and get back the result |
 
 ### Policy examples
 
@@ -1253,8 +1357,11 @@ ws.send(JSON.stringify({
 | Method | Description |
 |--------|-------------|
 | `chat.send` | Send a message to an agent (streams response events) |
+| `chat.abort` | Cancel the active response for this connection |
 | `agent.status` | List all configured agents |
 | `session.list` | List sessions |
+| `session.history` | Load conversation history for an agent |
+| `session.clear` | Clear an agent's session history |
 
 ### Using curl to check health
 
@@ -1362,6 +1469,13 @@ Control how the agent responds to unknown senders on messaging channels:
   "agents": {
     "list": [
       {
+        "id": "lead",
+        "name": "Tech Lead",
+        "model": "anthropic/claude-sonnet-4-5-20250514",
+        // The lead can delegate to the coder or reviewer
+        "tools": { "allow": ["read_file", "bash", "ask_agent"] }
+      },
+      {
         "id": "coder",
         "name": "Senior Developer",
         "model": "anthropic/claude-sonnet-4-5-20250514",
@@ -1382,7 +1496,7 @@ Control how the agent responds to unknown senders on messaging channels:
     ]
   },
   "bindings": [
-    { "agentId": "coder",    "match": { "channel": "cli" } },
+    { "agentId": "lead",     "match": { "channel": "cli" } },
     { "agentId": "reviewer", "match": { "channel": "telegram", "peer": { "kind": "group" } } },
     { "agentId": "quick",    "match": { "channel": "telegram" } }
   ],
@@ -1392,6 +1506,8 @@ Control how the agent responds to unknown senders on messaging channels:
   }
 }
 ```
+
+The lead agent can use `ask_agent` to delegate coding tasks to the coder and review tasks to the reviewer, while keeping orchestration control.
 
 ### Locked-down read-only agent (safe for shared use)
 

@@ -15,12 +15,13 @@ GoClaw connects messaging channels (Telegram, WhatsApp, CLI) to LLMs (Claude, GP
 - **Three interfaces** — Telegram (mobile/remote), WhatsApp (personal messaging), CLI (local terminal)
 - **Model-agnostic** — Claude, GPT, Gemini, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible API
 - **Multi-agent** — run multiple agents with different models, tools, and personas
+- **Inter-agent delegation** — agents can delegate subtasks to other agents via the `ask_agent` tool
 - **Persistent memory** — BM25 search over Markdown files, recalled automatically each turn
 - **Skill system** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance
 - **Heartbeat daemon** — proactive agent actions on a schedule via HEARTBEAT.md checklists
 - **Cron jobs** — recurring prompts on configurable intervals
 - **Vision/image support** — send photos via Telegram, WhatsApp, or CLI and the LLM describes/analyzes them
-- **Tool policies** — per-agent allow/deny lists for all nine tools
+- **Tool policies** — per-agent allow/deny lists for all ten tools
 - **Session persistence** — append-only JSONL files with DAG structure and branching
 - **Config hot-reload** — edit goclaw.json5 while running, changes apply immediately
 - **WebSocket API** — JSON-RPC 2.0 control plane for programmatic access
@@ -116,6 +117,7 @@ This produces `GoClaw.app` — a native macOS app bundle you can double-click or
 
 The app serves a chat page at `http://localhost:18789/chat` (also accessible at `http://localhost:18789`). Features:
 
+- Agent selector dropdown — switch between configured agents without leaving the page
 - Streaming responses via WebSocket
 - Light/dark mode toggle (persisted in browser)
 - Inline tool call display with collapsible output
@@ -311,7 +313,7 @@ The naming convention is `{PROVIDER}_API_KEY` (or `{PROVIDER}_AUTH_TOKEN`), and 
         "model": "anthropic/claude-sonnet-4-5-20250514",
         "workspace": "~/.goclaw/workspace-default",
         "tools": {
-          "allow": ["read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "send_message", "cron"]
+          "allow": ["read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "send_message", "cron", "ask_agent"]
         }
       }
     ]
@@ -340,7 +342,7 @@ The naming convention is `{PROVIDER}_API_KEY` (or `{PROVIDER}_AUTH_TOKEN`), and 
 
 ## Tools
 
-Nine built-in tools that agents can use:
+Ten built-in tools that agents can use:
 
 | Tool | Description |
 |------|-------------|
@@ -353,6 +355,7 @@ Nine built-in tools that agents can use:
 | `browser` | Headless Chrome automation (navigate, click, type, screenshot, evaluate JS) |
 | `send_message` | Send a message to a user/group on any connected channel |
 | `cron` | Dynamically schedule or list recurring tasks |
+| `ask_agent` | Delegate a task to another agent and get back the result |
 
 Tool access is controlled per-agent via allow/deny policies.
 
@@ -386,8 +389,11 @@ JSON-RPC 2.0 over WebSocket at `ws://127.0.0.1:18789/ws`.
 | Method | Description |
 |--------|-------------|
 | `chat.send` | Send a message to an agent (streams response events) |
+| `chat.abort` | Cancel the active response for this connection |
 | `agent.status` | List all configured agents |
 | `session.list` | List sessions |
+| `session.history` | Load conversation history for an agent |
+| `session.clear` | Clear an agent's session history |
 
 HTTP endpoints: `GET /health` (health check), `GET /ws` (WebSocket), `GET /metrics` (Prometheus metrics), `GET /ui` (control panel), `GET /chat` (web chat interface).
 
@@ -482,6 +488,7 @@ Per-package test coverage:
 | Heartbeat daemon | Yes | Yes |
 | Cron scheduling | Yes | Yes |
 | Config hot-reload | Yes | Yes |
+| Inter-agent delegation | No | Yes |
 | Tool policies | Yes | Yes |
 | Docker sandboxing | Yes | Yes |
 | Browser automation (CDP) | Yes | Yes |
