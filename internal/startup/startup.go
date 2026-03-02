@@ -131,6 +131,10 @@ func (a *CronSchedulerAdapter) AddJob(name, schedule, prompt string) error {
 	return nil
 }
 
+func (a *CronSchedulerAdapter) RemoveJob(name string) error {
+	return a.Scheduler.Remove(name)
+}
+
 func (a *CronSchedulerAdapter) ListJobs() []tools.JobInfo {
 	jobs := a.Scheduler.Jobs()
 	infos := make([]tools.JobInfo, len(jobs))
@@ -139,18 +143,46 @@ func (a *CronSchedulerAdapter) ListJobs() []tools.JobInfo {
 			Name:     j.Name,
 			Schedule: j.Schedule,
 			Prompt:   j.Prompt,
+			Paused:   j.Paused,
 		}
 	}
 	return infos
 }
 
+func (a *CronSchedulerAdapter) PauseJob(name string) error {
+	return a.Scheduler.Pause(name)
+}
+
+func (a *CronSchedulerAdapter) ResumeJob(name string) error {
+	return a.Scheduler.Resume(name)
+}
+
+func (a *CronSchedulerAdapter) UpdateJobSchedule(name, schedule string) error {
+	return a.Scheduler.UpdateSchedule(name, schedule)
+}
+
+// Options configures gateway startup behavior.
+type Options struct {
+	// ConnectTimeout is the per-channel connect timeout. Zero means no
+	// timeout (channels block until connected). Set this for headless
+	// environments where interactive channel setup is not possible.
+	ConnectTimeout time.Duration
+}
+
 // StartGateway starts the full gateway server and returns the result.
 // The caller is responsible for calling Result.Cleanup() on shutdown and
 // starting the HTTP server via Result.Server.Start() in a goroutine.
-func StartGateway(configPath, version string) (*Result, error) {
+func StartGateway(configPath, version string, opts ...Options) (*Result, error) {
+	var opt Options
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	// Install a tee log handler that captures entries for the /logs page
-	// while forwarding to the original handler.
-	logBuf := gateway.NewLogBuffer(2000, slog.Default().Handler())
+	// while forwarding to a stderr handler. We create a fresh TextHandler
+	// rather than using slog.Default().Handler() because in Go 1.22+ the
+	// default handler routes through log.Logger which routes back through
+	// slog.Default(), creating a deadlock when LogBuffer replaces it.
+	logBuf := gateway.NewLogBuffer(2000, slog.NewTextHandler(os.Stderr, nil))
 	slog.SetDefault(slog.New(logBuf))
 
 	cfg, err := config.Load(configPath)
@@ -200,9 +232,12 @@ func StartGateway(configPath, version string) (*Result, error) {
 	msgRouter := router.NewRouter(cfg.Bindings, fallbackAgent)
 
 	// Init channel manager
-	chanMgr := gateway.NewChannelManager(msgRouter, providers, toolReg, sessionStore, cfg)
+	chanMgr := gateway.NewChannelManager(msgRouter, providers, toolReg, sessionStore, cfg, cfg.Security.DMPolicy.UnknownSenders)
 	chanMgr.SetSkills(skillLoader)
 	chanMgr.SetMemory(memMgr)
+	if opt.ConnectTimeout > 0 {
+		chanMgr.SetConnectTimeout(opt.ConnectTimeout)
+	}
 
 	// Register Telegram channel if configured
 	if cfg.Channels.Telegram.Token != "" {
@@ -223,7 +258,7 @@ func StartGateway(configPath, version string) (*Result, error) {
 		}
 	}
 	if waDBPath != "" {
-		waChan := channel.NewWhatsAppChannel(waDBPath)
+		waChan := channel.NewWhatsAppChannel(waDBPath, cfg.Channels.WhatsApp.AllowedSenders)
 		chanMgr.Register(waChan)
 		slog.Info("whatsapp channel registered")
 	}
@@ -269,6 +304,7 @@ func StartGateway(configPath, version string) (*Result, error) {
 
 			agentWorkspace := agentCfg.Workspace
 			agentID := agentCfg.ID
+			agentMaxTurns := agentCfg.MaxTurns
 
 			agentFn := func(ctx context.Context, prompt string) (string, error) {
 				sess := session.NewSession(agentID, "heartbeat")
@@ -282,6 +318,7 @@ func StartGateway(configPath, version string) (*Result, error) {
 					Session:   sess,
 					Model:     modelName,
 					Workspace: agentWorkspace,
+					MaxTurns:  agentMaxTurns,
 					Skills:    skillLoader,
 					Memory:    memMgr,
 				}
@@ -305,6 +342,7 @@ func StartGateway(configPath, version string) (*Result, error) {
 			}
 			agentWorkspace := agentCfg.Workspace
 			agentID := agentCfg.ID
+			agentMaxTurns := agentCfg.MaxTurns
 			jobPrompt := cronJob.Prompt
 
 			agentFn := func(ctx context.Context, prompt string) (string, error) {
@@ -318,6 +356,7 @@ func StartGateway(configPath, version string) (*Result, error) {
 					Session:   sess,
 					Model:     modelName,
 					Workspace: agentWorkspace,
+					MaxTurns:  agentMaxTurns,
 					Skills:    skillLoader,
 					Memory:    memMgr,
 				}
@@ -333,7 +372,7 @@ func StartGateway(configPath, version string) (*Result, error) {
 		}
 	}
 
-	tools.RegisterCron(toolReg, &CronSchedulerAdapter{
+	cronAdapter := &CronSchedulerAdapter{
 		Scheduler: cronScheduler,
 		Ctx:       ctx,
 		AgentFactory: func(jobName string) func(context.Context, string) (string, error) {
@@ -354,13 +393,16 @@ func StartGateway(configPath, version string) (*Result, error) {
 					Session:   cronSess,
 					Model:     mName,
 					Workspace: defaultCfg.Workspace,
+					MaxTurns:  defaultCfg.MaxTurns,
 					Skills:    skillLoader,
 					Memory:    memMgr,
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
 		},
-	})
+	}
+	tools.RegisterCron(toolReg, cronAdapter)
+	wsHandler.SetJobScheduler(cronAdapter)
 
 	if len(cronScheduler.Jobs()) > 0 {
 		cronScheduler.Start(ctx)
@@ -370,11 +412,13 @@ func StartGateway(configPath, version string) (*Result, error) {
 	metrics := gateway.NewMetrics()
 
 	// Start gateway HTTP server
-	srv := gateway.NewServer(cfg.Gateway.Host, cfg.Gateway.Port, wsHandler, gateway.ServerOptions{
+	port := cfg.Gateway.Port
+	srv := gateway.NewServer(cfg.Gateway.Host, port, wsHandler, gateway.ServerOptions{
 		AuthToken:      cfg.Gateway.Auth.Token,
 		MetricsHandler: metrics.Handler(),
 		UIHandler:      gateway.NewUIHandler(cfg, version),
-		ChatHandler:    gateway.NewChatHandler(cfg.Gateway.Port),
+		ChatHandler:    gateway.NewChatHandler(port),
+		JobsHandler:    gateway.NewJobsHandler(port),
 		LogBuffer:      logBuf,
 	})
 

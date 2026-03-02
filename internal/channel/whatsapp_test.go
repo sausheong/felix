@@ -11,7 +11,7 @@ import (
 )
 
 func TestNewWhatsAppChannel(t *testing.T) {
-	ch := NewWhatsAppChannel("/tmp/test.db")
+	ch := NewWhatsAppChannel("/tmp/test.db", nil)
 
 	assert.Equal(t, "whatsapp", ch.Name())
 	assert.Equal(t, StatusDisconnected, ch.Status())
@@ -19,13 +19,13 @@ func TestNewWhatsAppChannel(t *testing.T) {
 }
 
 func TestWhatsAppChannelReceiveReturnsChannel(t *testing.T) {
-	ch := NewWhatsAppChannel("/tmp/test.db")
+	ch := NewWhatsAppChannel("/tmp/test.db", nil)
 	recv := ch.Receive()
 	assert.NotNil(t, recv)
 }
 
 func TestWhatsAppChannelStatus(t *testing.T) {
-	ch := NewWhatsAppChannel("/tmp/test.db")
+	ch := NewWhatsAppChannel("/tmp/test.db", nil)
 	assert.Equal(t, StatusDisconnected, ch.Status())
 }
 

@@ -260,7 +260,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		}
 	}
 	if waDBPath != "" {
-		waChan := channel.NewWhatsAppChannel(waDBPath)
+		waChan := channel.NewWhatsAppChannel(waDBPath, cfg.Channels.WhatsApp.AllowedSenders)
 		if err := waChan.Connect(ctx); err != nil {
 			slog.Warn("whatsapp channel failed to connect in chat mode", "error", err)
 		} else {
@@ -301,6 +301,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 				Session:   cronSess,
 				Model:     modelName,
 				Workspace: agentCfg.Workspace,
+				MaxTurns:  agentCfg.MaxTurns,
 				Skills:    skillLoader,
 				Memory:    memMgr,
 			}
@@ -358,6 +359,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		Session:   sess,
 		Model:     modelName,
 		Workspace: agentCfg.Workspace,
+		MaxTurns:  agentCfg.MaxTurns,
 		Skills:    skillLoader,
 		Memory:    memMgr,
 	}
@@ -405,8 +407,21 @@ func runChat(agentID, configPath, modelOverride string) error {
 				continue
 			}
 			fmt.Printf("\033[90m[captured screenshot]\033[0m\n")
-			events, err := rt.Run(ctx, prompt, []llm.ImageContent{img})
+			runCtx, runCancel := context.WithCancel(ctx)
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, os.Interrupt)
+			go func() {
+				select {
+				case <-sigCh:
+					runCancel()
+				case <-runCtx.Done():
+				}
+			}()
+
+			events, err := rt.Run(runCtx, prompt, []llm.ImageContent{img})
 			if err != nil {
+				signal.Stop(sigCh)
+				runCancel()
 				fmt.Printf("Error: %v\n", err)
 				continue
 			}
@@ -429,6 +444,16 @@ func runChat(agentID, configPath, modelOverride string) error {
 					}
 				case agent.EventError:
 					fmt.Printf("\n\033[31mError: %v\033[0m\n", event.Error)
+				case agent.EventAborted:
+					fmt.Printf("\n\033[33m[aborted]\033[0m\n")
+					if responseText.Len() > 0 {
+						rendered, err := glamour.Render(responseText.String(), "dark")
+						if err != nil {
+							fmt.Print(responseText.String())
+						} else {
+							fmt.Print(rendered)
+						}
+					}
 				case agent.EventDone:
 					if responseText.Len() > 0 {
 						rendered, err := glamour.Render(responseText.String(), "dark")
@@ -440,6 +465,8 @@ func runChat(agentID, configPath, modelOverride string) error {
 					}
 				}
 			}
+			signal.Stop(sigCh)
+			runCancel()
 			continue
 		}
 
@@ -449,8 +476,21 @@ func runChat(agentID, configPath, modelOverride string) error {
 			fmt.Printf("\033[90m[attached %d image(s)]\033[0m\n", len(images))
 		}
 
-		events, err := rt.Run(ctx, text, images)
+		runCtx, runCancel := context.WithCancel(ctx)
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt)
+		go func() {
+			select {
+			case <-sigCh:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+
+		events, err := rt.Run(runCtx, text, images)
 		if err != nil {
+			signal.Stop(sigCh)
+			runCancel()
 			fmt.Printf("Error: %v\n", err)
 			continue
 		}
@@ -474,6 +514,16 @@ func runChat(agentID, configPath, modelOverride string) error {
 				}
 			case agent.EventError:
 				fmt.Printf("\n\033[31mError: %v\033[0m\n", event.Error)
+			case agent.EventAborted:
+				fmt.Printf("\n\033[33m[aborted]\033[0m\n")
+				if responseText.Len() > 0 {
+					rendered, err := glamour.Render(responseText.String(), "dark")
+					if err != nil {
+						fmt.Print(responseText.String())
+					} else {
+						fmt.Print(rendered)
+					}
+				}
 			case agent.EventDone:
 				// Render accumulated markdown
 				if responseText.Len() > 0 {
@@ -486,6 +536,8 @@ func runChat(agentID, configPath, modelOverride string) error {
 				}
 			}
 		}
+		signal.Stop(sigCh)
+		runCancel()
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sausheong/goclaw/internal/agent"
 	"github.com/sausheong/goclaw/internal/channel"
@@ -31,20 +32,29 @@ type ChannelManager struct {
 	config       *config.Config
 	skills       *skill.Loader
 	memory       *memory.Manager
+	dmPolicy     string // "ignore", "respond", "notify"
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	mu     sync.RWMutex
+	connectTimeout time.Duration // 0 means no timeout (blocks until connected)
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	mu             sync.RWMutex
 }
 
 // NewChannelManager creates a new ChannelManager.
+// dmPolicy controls how unknown senders (those without a peer.id binding) are
+// handled: "ignore" (default) drops their messages, "respond" processes all
+// messages, and "notify" logs but drops.
 func NewChannelManager(
 	r *router.Router,
 	providers map[string]llm.LLMProvider,
 	toolReg *tools.Registry,
 	sessionStore *session.Store,
 	cfg *config.Config,
+	dmPolicy string,
 ) *ChannelManager {
+	if dmPolicy == "" {
+		dmPolicy = "ignore"
+	}
 	return &ChannelManager{
 		channels:     make(map[string]channel.Channel),
 		router:       r,
@@ -52,6 +62,7 @@ func NewChannelManager(
 		tools:        toolReg,
 		sessionStore: sessionStore,
 		config:       cfg,
+		dmPolicy:     dmPolicy,
 	}
 }
 
@@ -69,6 +80,14 @@ func (cm *ChannelManager) SetMemory(m *memory.Manager) {
 	cm.memory = m
 }
 
+// SetConnectTimeout sets a per-channel connect timeout. When non-zero,
+// channels that don't connect within this duration are skipped. Use this
+// for headless environments (e.g. menubar app) where interactive setup
+// like WhatsApp QR scanning is not possible.
+func (cm *ChannelManager) SetConnectTimeout(d time.Duration) {
+	cm.connectTimeout = d
+}
+
 // Register adds a channel adapter.
 func (cm *ChannelManager) Register(ch channel.Channel) {
 	cm.mu.Lock()
@@ -77,6 +96,8 @@ func (cm *ChannelManager) Register(ch channel.Channel) {
 }
 
 // Start connects all channels and launches message processing goroutines.
+// Channel connection failures are logged and skipped so that the gateway
+// continues to operate with the channels that succeed.
 func (cm *ChannelManager) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	cm.cancel = cancel
@@ -85,9 +106,26 @@ func (cm *ChannelManager) Start(ctx context.Context) error {
 	defer cm.mu.RUnlock()
 
 	for name, ch := range cm.channels {
-		if err := ch.Connect(ctx); err != nil {
-			cancel()
-			return fmt.Errorf("connect channel %q: %w", name, err)
+		var err error
+		if cm.connectTimeout > 0 {
+			// Run Connect in a goroutine with a timeout so channels
+			// that block (e.g. WhatsApp QR) don't hang the gateway.
+			done := make(chan error, 1)
+			go func(c channel.Channel) {
+				done <- c.Connect(ctx)
+			}(ch)
+			select {
+			case err = <-done:
+			case <-time.After(cm.connectTimeout):
+				slog.Warn("channel connect timed out, skipping", "channel", name)
+				continue
+			}
+		} else {
+			err = ch.Connect(ctx)
+		}
+		if err != nil {
+			slog.Warn("failed to connect channel, skipping", "channel", name, "error", err)
+			continue
 		}
 
 		cm.wg.Add(1)
@@ -183,6 +221,20 @@ func (cm *ChannelManager) processChannel(ctx context.Context, ch channel.Channel
 
 // handleMessage routes a message to an agent and sends the response back.
 func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel, msg channel.InboundMessage) {
+	// Enforce DM policy for direct messages from unknown senders
+	if msg.ChatType == channel.ChatTypeDirect && cm.dmPolicy != "respond" {
+		if !cm.router.IsKnownPeer(msg.SenderID) {
+			if cm.dmPolicy == "notify" {
+				slog.Info("message from unknown sender (dm policy: notify)",
+					"channel", ch.Name(), "sender", msg.SenderID)
+			} else {
+				slog.Debug("message from unknown sender ignored (dm policy: ignore)",
+					"channel", ch.Name(), "sender", msg.SenderID)
+			}
+			return
+		}
+	}
+
 	// Route to agent
 	agentID := cm.router.Route(msg)
 
@@ -235,6 +287,7 @@ func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel,
 		Session:   sess,
 		Model:     modelName,
 		Workspace: agentCfg.Workspace,
+		MaxTurns:  agentCfg.MaxTurns,
 		Skills:    cm.skills,
 		Memory:    cm.memory,
 	}

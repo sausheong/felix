@@ -60,3 +60,15 @@ func (r *Router) Route(msg channel.InboundMessage) string {
 
 	return r.fallback
 }
+
+// IsKnownPeer returns true if the given sender ID appears as a peer.id
+// in any binding. This is used by the DM policy to determine whether a
+// sender is "known" (has an explicit binding) or "unknown".
+func (r *Router) IsKnownPeer(senderID string) bool {
+	for _, b := range r.bindings {
+		if b.Match.Peer != nil && b.Match.Peer.ID == senderID {
+			return true
+		}
+	}
+	return false
+}

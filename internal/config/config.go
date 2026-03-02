@@ -58,6 +58,7 @@ type AgentConfig struct {
 	Model     string       `json:"model"`
 	Fallbacks []string     `json:"fallbacks"`
 	Sandbox   string       `json:"sandbox"` // "none", "docker", "namespace"
+	MaxTurns  int          `json:"maxTurns,omitempty"` // max tool-use loop iterations (0 = default 25)
 	Tools     ToolPolicy   `json:"tools"`
 	Cron      []CronConfig `json:"cron,omitempty"`
 }
@@ -97,8 +98,9 @@ type ChannelsConfig struct {
 }
 
 type WhatsAppConfig struct {
-	PhoneNumber string `json:"phone_number"` // for display/identification only
-	DBPath      string `json:"db_path"`      // SQLite path for device state (default: ~/.goclaw/whatsapp.db)
+	PhoneNumber    string   `json:"phone_number"`    // for display/identification only
+	DBPath         string   `json:"db_path"`          // SQLite path for device state (default: ~/.goclaw/whatsapp.db)
+	AllowedSenders []string `json:"allowed_senders"`  // phone numbers or JIDs allowed to send messages (empty = allow all)
 }
 
 type TelegramConfig struct {

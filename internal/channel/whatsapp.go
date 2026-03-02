@@ -26,7 +26,8 @@ const whatsappMaxMessageLength = 65536
 // WhatsAppChannel implements the Channel interface using the WhatsApp Web
 // multidevice protocol via whatsmeow.
 type WhatsAppChannel struct {
-	dbPath string
+	dbPath         string
+	allowedSenders []string
 
 	client  *whatsmeow.Client
 	inbound chan InboundMessage
@@ -37,11 +38,14 @@ type WhatsAppChannel struct {
 
 // NewWhatsAppChannel creates a new WhatsApp channel adapter.
 // dbPath is the SQLite database path for storing device credentials.
-func NewWhatsAppChannel(dbPath string) *WhatsAppChannel {
+// allowedSenders is an optional list of phone numbers or JIDs that are
+// permitted to send messages. If empty, all senders are allowed.
+func NewWhatsAppChannel(dbPath string, allowedSenders []string) *WhatsAppChannel {
 	return &WhatsAppChannel{
-		dbPath:  dbPath,
-		inbound: make(chan InboundMessage, 100),
-		status:  StatusDisconnected,
+		dbPath:         dbPath,
+		allowedSenders: allowedSenders,
+		inbound:        make(chan InboundMessage, 100),
+		status:         StatusDisconnected,
 	}
 }
 
@@ -231,6 +235,15 @@ func (w *WhatsAppChannel) handleMessage(evt *events.Message) {
 		return
 	}
 
+	// Check allowed senders list
+	if len(w.allowedSenders) > 0 {
+		senderJID := evt.Info.Sender.ToNonAD().String()
+		if !w.isSenderAllowed(senderJID) {
+			slog.Debug("whatsapp message from non-allowed sender, ignoring", "sender", senderJID)
+			return
+		}
+	}
+
 	// Extract text content
 	text := extractWhatsAppText(evt.Message)
 	if text == "" {
@@ -355,6 +368,21 @@ func parseWhatsAppJID(s string) (types.JID, error) {
 
 	// Bare number: assume direct message
 	return types.NewJID(s, types.DefaultUserServer), nil
+}
+
+// isSenderAllowed checks if the sender JID matches any entry in the allowed
+// senders list. Supports both full JIDs ("6512345678@s.whatsapp.net") and bare
+// phone numbers ("6512345678") by normalizing both sides for comparison.
+func (w *WhatsAppChannel) isSenderAllowed(senderJID string) bool {
+	// Normalize sender: strip @s.whatsapp.net suffix
+	senderBare := strings.TrimSuffix(senderJID, "@s.whatsapp.net")
+	for _, allowed := range w.allowedSenders {
+		allowedBare := strings.TrimSuffix(allowed, "@s.whatsapp.net")
+		if senderBare == allowedBare {
+			return true
+		}
+	}
+	return false
 }
 
 // printQRCode renders a QR code string to the terminal.
