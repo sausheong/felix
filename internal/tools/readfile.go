@@ -47,6 +47,24 @@ var imageExtMap = map[string]string{
 	".bmp":  "image/bmp",
 }
 
+// detectImageMIMEFromBytes inspects magic bytes to determine the actual image
+// format, falling back to hint (typically derived from file extension).
+func detectImageMIMEFromBytes(data []byte, hint string) string {
+	if len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		return "image/jpeg"
+	}
+	if len(data) >= 4 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' {
+		return "image/png"
+	}
+	if len(data) >= 4 && data[0] == 'G' && data[1] == 'I' && data[2] == 'F' && data[3] == '8' {
+		return "image/gif"
+	}
+	if len(data) >= 4 && data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' {
+		return "image/webp"
+	}
+	return hint
+}
+
 func (t *ReadFileTool) Execute(_ context.Context, input json.RawMessage) (ToolResult, error) {
 	var in readFileInput
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -65,6 +83,7 @@ func (t *ReadFileTool) Execute(_ context.Context, input json.RawMessage) (ToolRe
 	// Check if this is an image file
 	ext := strings.ToLower(filepath.Ext(in.Path))
 	if mimeType, ok := imageExtMap[ext]; ok {
+		mimeType = detectImageMIMEFromBytes(data, mimeType)
 		return ToolResult{
 			Output: fmt.Sprintf("Image file: %s (%d bytes)", filepath.Base(in.Path), len(data)),
 			Images: []llm.ImageContent{

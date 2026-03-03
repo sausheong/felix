@@ -828,7 +828,11 @@ func captureScreenshot() (llm.ImageContent, error) {
 		return llm.ImageContent{}, fmt.Errorf("read screenshot: %w", err)
 	}
 
-	return llm.ImageContent{MimeType: "image/png", Data: data}, nil
+	mime := "image/png"
+	if len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		mime = "image/jpeg"
+	}
+	return llm.ImageContent{MimeType: mime, Data: data}, nil
 }
 
 func runStatus() error {

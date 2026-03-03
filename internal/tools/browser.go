@@ -30,11 +30,11 @@ func (t *BrowserTool) Name() string { return "browser" }
 func (t *BrowserTool) Description() string {
 	return `Control a headless Chrome browser. Supports these actions:
 - "navigate": Go to a URL. Requires "url".
-- "click": Click an element. Requires "selector" (CSS selector).
-- "type": Type text into an input field. Requires "selector" and "text".
-- "get_text": Get the text content of an element or the full page. Optional "selector" (defaults to body).
-- "screenshot": Take a screenshot of the current page. Returns a base64-encoded PNG.
-- "evaluate": Execute JavaScript in the page. Requires "script". Returns the result.
+- "click": Click an element. Requires "selector" (CSS selector). Optional "url" to navigate first.
+- "type": Type text into an input field. Requires "selector" and "text". Optional "url" to navigate first.
+- "get_text": Get the text content of an element or the full page. Optional "selector" (defaults to body). Optional "url" to navigate first.
+- "screenshot": Take a screenshot of the current page. Optional "url" to navigate first. Returns the image.
+- "evaluate": Execute JavaScript in the page. Requires "script". Optional "url" to navigate first. Returns the result.
 Use this for pages that require JavaScript rendering, form interactions, or visual inspection.`
 }
 
@@ -49,7 +49,7 @@ func (t *BrowserTool) Parameters() json.RawMessage {
 			},
 			"url": {
 				"type": "string",
-				"description": "URL to navigate to (required for navigate action)"
+				"description": "URL to navigate to (required for navigate; optional for other actions to navigate before performing the action)"
 			},
 			"selector": {
 				"type": "string",
@@ -121,6 +121,14 @@ func (t *BrowserTool) Execute(ctx context.Context, input json.RawMessage) (ToolR
 	}
 }
 
+// navigateIfNeeded navigates to the given URL if non-empty.
+func (t *BrowserTool) navigateIfNeeded(ctx context.Context, url string) error {
+	if url == "" {
+		return nil
+	}
+	return chromedp.Run(ctx, chromedp.Navigate(url), chromedp.WaitReady("body"))
+}
+
 func (t *BrowserTool) navigate(ctx context.Context, in browserInput) (ToolResult, error) {
 	if in.URL == "" {
 		return ToolResult{Error: "url is required for navigate action"}, nil
@@ -153,6 +161,10 @@ func (t *BrowserTool) click(ctx context.Context, in browserInput) (ToolResult, e
 		return ToolResult{Error: "selector is required for click action"}, nil
 	}
 
+	if err := t.navigateIfNeeded(ctx, in.URL); err != nil {
+		return ToolResult{Error: fmt.Sprintf("navigate failed: %v", err)}, nil
+	}
+
 	err := chromedp.Run(ctx,
 		chromedp.WaitVisible(in.Selector),
 		chromedp.Click(in.Selector),
@@ -170,6 +182,10 @@ func (t *BrowserTool) typeText(ctx context.Context, in browserInput) (ToolResult
 	}
 	if in.Text == "" {
 		return ToolResult{Error: "text is required for type action"}, nil
+	}
+
+	if err := t.navigateIfNeeded(ctx, in.URL); err != nil {
+		return ToolResult{Error: fmt.Sprintf("navigate failed: %v", err)}, nil
 	}
 
 	err := chromedp.Run(ctx,
@@ -190,6 +206,10 @@ func (t *BrowserTool) getText(ctx context.Context, in browserInput) (ToolResult,
 		selector = "body"
 	}
 
+	if err := t.navigateIfNeeded(ctx, in.URL); err != nil {
+		return ToolResult{Error: fmt.Sprintf("navigate failed: %v", err)}, nil
+	}
+
 	var text string
 	err := chromedp.Run(ctx,
 		chromedp.WaitReady(selector),
@@ -208,15 +228,8 @@ func (t *BrowserTool) getText(ctx context.Context, in browserInput) (ToolResult,
 }
 
 func (t *BrowserTool) screenshot(ctx context.Context, in browserInput) (ToolResult, error) {
-	// Navigate first if URL is provided
-	if in.URL != "" {
-		err := chromedp.Run(ctx,
-			chromedp.Navigate(in.URL),
-			chromedp.WaitReady("body"),
-		)
-		if err != nil {
-			return ToolResult{Error: fmt.Sprintf("navigate for screenshot failed: %v", err)}, nil
-		}
+	if err := t.navigateIfNeeded(ctx, in.URL); err != nil {
+		return ToolResult{Error: fmt.Sprintf("navigate failed: %v", err)}, nil
 	}
 
 	var buf []byte
@@ -242,6 +255,10 @@ func (t *BrowserTool) screenshot(ctx context.Context, in browserInput) (ToolResu
 func (t *BrowserTool) evaluate(ctx context.Context, in browserInput) (ToolResult, error) {
 	if in.Script == "" {
 		return ToolResult{Error: "script is required for evaluate action"}, nil
+	}
+
+	if err := t.navigateIfNeeded(ctx, in.URL); err != nil {
+		return ToolResult{Error: fmt.Sprintf("navigate failed: %v", err)}, nil
 	}
 
 	var result any
