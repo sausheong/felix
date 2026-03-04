@@ -403,12 +403,49 @@ HTTP endpoints: `GET /health` (health check), `GET /ws` (WebSocket), `GET /metri
 
 ## Security
 
-- **Gateway auth** — bearer token authentication on WebSocket and HTTP
-- **Localhost binding** — binds to `127.0.0.1` by default, no public exposure
-- **Tool policies** — cascading allow/deny lists per agent
-- **Execution approvals** — `deny`, `allowlist`, or `full` modes for shell commands
-- **DM policy** — control how agents respond to unknown senders (`ignore`, `respond`, `notify`)
-- **Group policy** — require @mention in group chats
+GoClaw is designed to run on your own hardware. The following measures protect your system, credentials, and data.
+
+### Network & Transport
+
+- **Localhost-only by default** — the gateway binds to `127.0.0.1:18789`, never exposed to the network unless you change the config
+- **Bearer token auth** — optional token protects all HTTP and WebSocket endpoints
+- **WebSocket origin checking** — only connections from localhost origins are accepted
+- **ReadHeaderTimeout** — 5-second header timeout defends against slowloris attacks
+- **Security headers** — the web chat page sets `X-Frame-Options: DENY`, `Content-Security-Policy`, and `X-Content-Type-Options: nosniff` to prevent clickjacking and XSS
+
+### Tool Execution
+
+- **Tool policies** — per-agent allow/deny lists control which tools each agent can use
+- **Exec approval policy** — three levels for the bash tool:
+  - `deny` — all shell execution blocked
+  - `allowlist` — only commands in the allowlist can run; shell metacharacters (`$(...)`, backticks, process substitution) are blocked to prevent bypasses
+  - `full` — unrestricted (default)
+- **Workspace containment** — file tools (`read_file`, `write_file`, `edit_file`) validate paths against the agent's workspace directory with symlink resolution to prevent path traversal
+
+### Input Validation
+
+- **SSRF protection** — `web_fetch` and `browser` tools resolve hostnames and block private IP ranges (RFC 1918, loopback, link-local, IPv6 ULA) and cloud metadata endpoints. DNS resolution failures are blocked (fail-closed)
+- **XSS prevention** — the web chat UI escapes HTML before applying markdown formatting, and blocks `javascript:`, `data:`, and `vbscript:` URL schemes in rendered links
+- **WebSocket rate limiting** — per-connection token bucket (30 messages/sec) prevents message flooding
+- **WebSocket message size limit** — 1MB max message size prevents memory exhaustion from oversized payloads
+
+### Credentials & Data
+
+- **No hardcoded secrets** — all API keys and tokens come from config or environment variables
+- **Config file permissions** — the `onboard` command writes config with `0o600` (owner-only) to protect API keys and bot tokens
+- **Session file permissions** — conversation history files use `0o600` (owner-only)
+- **DEBUG-level tool logging** — tool inputs and outputs (which may contain sensitive data) are logged at DEBUG, not INFO, so they don't appear in production logs
+- **API keys via environment** — credentials can be set as `{PROVIDER}_API_KEY` environment variables to keep them out of config files entirely
+
+### Channel Access Control
+
+- **DM policy** — control how agents respond to unknown senders on Telegram/WhatsApp:
+  - `ignore` — silently drop messages from unknown users (default)
+  - `notify` — log but drop (useful for discovering user IDs)
+  - `respond` — process all messages
+- **Peer bindings** — route specific Telegram/WhatsApp user IDs to specific agents, combined with `ignore` policy to whitelist users
+- **Group policy** — `requireMention: true` makes agents respond only when @mentioned in group chats
+- **WhatsApp allowed senders** — optional allowlist of phone numbers/JIDs
 
 ---
 
