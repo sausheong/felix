@@ -232,7 +232,11 @@ func runChat(agentID, configPath, modelOverride string) error {
 
 	// Init tools
 	toolReg := tools.NewRegistry()
-	tools.RegisterCoreTools(toolReg, agentCfg.Workspace)
+	execPolicy := &tools.ExecPolicy{
+		Level:     cfg.Security.ExecApprovals.Level,
+		Allowlist: cfg.Security.ExecApprovals.Allowlist,
+	}
+	tools.RegisterCoreTools(toolReg, agentCfg.Workspace, execPolicy)
 
 	// Connect channel adapters so the agent can use the send_message tool
 	sender := &chatSender{channels: make(map[string]channel.Channel)}
@@ -302,7 +306,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 			// accumulate and consume tokens unboundedly.
 			cronSess := session.NewSession(agentID, "cron_"+jobName)
 			cronToolReg := tools.NewRegistry()
-			tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace)
+			tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace, execPolicy)
 			if len(sender.channels) > 0 {
 				tools.RegisterSendMessage(cronToolReg, sender)
 			}

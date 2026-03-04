@@ -9,7 +9,9 @@ import (
 )
 
 // EditFileTool performs a string-replace edit on a file.
-type EditFileTool struct{}
+type EditFileTool struct {
+	WorkDir string // if set, restricts edits to this directory
+}
 
 type editFileInput struct {
 	Path      string `json:"path"`
@@ -52,6 +54,12 @@ func (t *EditFileTool) Execute(_ context.Context, input json.RawMessage) (ToolRe
 
 	if in.Path == "" {
 		return ToolResult{Error: "path is required"}, nil
+	}
+
+	if t.WorkDir != "" {
+		if err := validatePathInWorkDir(in.Path, t.WorkDir); err != nil {
+			return ToolResult{Error: err.Error()}, nil
+		}
 	}
 
 	data, err := os.ReadFile(in.Path)

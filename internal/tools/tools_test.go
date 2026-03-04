@@ -13,7 +13,7 @@ import (
 
 func TestRegistry(t *testing.T) {
 	reg := NewRegistry()
-	RegisterCoreTools(reg, "")
+	RegisterCoreTools(reg, "", nil)
 
 	names := reg.Names()
 	assert.Len(t, names, 7)
@@ -29,7 +29,7 @@ func TestRegistry(t *testing.T) {
 
 func TestToolDefs(t *testing.T) {
 	reg := NewRegistry()
-	RegisterCoreTools(reg, "")
+	RegisterCoreTools(reg, "", nil)
 	defs := reg.ToolDefs()
 	assert.Len(t, defs, 7)
 }

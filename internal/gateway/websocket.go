@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sausheong/goclaw/internal/agent"
@@ -95,6 +96,8 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	conn.SetReadLimit(1 * 1024 * 1024) // 1MB max message size
+
 	slog.Info("websocket client connected", "remote", r.RemoteAddr)
 	defer func() {
 		// Cancel any active run for this connection to prevent orphaned goroutines
@@ -106,6 +109,12 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.mu.Unlock()
 	}()
 
+	// Per-connection rate limiter: max 30 messages per second.
+	// Uses a token bucket that refills at 30 tokens/sec with burst of 30.
+	const rateLimit = 30
+	tokens := rateLimit
+	lastRefill := time.Now()
+
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -114,6 +123,25 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+
+		// Refill tokens based on elapsed time
+		now := time.Now()
+		elapsed := now.Sub(lastRefill)
+		tokens += int(elapsed.Seconds() * rateLimit)
+		if tokens > rateLimit {
+			tokens = rateLimit
+		}
+		lastRefill = now
+
+		if tokens <= 0 {
+			writeJSON(conn, JSONRPCResponse{
+				JSONRPC: "2.0",
+				Error:   map[string]any{"code": -32000, "message": "rate limit exceeded"},
+				ID:      nil,
+			})
+			continue
+		}
+		tokens--
 
 		var req JSONRPCRequest
 		if err := json.Unmarshal(msg, &req); err != nil {

@@ -12,7 +12,9 @@ import (
 )
 
 // ReadFileTool reads the contents of a file.
-type ReadFileTool struct{}
+type ReadFileTool struct {
+	WorkDir string // if set, restricts reads to this directory
+}
 
 type readFileInput struct {
 	Path string `json:"path"`
@@ -73,6 +75,12 @@ func (t *ReadFileTool) Execute(_ context.Context, input json.RawMessage) (ToolRe
 
 	if in.Path == "" {
 		return ToolResult{Error: "path is required"}, nil
+	}
+
+	if t.WorkDir != "" {
+		if err := validatePathInWorkDir(in.Path, t.WorkDir); err != nil {
+			return ToolResult{Error: err.Error()}, nil
+		}
 	}
 
 	data, err := os.ReadFile(in.Path)

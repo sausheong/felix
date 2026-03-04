@@ -200,7 +200,11 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	providers := InitProviders(cfg)
 	sessionStore := session.NewStore(filepath.Join(dataDir, "sessions"))
 	toolReg := tools.NewRegistry()
-	tools.RegisterCoreTools(toolReg, "")
+	execPolicy := &tools.ExecPolicy{
+		Level:     cfg.Security.ExecApprovals.Level,
+		Allowlist: cfg.Security.ExecApprovals.Allowlist,
+	}
+	tools.RegisterCoreTools(toolReg, "", execPolicy)
 
 	// Init skill loader
 	skillLoader := skill.NewLoader()
@@ -318,7 +322,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			agentFn := func(ctx context.Context, prompt string) (string, error) {
 				sess := session.NewSession(agentID, "heartbeat")
 				hbToolReg := tools.NewRegistry()
-				tools.RegisterCoreTools(hbToolReg, agentWorkspace)
+				tools.RegisterCoreTools(hbToolReg, agentWorkspace, execPolicy)
 				tools.RegisterSendMessage(hbToolReg, chanMgr)
 
 				rt := &agent.Runtime{
@@ -362,7 +366,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			agentFn := func(ctx context.Context, prompt string) (string, error) {
 				sess := session.NewSession(agentID, "cron_"+cronJob.Name)
 				cronToolReg := tools.NewRegistry()
-				tools.RegisterCoreTools(cronToolReg, agentWorkspace)
+				tools.RegisterCoreTools(cronToolReg, agentWorkspace, execPolicy)
 				tools.RegisterSendMessage(cronToolReg, chanMgr)
 				rt := &agent.Runtime{
 					LLM:          provider,
@@ -402,7 +406,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				}
 				cronSess := session.NewSession(defaultCfg.ID, "cron_"+jobName)
 				cronToolReg := tools.NewRegistry()
-				tools.RegisterCoreTools(cronToolReg, defaultCfg.Workspace)
+				tools.RegisterCoreTools(cronToolReg, defaultCfg.Workspace, execPolicy)
 				tools.RegisterSendMessage(cronToolReg, chanMgr)
 				rt := &agent.Runtime{
 					LLM:          p,

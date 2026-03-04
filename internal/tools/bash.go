@@ -6,14 +6,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
 const defaultBashTimeout = 120 * time.Second
 
+// ExecPolicy controls which commands the bash tool is allowed to execute.
+type ExecPolicy struct {
+	Level     string   // "deny", "allowlist", "full"
+	Allowlist []string // command basenames allowed when Level is "allowlist"
+}
+
 // BashTool executes shell commands.
 type BashTool struct {
-	WorkDir string
+	WorkDir    string
+	ExecPolicy *ExecPolicy // nil means "full" (allow everything)
 }
 
 type bashInput struct {
@@ -44,6 +53,50 @@ func (t *BashTool) Parameters() json.RawMessage {
 	}`)
 }
 
+// extractCommands extracts executable names from a bash command string.
+// It splits on pipes, semicolons, &&, and || to find each sub-command,
+// then takes the first token (the executable) from each.
+func extractCommands(cmd string) []string {
+	// Split on shell operators
+	var parts []string
+	remaining := cmd
+	for len(remaining) > 0 {
+		// Find the earliest operator
+		minIdx := len(remaining)
+		opLen := 0
+		for _, op := range []string{"&&", "||", "|", ";"} {
+			if idx := strings.Index(remaining, op); idx != -1 && idx < minIdx {
+				minIdx = idx
+				opLen = len(op)
+			}
+		}
+
+		part := strings.TrimSpace(remaining[:minIdx])
+		if part != "" {
+			parts = append(parts, part)
+		}
+
+		if minIdx+opLen >= len(remaining) {
+			break
+		}
+		remaining = remaining[minIdx+opLen:]
+	}
+
+	var cmds []string
+	for _, part := range parts {
+		// Strip leading env vars (e.g., "FOO=bar command")
+		tokens := strings.Fields(part)
+		for _, tok := range tokens {
+			if strings.Contains(tok, "=") && !strings.HasPrefix(tok, "-") {
+				continue // skip env var assignments
+			}
+			cmds = append(cmds, filepath.Base(tok))
+			break
+		}
+	}
+	return cmds
+}
+
 func (t *BashTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
 	var in bashInput
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -52,6 +105,26 @@ func (t *BashTool) Execute(ctx context.Context, input json.RawMessage) (ToolResu
 
 	if in.Command == "" {
 		return ToolResult{Error: "command is required"}, nil
+	}
+
+	// Enforce exec policy
+	if t.ExecPolicy != nil {
+		switch t.ExecPolicy.Level {
+		case "deny":
+			return ToolResult{Error: "bash execution is disabled by policy"}, nil
+		case "allowlist":
+			cmds := extractCommands(in.Command)
+			allowed := make(map[string]bool, len(t.ExecPolicy.Allowlist))
+			for _, a := range t.ExecPolicy.Allowlist {
+				allowed[a] = true
+			}
+			for _, cmd := range cmds {
+				if !allowed[cmd] {
+					return ToolResult{Error: fmt.Sprintf("command %q is not in the exec allowlist", cmd)}, nil
+				}
+			}
+		}
+		// "full" or unrecognized: allow everything
 	}
 
 	timeout := defaultBashTimeout

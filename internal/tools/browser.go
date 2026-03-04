@@ -130,6 +130,9 @@ func (t *BrowserTool) navigateIfNeeded(ctx context.Context, url string) error {
 	if url == "" {
 		return nil
 	}
+	if err := validateURLNotInternal(url); err != nil {
+		return err
+	}
 	return chromedp.Run(ctx,
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body"),

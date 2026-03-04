@@ -269,7 +269,13 @@ func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel,
 
 	// Create per-agent tool registry with workspace-specific tools
 	toolReg := tools.NewRegistry()
-	tools.RegisterCoreTools(toolReg, agentCfg.Workspace)
+	cm.mu.RLock()
+	execPolicy := &tools.ExecPolicy{
+		Level:     cm.config.Security.ExecApprovals.Level,
+		Allowlist: cm.config.Security.ExecApprovals.Allowlist,
+	}
+	cm.mu.RUnlock()
+	tools.RegisterCoreTools(toolReg, agentCfg.Workspace, execPolicy)
 	tools.RegisterSendMessage(toolReg, cm)
 
 	// Apply agent tool policy

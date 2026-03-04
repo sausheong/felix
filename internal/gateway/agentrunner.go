@@ -71,7 +71,11 @@ func (r *AgentRunnerImpl) RunAgent(ctx context.Context, agentID, prompt string) 
 	// Build a fresh tool registry with core tools only — no ask_agent
 	// to prevent infinite delegation recursion.
 	delegateToolReg := tools.NewRegistry()
-	tools.RegisterCoreTools(delegateToolReg, agentCfg.Workspace)
+	execPolicy := &tools.ExecPolicy{
+		Level:     r.config.Security.ExecApprovals.Level,
+		Allowlist: r.config.Security.ExecApprovals.Allowlist,
+	}
+	tools.RegisterCoreTools(delegateToolReg, agentCfg.Workspace, execPolicy)
 
 	if r.sender != nil {
 		tools.RegisterSendMessage(delegateToolReg, r.sender)

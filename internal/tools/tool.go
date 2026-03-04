@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/sausheong/goclaw/internal/llm"
@@ -98,14 +100,54 @@ func (r *Registry) Names() []string {
 }
 
 // RegisterCoreTools registers the core tools.
-func RegisterCoreTools(reg *Registry, workDir string) {
-	reg.Register(&ReadFileTool{})
-	reg.Register(&WriteFileTool{})
-	reg.Register(&EditFileTool{})
-	reg.Register(&BashTool{WorkDir: workDir})
+// execPolicy is optional — pass nil for unrestricted bash execution.
+func RegisterCoreTools(reg *Registry, workDir string, execPolicy *ExecPolicy) {
+	reg.Register(&ReadFileTool{WorkDir: workDir})
+	reg.Register(&WriteFileTool{WorkDir: workDir})
+	reg.Register(&EditFileTool{WorkDir: workDir})
+	reg.Register(&BashTool{WorkDir: workDir, ExecPolicy: execPolicy})
 	reg.Register(&WebFetchTool{})
 	reg.Register(&WebSearchTool{})
 	reg.Register(&BrowserTool{})
+}
+
+// validatePathInWorkDir ensures that the resolved path is within the workspace.
+// It resolves symlinks and normalizes the path to prevent traversal attacks.
+func validatePathInWorkDir(path, workDir string) error {
+	if workDir == "" {
+		return nil
+	}
+
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		return fmt.Errorf("invalid workspace: %w", err)
+	}
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+
+	// Resolve symlinks to prevent symlink-based traversal
+	realWork, err := filepath.EvalSymlinks(absWork)
+	if err != nil {
+		realWork = absWork // workspace might not exist yet
+	}
+
+	// For the target path, resolve the parent directory (file may not exist yet)
+	parentDir := filepath.Dir(absPath)
+	realParent, err := filepath.EvalSymlinks(parentDir)
+	if err != nil {
+		// Parent doesn't exist — use the unresolved absolute path
+		realParent = parentDir
+	}
+	realPath := filepath.Join(realParent, filepath.Base(absPath))
+
+	if !strings.HasPrefix(realPath, realWork+string(filepath.Separator)) && realPath != realWork {
+		return fmt.Errorf("path %q is outside workspace %q", path, workDir)
+	}
+
+	return nil
 }
 
 // RegisterSendMessage registers the send_message tool with the given sender.

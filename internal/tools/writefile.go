@@ -9,7 +9,9 @@ import (
 )
 
 // WriteFileTool creates or overwrites a file.
-type WriteFileTool struct{}
+type WriteFileTool struct {
+	WorkDir string // if set, restricts writes to this directory
+}
 
 type writeFileInput struct {
 	Path    string `json:"path"`
@@ -47,6 +49,12 @@ func (t *WriteFileTool) Execute(_ context.Context, input json.RawMessage) (ToolR
 
 	if in.Path == "" {
 		return ToolResult{Error: "path is required"}, nil
+	}
+
+	if t.WorkDir != "" {
+		if err := validatePathInWorkDir(in.Path, t.WorkDir); err != nil {
+			return ToolResult{Error: err.Error()}, nil
+		}
 	}
 
 	// Create parent directories

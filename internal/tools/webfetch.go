@@ -63,6 +63,10 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (Tool
 		return ToolResult{Error: "url must start with http:// or https://"}, nil
 	}
 
+	if err := validateURLNotInternal(in.URL); err != nil {
+		return ToolResult{Error: err.Error()}, nil
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 

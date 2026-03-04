@@ -9,6 +9,9 @@ import (
 func NewChatHandler(port int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ws://127.0.0.1:* ws://localhost:*; img-src 'self' data:")
 		fmt.Fprintf(w, chatHTML, port)
 	}
 }
@@ -420,12 +423,30 @@ html.light #header .logo {
 
 	// Inline markdown: code, bold, italic, links
 	function inlineMd(s) {
+		// Extract inline code spans into placeholders (before HTML escaping)
+		var codeSpans = [];
 		s = s.replace(/` + "`" + `([^` + "`" + `]+)` + "`" + `/g, function(_, code) {
-			return '<code>' + escHtml(code) + '</code>';
+			var idx = codeSpans.length;
+			codeSpans.push('<code>' + escHtml(code) + '</code>');
+			return '\x00CS' + idx + '\x00';
 		});
+		// Escape HTML in all remaining text to prevent XSS
+		s = escHtml(s);
+		// Apply formatting on the now-safe text
 		s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 		s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
-		s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+		// Validate link URLs — block javascript: and data: schemes
+		s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(m, text, url) {
+			var lower = url.trim().toLowerCase();
+			if (lower.indexOf('javascript:') === 0 || lower.indexOf('data:') === 0 || lower.indexOf('vbscript:') === 0) {
+				return text;
+			}
+			return '<a href="' + url + '" target="_blank" rel="noopener">' + text + '</a>';
+		});
+		// Restore code spans
+		for (var i = 0; i < codeSpans.length; i++) {
+			s = s.replace('\x00CS' + i + '\x00', codeSpans[i]);
+		}
 		return s;
 	}
 

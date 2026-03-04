@@ -104,11 +104,12 @@ func (s *Server) Start() error {
 	addr := net.JoinHostPort(s.host, fmt.Sprintf("%d", s.port))
 
 	s.httpServer = &http.Server{
-		Addr:         addr,
-		Handler:      s.router,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 0, // WebSocket needs no write timeout
-		IdleTimeout:  60 * time.Second,
+		Addr:              addr,
+		Handler:           s.router,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      0, // WebSocket needs no write timeout
+		IdleTimeout:       60 * time.Second,
 	}
 
 	slog.Info("gateway listening", "addr", addr)
