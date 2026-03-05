@@ -408,8 +408,8 @@ GoClaw is designed to run on your own hardware. The following measures protect y
 ### Network & Transport
 
 - **Localhost-only by default** — the gateway binds to `127.0.0.1:18789`, never exposed to the network unless you change the config
-- **Bearer token auth** — optional token protects all HTTP and WebSocket endpoints
-- **WebSocket origin checking** — only connections from localhost origins are accepted
+- **Bearer token auth** — optional token protects all HTTP and WebSocket endpoints; uses constant-time comparison to prevent timing attacks
+- **WebSocket origin checking** — only connections from localhost origins are accepted by default; configurable allowlist for custom origins
 - **ReadHeaderTimeout** — 5-second header timeout defends against slowloris attacks
 - **Security headers** — the web chat page sets `X-Frame-Options: DENY`, `Content-Security-Policy`, and `X-Content-Type-Options: nosniff` to prevent clickjacking and XSS
 
@@ -424,7 +424,7 @@ GoClaw is designed to run on your own hardware. The following measures protect y
 
 ### Input Validation
 
-- **SSRF protection** — `web_fetch` and `browser` tools resolve hostnames and block private IP ranges (RFC 1918, loopback, link-local, IPv6 ULA) and cloud metadata endpoints. DNS resolution failures are blocked (fail-closed)
+- **SSRF protection** — `web_fetch` and `browser` tools resolve hostnames and block private IP ranges (RFC 1918, loopback, link-local, IPv6 ULA) and cloud metadata endpoints. DNS resolution failures are blocked (fail-closed). Redirect targets are re-validated at each hop to prevent redirect-based SSRF bypasses
 - **XSS prevention** — the web chat UI escapes HTML before applying markdown formatting, and blocks `javascript:`, `data:`, and `vbscript:` URL schemes in rendered links
 - **WebSocket rate limiting** — per-connection token bucket (30 messages/sec) prevents message flooding
 - **WebSocket message size limit** — 1MB max message size prevents memory exhaustion from oversized payloads
@@ -432,7 +432,7 @@ GoClaw is designed to run on your own hardware. The following measures protect y
 ### Credentials & Data
 
 - **No hardcoded secrets** — all API keys and tokens come from config or environment variables
-- **Config file permissions** — the `onboard` command writes config with `0o600` (owner-only) to protect API keys and bot tokens
+- **Config file permissions** — the `onboard` command writes config with `0o600` (owner-only) to protect API keys and bot tokens. At startup, a warning is logged if the config file is readable by group or others
 - **Session file permissions** — conversation history files use `0o600` (owner-only)
 - **DEBUG-level tool logging** — tool inputs and outputs (which may contain sensitive data) are logged at DEBUG, not INFO, so they don't appear in production logs
 - **API keys via environment** — credentials can be set as `{PROVIDER}_API_KEY` environment variables to keep them out of config files entirely
