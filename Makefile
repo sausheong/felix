@@ -4,7 +4,7 @@ VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 LDFLAGS   := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
-.PHONY: build build-app build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release
+.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release
 
 ## build: compile the binary
 build:
@@ -20,6 +20,11 @@ build-app:
 	cp cmd/goclaw-app/icon.icns GoClaw.app/Contents/Resources/icon.icns
 	rm -f goclaw-app
 	@echo "Built GoClaw.app"
+
+## build-app-windows: cross-compile the menu bar app for Windows
+build-app-windows:
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS) -H windowsgui" -o goclaw-app.exe ./cmd/goclaw-app
+	@echo "Built goclaw-app.exe"
 
 ## build-small: compile a smaller, statically-linked binary (+ UPX on Linux)
 build-small:
@@ -122,6 +127,12 @@ endif
 		(cd $(RELEASE_DIR) && zip -rq GoClaw-$(VERSION)-macos-$$arch.zip GoClaw.app); \
 		rm -rf $(RELEASE_DIR)/GoClaw.app; \
 	fi
+	@echo "Building GoClaw tray app for Windows..."
+	@CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+		go build -trimpath -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -H windowsgui" \
+		-o $(RELEASE_DIR)/goclaw-app-$(VERSION)-windows-amd64/goclaw-app.exe ./cmd/goclaw-app
+	@(cd $(RELEASE_DIR) && zip -rq goclaw-app-$(VERSION)-windows-amd64.zip goclaw-app-$(VERSION)-windows-amd64)
+	@rm -rf $(RELEASE_DIR)/goclaw-app-$(VERSION)-windows-amd64
 	@echo ""
 	@echo "Release artifacts in $(RELEASE_DIR)/:"
 	@ls -1 $(RELEASE_DIR)/*.zip
@@ -156,13 +167,19 @@ build-release:
 		(cd $(RELEASE_DIR) && zip -rq GoClaw-$(VERSION)-macos-$$arch.zip GoClaw.app); \
 		rm -rf $(RELEASE_DIR)/GoClaw.app; \
 	fi
+	@echo "Building GoClaw tray app for Windows..."
+	@CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+		go build -trimpath -ldflags "$(LDFLAGS) -H windowsgui" \
+		-o $(RELEASE_DIR)/goclaw-app-$(VERSION)-windows-amd64/goclaw-app.exe ./cmd/goclaw-app
+	@(cd $(RELEASE_DIR) && zip -rq goclaw-app-$(VERSION)-windows-amd64.zip goclaw-app-$(VERSION)-windows-amd64)
+	@rm -rf $(RELEASE_DIR)/goclaw-app-$(VERSION)-windows-amd64
 	@echo ""
 	@echo "Release artifacts in $(RELEASE_DIR)/:"
 	@ls -1 $(RELEASE_DIR)/*.zip
 
 ## clean: remove build artifacts
 clean:
-	rm -f $(BINARY) goclaw-app
+	rm -f $(BINARY) goclaw-app goclaw-app.exe
 	rm -rf GoClaw.app $(RELEASE_DIR)
 	go clean
 
