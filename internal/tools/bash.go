@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -142,7 +143,12 @@ func (t *BashTool) Execute(ctx context.Context, input json.RawMessage) (ToolResu
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", in.Command)
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd", "/c", in.Command)
+	} else {
+		cmd = exec.CommandContext(ctx, "bash", "-c", in.Command)
+	}
 	if t.WorkDir != "" {
 		cmd.Dir = t.WorkDir
 	}

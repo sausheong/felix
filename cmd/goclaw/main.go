@@ -147,7 +147,7 @@ func runStart(configPath string) error {
 
 	// Graceful shutdown
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		if err := result.Server.Start(); err != nil && err != http.ErrServerClosed {
@@ -809,6 +809,17 @@ func captureScreenshot() (llm.ImageContent, error) {
 		} else {
 			return llm.ImageContent{}, fmt.Errorf("no screenshot tool found (install maim, gnome-screenshot, or scrot)")
 		}
+	case "windows":
+		// Use PowerShell's built-in screen capture via .NET
+		fmt.Println("Capturing full screen...")
+		psScript := fmt.Sprintf(`Add-Type -AssemblyName System.Windows.Forms; `+
+			`$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; `+
+			`$bitmap = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height); `+
+			`$graphics = [System.Drawing.Graphics]::FromImage($bitmap); `+
+			`$graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size); `+
+			`$bitmap.Save('%s'); `+
+			`$graphics.Dispose(); $bitmap.Dispose()`, tmpFile)
+		cmd = exec.Command("powershell", "-NoProfile", "-Command", psScript)
 	default:
 		return llm.ImageContent{}, fmt.Errorf("screenshots not supported on %s", runtime.GOOS)
 	}
