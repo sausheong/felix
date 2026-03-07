@@ -90,10 +90,11 @@ func onReady() {
 		}
 	}()
 
+	icon := trayIcon(iconBytes)
 	if runtime.GOOS == "darwin" {
-		systray.SetTemplateIcon(iconBytes, iconBytes)
+		systray.SetTemplateIcon(icon, icon)
 	} else {
-		systray.SetIcon(iconBytes)
+		systray.SetIcon(icon)
 	}
 	systray.SetTooltip("GoClaw")
 
