@@ -11,7 +11,7 @@ GoClaw connects messaging channels (Telegram, WhatsApp, CLI) to LLMs (Claude, GP
 ## Features
 
 - **Single binary** — no runtime dependencies, no Node.js, no npm. Download and run.
-- **macOS menu bar app** — `GoClaw.app` runs the gateway in the background with a system tray icon, web chat, and one-click access to settings
+- **System tray app** — runs the gateway in the background with a tray icon, web chat, and one-click access to settings (macOS and Windows)
 - **Three interfaces** — Telegram (mobile/remote), WhatsApp (personal messaging), CLI (local terminal)
 - **Model-agnostic** — Claude, GPT, Gemini, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible API
 - **Multi-agent** — run multiple agents with different models, tools, and personas
@@ -44,8 +44,9 @@ GoClaw connects messaging channels (Telegram, WhatsApp, CLI) to LLMs (Claude, GP
 ### Build
 
 ```bash
-make build        # Build the CLI binary
-make build-app    # Build the macOS menu bar app (GoClaw.app)
+make build              # Build the CLI binary
+make build-app          # Build the macOS menu bar app (GoClaw.app)
+make build-app-windows  # Build the Windows system tray app (goclaw-app.exe)
 ```
 
 ### Setup
@@ -65,8 +66,9 @@ The wizard walks you through choosing an LLM provider, entering your API key, an
 # Start the full gateway (enables Telegram, WhatsApp, WebSocket API)
 ./goclaw start
 
-# Or launch the macOS menu bar app
-open GoClaw.app
+# Or launch the system tray app
+open GoClaw.app              # macOS
+goclaw-app.exe               # Windows
 ```
 
 ### Verify
@@ -93,26 +95,31 @@ open GoClaw.app
 
 ---
 
-## macOS Menu Bar App
+## System Tray App
 
-GoClaw ships a standalone macOS app (`GoClaw.app`) that runs the gateway as a background service with a system tray icon.
+GoClaw ships a system tray app that runs the gateway as a background service. Supported on macOS and Windows.
 
 ### Build
 
 ```bash
-make build-app
+make build-app          # macOS — produces GoClaw.app
+make build-app-windows  # Windows — produces goclaw-app.exe
 ```
 
-This produces `GoClaw.app` — a native macOS app bundle you can double-click or drag to `/Applications`.
+### Launch
+
+- **macOS:** Double-click `GoClaw.app` or drag it to `/Applications`
+- **Windows:** Double-click `goclaw-app.exe`
 
 ### Menu items
 
 | Item | Action |
 |------|--------|
-| **Open GoClaw Chat** | Opens a web-based chat interface in your default browser |
+| **Chat** | Opens a web-based chat interface in your default browser |
 | **Jobs** | Opens the cron jobs dashboard (`/jobs`) showing active scheduled tasks |
 | **Settings** | Opens `~/.goclaw/goclaw.json5` in your default editor |
-| **Quit GoClaw** | Gracefully shuts down the gateway and exits |
+| **Restart** | Restarts the gateway |
+| **Quit** | Gracefully shuts down the gateway and exits |
 
 ### Web chat interface
 
@@ -126,7 +133,15 @@ The app serves a chat page at `http://localhost:18789/chat` (also accessible at 
 
 ### Environment variables
 
-macOS `.app` bundles don't inherit shell environment variables. GoClaw.app automatically loads your shell profile (`~/.zshrc`, `~/.bashrc`) at startup, so API keys set via `export ANTHROPIC_API_KEY=...` work as expected. Alternatively, set API keys directly in `~/.goclaw/goclaw.json5`.
+**macOS:** `.app` bundles don't inherit shell environment variables. GoClaw.app automatically loads your shell profile (`~/.zshrc`, `~/.bashrc`) at startup, so API keys set via `export ANTHROPIC_API_KEY=...` work as expected.
+
+**Windows:** Set environment variables via System Settings or PowerShell:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
+```
+
+On both platforms, you can set API keys directly in the config file instead of using environment variables.
 
 ---
 
@@ -351,7 +366,7 @@ Ten built-in tools that agents can use:
 | `read_file` | Read file contents |
 | `write_file` | Create or overwrite files |
 | `edit_file` | Make targeted edits to existing files |
-| `bash` | Execute shell commands |
+| `bash` | Execute shell commands (uses `bash` on macOS/Linux, `cmd.exe` on Windows) |
 | `web_fetch` | Fetch a URL and return its content |
 | `web_search` | Search the web |
 | `browser` | Headless Chrome automation (navigate, click, type, screenshot, evaluate JS). All actions accept an optional `url` to navigate before acting |
@@ -365,7 +380,7 @@ Tool access is controlled per-agent via allow/deny policies.
 
 ## Data Directory
 
-All state lives in `~/.goclaw/` — no external database required.
+All state lives in `~/.goclaw/` (on Windows: `C:\Users\<you>\.goclaw\`) — no external database required.
 
 ```
 ~/.goclaw/
@@ -454,6 +469,7 @@ GoClaw is designed to run on your own hardware. The following measures protect y
 ```bash
 make build                  # Build the CLI binary
 make build-app              # Build the macOS menu bar app (GoClaw.app)
+make build-app-windows      # Build the Windows system tray app (goclaw-app.exe)
 make test                   # Run all tests
 make test-race              # Run tests with race detector
 make lint                   # Run golangci-lint

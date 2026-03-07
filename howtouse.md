@@ -6,7 +6,7 @@ GoClaw is a self-hosted AI agent gateway. It runs as a single binary on your mac
 
 - [Quick Start](#quick-start)
 - [CLI Commands](#cli-commands)
-- [macOS Menu Bar App](#macos-menu-bar-app)
+- [System Tray App (macOS & Windows)](#system-tray-app-macos--windows)
 - [Configuration](#configuration)
 - [LLM Providers](#llm-providers)
 - [Messaging Channels](#messaging-channels)
@@ -33,8 +33,9 @@ GoClaw is a self-hosted AI agent gateway. It runs as a single binary on your mac
 ### 1. Build
 
 ```bash
-make build        # CLI binary
-make build-app    # macOS menu bar app (GoClaw.app)
+make build              # CLI binary
+make build-app          # macOS menu bar app (GoClaw.app)
+make build-app-windows  # Windows system tray app (goclaw-app.exe)
 ```
 
 ### 2. Run the setup wizard
@@ -57,9 +58,10 @@ The wizard walks you through choosing an LLM provider, entering your API key, an
 ./goclaw start
 ```
 
-**Or launch the macOS menu bar app:**
+**Or launch the system tray app:**
 ```bash
-open GoClaw.app
+open GoClaw.app    # macOS
+goclaw-app.exe     # Windows
 ```
 
 ### 4. Verify your setup
@@ -102,40 +104,45 @@ The agent can read files, write files, edit files, run shell commands, fetch web
 
 ---
 
-## macOS Menu Bar App
+## System Tray App (macOS & Windows)
 
-GoClaw includes a native macOS menu bar app that runs the gateway in the background with a system tray icon. No terminal window needed — just double-click `GoClaw.app` or drag it to `/Applications`.
+GoClaw includes a system tray app that runs the gateway in the background. No terminal window needed — just double-click to launch. Supported on macOS and Windows.
 
 ### Build
 
 ```bash
-make build-app
+make build-app          # macOS — produces GoClaw.app
+make build-app-windows  # Windows — produces goclaw-app.exe
 ```
-
-This produces a `GoClaw.app` bundle in the project directory.
 
 ### Usage
 
-Launch the app by double-clicking `GoClaw.app` or from the terminal:
+**macOS:** Double-click `GoClaw.app`, drag it to `/Applications`, or launch from the terminal:
 
 ```bash
 open GoClaw.app
 ```
 
-A claw machine icon appears in the menu bar. The gateway starts automatically in the background.
+**Windows:** Double-click `goclaw-app.exe`. The app runs as a system tray icon in the taskbar notification area.
+
+> **Note:** On Windows 10/11, new tray icons may be hidden in the overflow area. Click the `^` arrow in the bottom-right of the taskbar to find it. To keep it always visible, go to **Settings → Personalization → Taskbar → Other system tray icons** and enable GoClaw.
+
+A claw machine icon appears in the system tray / menu bar. The gateway starts automatically in the background.
 
 ### Menu items
 
 | Item | Action |
 |------|--------|
-| **Open GoClaw Chat** | Opens `http://localhost:18789/chat` in your default browser |
+| **Chat** | Opens `http://localhost:18789/chat` in your default browser |
 | **Jobs** | Opens the cron jobs dashboard (`http://localhost:18789/jobs`) showing active scheduled tasks |
+| **Logs** | Opens the logs viewer (`http://localhost:18789/logs`) |
 | **Settings** | Opens `~/.goclaw/goclaw.json5` in your default text editor |
-| **Quit GoClaw** | Gracefully shuts down the gateway and exits the app |
+| **Restart** | Restarts the gateway without quitting the app |
+| **Quit** | Gracefully shuts down the gateway and exits the app |
 
 ### Web chat interface
 
-Clicking **Open GoClaw Chat** (or visiting `http://localhost:18789/chat` directly) opens a web-based chat interface with:
+Clicking **Chat** (or visiting `http://localhost:18789/chat` directly) opens a web-based chat interface with:
 
 - **Agent selector** — a dropdown in the header lists all configured agents; switch between them without leaving the page. Each agent maintains its own session history, which is loaded when you select it.
 - **Streaming responses** — text appears as the LLM generates it
@@ -150,9 +157,19 @@ The root URL `http://localhost:18789` redirects to `/chat` for convenience.
 
 ### Environment variables and API keys
 
-macOS `.app` bundles do not inherit environment variables from your shell profile (`.zshrc`, `.bashrc`, etc.). GoClaw.app handles this by automatically sourcing your shell environment at startup, so API keys like `ANTHROPIC_API_KEY` work as expected.
+**macOS:** `.app` bundles do not inherit environment variables from your shell profile (`.zshrc`, `.bashrc`, etc.). GoClaw.app handles this by automatically sourcing your shell environment at startup, so API keys like `ANTHROPIC_API_KEY` work as expected.
 
-If you prefer not to rely on environment variables, you can set API keys directly in the config file:
+**Windows:** Set environment variables via System Settings, or permanently via PowerShell:
+
+```powershell
+# Set API key permanently for your user account
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
+
+# Or set temporarily for the current session
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+```
+
+**Both platforms:** You can set API keys directly in the config file instead of using environment variables:
 
 ```json5
 {
@@ -167,21 +184,22 @@ If you prefer not to rely on environment variables, you can set API keys directl
 
 ### How it differs from `goclaw start`
 
-Both `goclaw start` and `GoClaw.app` run the same gateway with the same config file. The differences:
+Both `goclaw start` and the tray app run the same gateway with the same config file. The differences:
 
-| | `goclaw start` | `GoClaw.app` |
+| | `goclaw start` | Tray App |
 |---|---|---|
-| Runs in | Terminal (foreground) | Menu bar (background) |
+| Runs in | Terminal (foreground) | System tray (background) |
 | Chat interface | WebSocket API / web chat | Web chat in browser |
-| Quit | Ctrl+C | Menu bar > Quit GoClaw |
-| Environment vars | Inherited from shell | Loaded from shell profile |
-| Logs | Printed to terminal | System log (`Console.app`) |
+| Quit | Ctrl+C | Tray menu > Quit |
+| Environment vars | Inherited from shell | macOS: loaded from shell profile; Windows: system env vars |
+| Logs | Printed to terminal | Written to `~/.goclaw/goclaw-app.log` |
+| Error display | Terminal output | macOS: log file; Windows: message box dialog |
 
 ---
 
 ## Configuration
 
-GoClaw uses a JSON5 config file at `~/.goclaw/goclaw.json5`. JSON5 supports comments and trailing commas, making it easier to maintain.
+GoClaw uses a JSON5 config file at `~/.goclaw/goclaw.json5` (on Windows: `C:\Users\<you>\.goclaw\goclaw.json5`). JSON5 supports comments and trailing commas, making it easier to maintain.
 
 ### Minimal config
 
@@ -215,10 +233,26 @@ GoClaw uses a JSON5 config file at `~/.goclaw/goclaw.json5`. JSON5 supports comm
 
 API keys can be set via environment variables instead of (or in addition to) the config file. Environment variables take precedence.
 
+**macOS / Linux:**
+
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."
 export OLLAMA_BASE_URL="http://localhost:11434/v1"
+```
+
+**Windows (PowerShell — permanent):**
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
+[System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "sk-...", "User")
+```
+
+**Windows (Command Prompt — current session only):**
+
+```cmd
+set ANTHROPIC_API_KEY=sk-ant-...
+set OPENAI_API_KEY=sk-...
 ```
 
 The naming convention is `{PROVIDER}_API_KEY` or `{PROVIDER}_AUTH_TOKEN`, and `{PROVIDER}_BASE_URL` for custom endpoints. The `{PROVIDER}` part is the uppercased version of the provider name from your config (e.g., a provider named `"deepseek"` uses `DEEPSEEK_API_KEY`).
@@ -678,6 +712,7 @@ Use the `/screenshot` command in `goclaw chat` to interactively capture a window
 |----------|-----------|----------------|
 | macOS | `screencapture` (built-in) | Click a window |
 | Linux | `maim`, `gnome-screenshot`, or `scrot` | Click a window or drag to select |
+| Windows | PowerShell + .NET `System.Windows.Forms` | Full screen capture |
 
 ### Telegram
 
@@ -1315,7 +1350,7 @@ Each agent can have its own tool allow/deny list, controlling what actions it ca
 | `read_file` | Read file contents |
 | `write_file` | Create or overwrite files |
 | `edit_file` | Make targeted edits to existing files |
-| `bash` | Execute shell commands |
+| `bash` | Execute shell commands (uses `bash` on macOS/Linux, `cmd.exe` on Windows) |
 | `web_fetch` | Fetch a URL and return its content |
 | `web_search` | Search the web |
 | `browser` | Headless Chrome automation (navigate, click, type, screenshot, evaluate JS). All actions accept an optional `url` to navigate before acting |
@@ -1652,11 +1687,12 @@ The lead agent can use `ask_agent` to delegate coding tasks to the coder and rev
 
 ## Data Directory
 
-All GoClaw state lives in `~/.goclaw/`:
+All GoClaw state lives in `~/.goclaw/` (on Windows: `C:\Users\<you>\.goclaw\`):
 
 ```
 ~/.goclaw/
   goclaw.json5           # Configuration file
+  goclaw-app.log         # Tray app log file (macOS & Windows)
   sessions/              # Conversation history (JSONL files)
   memory/entries/        # Memory entries (Markdown files)
   skills/                # Shared skills (SKILL.md files)
