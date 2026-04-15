@@ -1,10 +1,10 @@
 version: 2
 
-project_name: goclaw
+project_name: felix
 
 builds:
-  - main: ./cmd/goclaw
-    binary: goclaw
+  - main: ./cmd/felix
+    binary: felix
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
@@ -40,4 +40,4 @@ changelog:
 release:
   github:
     owner: sausheong
-    name: goclaw
+    name: felix
