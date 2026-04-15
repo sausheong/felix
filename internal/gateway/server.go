@@ -20,6 +20,7 @@ type ServerOptions struct {
 	UIHandler      http.Handler     // optional /ui handler
 	ChatHandler    http.HandlerFunc // optional /chat handler
 	JobsHandler    http.HandlerFunc // optional /jobs handler
+	Settings       *SettingsHandlers // optional /settings handlers
 	LogBuffer      *LogBuffer       // optional log buffer for /logs
 }
 
@@ -85,6 +86,13 @@ func (s *Server) routes() {
 
 	if s.opts.JobsHandler != nil {
 		s.router.Get("/jobs", s.opts.JobsHandler)
+	}
+
+	if s.opts.Settings != nil {
+		s.router.Get("/settings", s.opts.Settings.Page)
+		s.router.Get("/settings/", s.opts.Settings.Page)
+		s.router.Get("/settings/api/config", s.opts.Settings.GetConfig)
+		s.router.Post("/settings/api/config", s.opts.Settings.SaveConfig)
 	}
 
 	if s.opts.LogBuffer != nil {

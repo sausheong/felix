@@ -10,10 +10,13 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/sausheong/cortex"
 	"github.com/sausheong/goclaw/internal/agent"
 	"github.com/sausheong/goclaw/internal/config"
 	"github.com/sausheong/goclaw/internal/llm"
+	"github.com/sausheong/goclaw/internal/memory"
 	"github.com/sausheong/goclaw/internal/session"
+	"github.com/sausheong/goclaw/internal/skill"
 	"github.com/sausheong/goclaw/internal/tools"
 )
 
@@ -35,14 +38,18 @@ type JSONRPCResponse struct {
 
 // WebSocketHandler handles WebSocket connections and JSON-RPC dispatch.
 type WebSocketHandler struct {
-	providers    map[string]llm.LLMProvider
-	tools        *tools.Registry
-	sessionStore *session.Store
-	config       *config.Config
-	jobScheduler tools.JobScheduler
-	activeRuns   map[*websocket.Conn]context.CancelFunc
-	upgrader     websocket.Upgrader
-	mu           sync.RWMutex
+	providers         map[string]llm.LLMProvider
+	tools             *tools.Registry
+	sessionStore      *session.Store
+	config            *config.Config
+	jobScheduler      tools.JobScheduler
+	skills            *skill.Loader
+	memory            *memory.Manager
+	cortex            *cortex.Cortex
+	activeRuns        map[*websocket.Conn]context.CancelFunc
+	activeSessionKeys map[*websocket.Conn]map[string]string // conn → agentID → sessionKey
+	upgrader          websocket.Upgrader
+	mu                sync.RWMutex
 }
 
 // NewWebSocketHandler creates a new WebSocket handler.
@@ -53,11 +60,12 @@ func NewWebSocketHandler(
 	cfg *config.Config,
 ) *WebSocketHandler {
 	return &WebSocketHandler{
-		providers:    providers,
-		tools:        toolReg,
-		sessionStore: sessionStore,
-		config:       cfg,
-		activeRuns:   make(map[*websocket.Conn]context.CancelFunc),
+		providers:         providers,
+		tools:             toolReg,
+		sessionStore:      sessionStore,
+		config:            cfg,
+		activeRuns:        make(map[*websocket.Conn]context.CancelFunc),
+		activeSessionKeys: make(map[*websocket.Conn]map[string]string),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: AllowedOrigins(nil), // default: localhost-only; overridden by SetOriginChecker
 		},
@@ -85,6 +93,27 @@ func (h *WebSocketHandler) SetJobScheduler(js tools.JobScheduler) {
 	h.jobScheduler = js
 }
 
+// SetCortex sets the Cortex knowledge graph instance.
+func (h *WebSocketHandler) SetCortex(cx *cortex.Cortex) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cortex = cx
+}
+
+// SetSkills sets the skill loader for the WebSocket handler.
+func (h *WebSocketHandler) SetSkills(s *skill.Loader) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.skills = s
+}
+
+// SetMemory sets the memory manager for the WebSocket handler.
+func (h *WebSocketHandler) SetMemory(m *memory.Manager) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.memory = m
+}
+
 // Handle upgrades an HTTP connection to WebSocket and processes messages.
 func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	conn, err := h.upgrader.Upgrade(w, r, nil)
@@ -104,6 +133,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			cancel()
 			delete(h.activeRuns, conn)
 		}
+		delete(h.activeSessionKeys, conn)
 		h.mu.Unlock()
 	}()
 
@@ -165,6 +195,10 @@ func (h *WebSocketHandler) dispatch(conn *websocket.Conn, req JSONRPCRequest) {
 		h.handleAgentStatus(conn, req)
 	case "session.list":
 		h.handleSessionList(conn, req)
+	case "session.new":
+		h.handleSessionNew(conn, req)
+	case "session.switch":
+		h.handleSessionSwitch(conn, req)
 	case "session.history":
 		h.handleSessionHistory(conn, req)
 	case "session.clear":
@@ -189,8 +223,9 @@ func (h *WebSocketHandler) dispatch(conn *websocket.Conn, req JSONRPCRequest) {
 }
 
 type chatSendParams struct {
-	AgentID string `json:"agentId"`
-	Text    string `json:"text"`
+	AgentID    string `json:"agentId"`
+	Text       string `json:"text"`
+	SessionKey string `json:"sessionKey,omitempty"`
 }
 
 func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCRequest) {
@@ -233,8 +268,18 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		return
 	}
 
-	// Load or create session
-	sessionKey := "ws_default"
+	// Load or create session — use explicit param, per-connection tracking, or default
+	sessionKey := params.SessionKey
+	if sessionKey == "" {
+		h.mu.RLock()
+		if m, ok := h.activeSessionKeys[conn]; ok {
+			sessionKey = m[params.AgentID]
+		}
+		h.mu.RUnlock()
+	}
+	if sessionKey == "" {
+		sessionKey = "ws_default"
+	}
 	sess, err := h.sessionStore.Load(params.AgentID, sessionKey)
 	if err != nil {
 		writeJSON(conn, JSONRPCResponse{
@@ -255,6 +300,12 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	}
 
 	// Run agent
+	h.mu.RLock()
+	cx := h.cortex
+	sk := h.skills
+	mem := h.memory
+	h.mu.RUnlock()
+
 	rt := &agent.Runtime{
 		LLM:          provider,
 		Tools:        executor,
@@ -265,6 +316,9 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		Workspace:    agentCfg.Workspace,
 		MaxTurns:     agentCfg.MaxTurns,
 		SystemPrompt: agentCfg.SystemPrompt,
+		Skills:       sk,
+		Memory:       mem,
+		Cortex:       cx,
 	}
 
 	runCtx, runCancel := context.WithCancel(context.Background())
@@ -373,16 +427,146 @@ func (h *WebSocketHandler) handleAgentStatus(conn *websocket.Conn, req JSONRPCRe
 }
 
 func (h *WebSocketHandler) handleSessionList(conn *websocket.Conn, req JSONRPCRequest) {
-	// Basic implementation — list is limited for Phase 1
+	var params sessionParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		params.AgentID = "default"
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+
+	sessions, err := h.sessionStore.List(params.AgentID)
+	if err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32603, "message": "List sessions error: " + err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	// Determine active session key for this connection+agent
+	h.mu.RLock()
+	activeKey := "ws_default"
+	if m, ok := h.activeSessionKeys[conn]; ok {
+		if k, ok := m[params.AgentID]; ok {
+			activeKey = k
+		}
+	}
+	h.mu.RUnlock()
+
+	var result []map[string]any
+	for _, s := range sessions {
+		result = append(result, map[string]any{
+			"key":          s.Key,
+			"entryCount":   s.EntryCount,
+			"createdAt":    s.CreatedAt.Unix(),
+			"lastActivity": s.LastActivity.Unix(),
+			"active":       s.Key == activeKey,
+		})
+	}
+
 	writeJSON(conn, JSONRPCResponse{
 		JSONRPC: "2.0",
-		Result:  map[string]any{"sessions": []any{}},
+		Result:  map[string]any{"sessions": result},
+		ID:      req.ID,
+	})
+}
+
+type sessionNewParams struct {
+	AgentID string `json:"agentId"`
+	Name    string `json:"name"`
+}
+
+func (h *WebSocketHandler) handleSessionNew(conn *websocket.Conn, req JSONRPCRequest) {
+	var params sessionNewParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "Invalid params"},
+			ID:      req.ID,
+		})
+		return
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+	if params.Name == "" {
+		params.Name = time.Now().Format("20060102-150405")
+	}
+
+	sessionKey := "ws_" + params.Name
+	if h.sessionStore.Exists(params.AgentID, sessionKey) {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "Session already exists: " + sessionKey},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	// Create the session file on disk so it appears in List
+	if err := h.sessionStore.Create(params.AgentID, sessionKey); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32603, "message": "Create session error: " + err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	// Set as active for this connection
+	h.mu.Lock()
+	if h.activeSessionKeys[conn] == nil {
+		h.activeSessionKeys[conn] = make(map[string]string)
+	}
+	h.activeSessionKeys[conn][params.AgentID] = sessionKey
+	h.mu.Unlock()
+
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result:  map[string]any{"sessionKey": sessionKey},
+		ID:      req.ID,
+	})
+}
+
+type sessionSwitchParams struct {
+	AgentID    string `json:"agentId"`
+	SessionKey string `json:"sessionKey"`
+}
+
+func (h *WebSocketHandler) handleSessionSwitch(conn *websocket.Conn, req JSONRPCRequest) {
+	var params sessionSwitchParams
+	if err := json.Unmarshal(req.Params, &params); err != nil || params.SessionKey == "" {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "Invalid params: sessionKey required"},
+			ID:      req.ID,
+		})
+		return
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+
+	// Verify session exists (or it's a new one — Load creates if missing)
+	h.mu.Lock()
+	if h.activeSessionKeys[conn] == nil {
+		h.activeSessionKeys[conn] = make(map[string]string)
+	}
+	h.activeSessionKeys[conn][params.AgentID] = params.SessionKey
+	h.mu.Unlock()
+
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result:  map[string]any{"sessionKey": params.SessionKey},
 		ID:      req.ID,
 	})
 }
 
 type sessionParams struct {
-	AgentID string `json:"agentId"`
+	AgentID    string `json:"agentId"`
+	SessionKey string `json:"sessionKey,omitempty"`
 }
 
 func (h *WebSocketHandler) handleSessionHistory(conn *websocket.Conn, req JSONRPCRequest) {
@@ -394,7 +578,20 @@ func (h *WebSocketHandler) handleSessionHistory(conn *websocket.Conn, req JSONRP
 		params.AgentID = "default"
 	}
 
-	sess, err := h.sessionStore.Load(params.AgentID, "ws_default")
+	// Resolve session key
+	sessionKey := params.SessionKey
+	if sessionKey == "" {
+		h.mu.RLock()
+		if m, ok := h.activeSessionKeys[conn]; ok {
+			sessionKey = m[params.AgentID]
+		}
+		h.mu.RUnlock()
+	}
+	if sessionKey == "" {
+		sessionKey = "ws_default"
+	}
+
+	sess, err := h.sessionStore.Load(params.AgentID, sessionKey)
 	if err != nil {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -473,7 +670,20 @@ func (h *WebSocketHandler) handleSessionClear(conn *websocket.Conn, req JSONRPCR
 		params.AgentID = "default"
 	}
 
-	if err := h.sessionStore.Delete(params.AgentID, "ws_default"); err != nil {
+	// Resolve session key
+	sessionKey := params.SessionKey
+	if sessionKey == "" {
+		h.mu.RLock()
+		if m, ok := h.activeSessionKeys[conn]; ok {
+			sessionKey = m[params.AgentID]
+		}
+		h.mu.RUnlock()
+	}
+	if sessionKey == "" {
+		sessionKey = "ws_default"
+	}
+
+	if err := h.sessionStore.Delete(params.AgentID, sessionKey); err != nil {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
 			Error:   map[string]any{"code": -32603, "message": "Delete error: " + err.Error()},

@@ -9,9 +9,10 @@ import (
 func NewChatHandler(port int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ws://127.0.0.1:* ws://localhost:*; img-src 'self' data:")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ws: wss:; img-src 'self' data:")
 		fmt.Fprintf(w, chatHTML, port)
 	}
 }
@@ -103,7 +104,22 @@ html.light #header .logo {
 	color: var(--text);
 	transition: border-color 0.3s;
 }
-#theme-btn:hover, #clear-btn:hover, #agent-select:hover { border-color: var(--accent); }
+#theme-btn:hover, #clear-btn:hover, #toggle-tools-btn:hover, #agent-select:hover, #session-select:hover, #new-session-btn:hover { border-color: var(--accent); }
+#toggle-tools-btn {
+	background: none;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.3rem 0.5rem;
+	cursor: pointer;
+	font-size: 0.8rem;
+	line-height: 1;
+	color: var(--text);
+	transition: border-color 0.3s;
+}
+#toggle-tools-btn.active {
+	border-color: var(--accent);
+	color: var(--accent);
+}
 #agent-select {
 	background: var(--bg-input);
 	border: 1px solid var(--border);
@@ -116,7 +132,30 @@ html.light #header .logo {
 	cursor: pointer;
 	transition: background 0.3s, border-color 0.3s, color 0.3s;
 }
-#agent-select:focus { border-color: var(--accent); }
+#agent-select:focus, #session-select:focus { border-color: var(--accent); }
+#session-select {
+	background: var(--bg-input);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.3rem 0.5rem;
+	font-size: 0.85rem;
+	color: var(--text);
+	font-family: inherit;
+	outline: none;
+	cursor: pointer;
+	transition: background 0.3s, border-color 0.3s, color 0.3s;
+}
+#new-session-btn {
+	background: none;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.3rem 0.5rem;
+	cursor: pointer;
+	font-size: 0.8rem;
+	line-height: 1;
+	color: var(--text);
+	transition: border-color 0.3s;
+}
 #clear-btn {
 	background: none;
 	border: 1px solid var(--border);
@@ -270,6 +309,7 @@ html.light #header .logo {
 	cursor: pointer;
 }
 .tool-call-output.has-image { max-height: none; }
+.hide-tools .tool-call { display: none; }
 .tool-call-header .tool-detail {
 	color: var(--text-muted);
 	font-family: "SF Mono", "Fira Code", monospace;
@@ -343,7 +383,10 @@ html.light #header .logo {
 <div id="header">
 	<h1>GoClaw</h1>
 	<select id="agent-select" title="Select agent"></select>
+	<select id="session-select" title="Select session"></select>
+	<button id="new-session-btn" title="New session">+ New</button>
 	<span class="spacer"></span>
+	<button id="toggle-tools-btn" title="Hide/show tool calls">Tools</button>
 	<button id="clear-btn" title="Clear session">Clear</button>
 	<button id="theme-btn" title="Toggle light/dark mode">&#9790;</button>
 	<span class="status" id="conn-status">connecting...</span>
@@ -358,6 +401,8 @@ html.light #header .logo {
 <script>
 (function() {
 	var PORT = %d;
+	var wsProto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+	var wsBase = wsProto + location.host + location.pathname.replace(/\/chat\/?$/, '');
 	var messagesEl = document.getElementById('messages');
 	var inputEl = document.getElementById('input');
 	var sendBtn = document.getElementById('send-btn');
@@ -366,6 +411,27 @@ html.light #header .logo {
 	var clearBtn = document.getElementById('clear-btn');
 	var stopBtn = document.getElementById('stop-btn');
 	var agentSelect = document.getElementById('agent-select');
+	var sessionSelect = document.getElementById('session-select');
+	var newSessionBtn = document.getElementById('new-session-btn');
+	var toggleToolsBtn = document.getElementById('toggle-tools-btn');
+
+	// Tool visibility toggle
+	var toolsHidden = localStorage.getItem('goclaw-hide-tools') === 'true';
+	function applyToolVisibility() {
+		if (toolsHidden) {
+			messagesEl.classList.add('hide-tools');
+			toggleToolsBtn.classList.remove('active');
+		} else {
+			messagesEl.classList.remove('hide-tools');
+			toggleToolsBtn.classList.add('active');
+		}
+	}
+	applyToolVisibility();
+	toggleToolsBtn.addEventListener('click', function() {
+		toolsHidden = !toolsHidden;
+		localStorage.setItem('goclaw-hide-tools', toolsHidden);
+		applyToolVisibility();
+	});
 
 	// Theme toggle
 	function setTheme(mode) {
@@ -394,12 +460,13 @@ html.light #header .logo {
 		ws.send(JSON.stringify({
 			jsonrpc: '2.0',
 			method: 'session.clear',
-			params: { agentId: agentSelect.value },
+			params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
 			id: 'clear'
 		}));
 		messagesEl.innerHTML = '';
 		currentAssistant = null;
 		toolEls = {};
+		loadSessions();
 	});
 
 	agentSelect.addEventListener('change', function() {
@@ -407,13 +474,50 @@ html.light #header .logo {
 		currentAssistant = null;
 		toolEls = {};
 		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		// Load sessions for the new agent
+		loadSessions();
+	});
+
+	sessionSelect.addEventListener('change', function() {
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		ws.send(JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'session.switch',
+			params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
+			id: 'session-switch'
+		}));
+		messagesEl.innerHTML = '';
+		currentAssistant = null;
+		toolEls = {};
 		ws.send(JSON.stringify({
 			jsonrpc: '2.0',
 			method: 'session.history',
-			params: { agentId: agentSelect.value },
+			params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
 			id: 'history'
 		}));
 	});
+
+	newSessionBtn.addEventListener('click', function() {
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		var name = prompt('Session name (leave empty for timestamp):');
+		if (name === null) return; // cancelled
+		ws.send(JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'session.new',
+			params: { agentId: agentSelect.value, name: name || '' },
+			id: 'session-new'
+		}));
+	});
+
+	function loadSessions() {
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		ws.send(JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'session.list',
+			params: { agentId: agentSelect.value },
+			id: 'sessions'
+		}));
+	}
 
 	var ws = null;
 	var msgId = 0;
@@ -598,7 +702,7 @@ html.light #header .logo {
 	}
 
 	function connect() {
-		ws = new WebSocket('ws://localhost:' + PORT + '/ws');
+		ws = new WebSocket(wsBase + '/ws');
 
 		ws.onopen = function() {
 			connStatus.textContent = 'connected';
@@ -654,13 +758,51 @@ html.light #header .logo {
 						opt.textContent = 'default';
 						agentSelect.appendChild(opt);
 					}
-					// Load session history for the selected agent
+					// Load sessions for the selected agent
+					loadSessions();
+					return;
+				}
+
+				// Handle session.list response
+				if (resp.id === 'sessions') {
+					var sessions = resp.result.sessions || [];
+					sessionSelect.innerHTML = '';
+					for (var i = 0; i < sessions.length; i++) {
+						var opt = document.createElement('option');
+						opt.value = sessions[i].key;
+						opt.textContent = sessions[i].key + ' (' + sessions[i].entryCount + ')';
+						if (sessions[i].active) opt.selected = true;
+						sessionSelect.appendChild(opt);
+					}
+					if (sessions.length === 0) {
+						var opt = document.createElement('option');
+						opt.value = 'ws_default';
+						opt.textContent = 'ws_default (0)';
+						sessionSelect.appendChild(opt);
+					}
+					// Load history for the active session
+					messagesEl.innerHTML = '';
+					currentAssistant = null;
+					toolEls = {};
 					ws.send(JSON.stringify({
 						jsonrpc: '2.0',
 						method: 'session.history',
-						params: { agentId: agentSelect.value },
+						params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
 						id: 'history'
 					}));
+					return;
+				}
+
+				// Handle session.new response
+				if (resp.id === 'session-new') {
+					if (resp.result && resp.result.sessionKey) {
+						loadSessions();
+					}
+					return;
+				}
+
+				// Handle session.switch response
+				if (resp.id === 'session-switch') {
 					return;
 				}
 
@@ -920,7 +1062,7 @@ html.light #header .logo {
 		ws.send(JSON.stringify({
 			jsonrpc: '2.0',
 			method: 'chat.send',
-			params: { agentId: agentSelect.value, text: text },
+			params: { agentId: agentSelect.value, text: text, sessionKey: sessionSelect.value },
 			id: msgId
 		}));
 

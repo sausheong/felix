@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/sausheong/cortex"
+	cortexadapter "github.com/sausheong/goclaw/internal/cortex"
 	"github.com/sausheong/goclaw/internal/llm"
 	"github.com/sausheong/goclaw/internal/memory"
 	"github.com/sausheong/goclaw/internal/session"
@@ -48,6 +50,7 @@ type Runtime struct {
 	SystemPrompt string          // optional: inline system prompt (overrides IDENTITY.md)
 	Skills       *skill.Loader   // optional: skill loader for selective injection
 	Memory       *memory.Manager // optional: memory manager for context retrieval
+	Cortex       *cortex.Cortex  // optional: Cortex knowledge graph for recall/ingest
 }
 
 // Run executes the agent loop for a user message, returning a channel of events.
@@ -99,6 +102,17 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			if r.Memory != nil {
 				memEntries := r.Memory.Search(userMsg, 3)
 				if extra := memory.FormatForPrompt(memEntries); extra != "" {
+					systemPrompt += extra
+				}
+			}
+
+			// Inject Cortex knowledge graph context
+			if r.Cortex != nil {
+				systemPrompt += cortexadapter.CortexHint
+				results, err := r.Cortex.Recall(ctx, userMsg, cortex.WithLimit(5))
+				if err != nil {
+					slog.Debug("cortex recall error", "error", err)
+				} else if extra := cortexadapter.FormatResults(results); extra != "" {
 					systemPrompt += extra
 				}
 			}
@@ -157,6 +171,13 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 
 			// If no tool calls, we're done
 			if len(toolCalls) == 0 {
+				// Auto-ingest conversation into Cortex in background
+				if r.Cortex != nil && textContent.Len() > 0 {
+					cx := r.Cortex
+					uMsg := userMsg
+					aMsg := textContent.String()
+					go cortexadapter.IngestConversation(context.Background(), cx, uMsg, aMsg)
+				}
 				events <- AgentEvent{Type: EventDone}
 				return
 			}

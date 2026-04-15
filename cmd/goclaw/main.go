@@ -21,9 +21,11 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 
+	"github.com/sausheong/cortex"
 	"github.com/sausheong/goclaw/internal/agent"
 	"github.com/sausheong/goclaw/internal/channel"
 	"github.com/sausheong/goclaw/internal/config"
+	cortexadapter "github.com/sausheong/goclaw/internal/cortex"
 	"github.com/sausheong/goclaw/internal/cron"
 	"github.com/sausheong/goclaw/internal/gateway"
 	"github.com/sausheong/goclaw/internal/llm"
@@ -51,6 +53,7 @@ func main() {
 		chatCmd(),
 		clearCmd(),
 		statusCmd(),
+		sessionsCmd(),
 		versionCmd(),
 		onboardCmd(),
 		doctorCmd(),
@@ -116,6 +119,49 @@ func runClear(agentID string) error {
 		return fmt.Errorf("clear session: %w", err)
 	}
 	fmt.Printf("Session cleared for agent %q.\n", agentID)
+	return nil
+}
+
+func sessionsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "sessions [agent]",
+		Short: "List all sessions for an agent",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			agentID := "default"
+			if len(args) > 0 {
+				agentID = args[0]
+			}
+			return runSessions(agentID)
+		},
+	}
+}
+
+func runSessions(agentID string) error {
+	dataDir := config.DefaultDataDir()
+	store := session.NewStore(filepath.Join(dataDir, "sessions"))
+	sessions, err := store.List(agentID)
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+	if len(sessions) == 0 {
+		fmt.Printf("No sessions found for agent %q.\n", agentID)
+		return nil
+	}
+	fmt.Printf("Sessions for agent %q:\n\n", agentID)
+	fmt.Printf("  %-20s  %6s  %-20s  %-20s\n", "KEY", "ENTRIES", "CREATED", "LAST ACTIVITY")
+	fmt.Printf("  %-20s  %6s  %-20s  %-20s\n", "---", "------", "-------", "-------------")
+	for _, s := range sessions {
+		created := s.CreatedAt.Format("2006-01-02 15:04:05")
+		lastAct := s.LastActivity.Format("2006-01-02 15:04:05")
+		if s.CreatedAt.IsZero() {
+			created = "-"
+		}
+		if s.LastActivity.IsZero() {
+			lastAct = "-"
+		}
+		fmt.Printf("  %-20s  %6d  %-20s  %-20s\n", s.Key, s.EntryCount, created, lastAct)
+	}
 	return nil
 }
 
@@ -227,6 +273,19 @@ func runChat(agentID, configPath, modelOverride string) error {
 		memMgr.Load()
 	}
 
+	// Init Cortex knowledge graph
+	var cx *cortex.Cortex
+	if cfg.Cortex.Enabled {
+		openaiOpts := startup.ResolveProviderOpts("openai", cfg)
+		var cxErr error
+		cx, cxErr = cortexadapter.Init(cfg.Cortex, openaiOpts.APIKey)
+		if cxErr != nil {
+			slog.Warn("failed to init cortex", "error", cxErr)
+		} else {
+			defer cx.Close()
+		}
+	}
+
 	// Ensure workspace exists
 	os.MkdirAll(agentCfg.Workspace, 0o755)
 
@@ -293,6 +352,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 	}
 	chatAgentRunner.SetSkills(skillLoader)
 	chatAgentRunner.SetMemory(memMgr)
+	chatAgentRunner.SetCortex(cx)
 	tools.RegisterAskAgent(toolReg, chatAgentRunner)
 
 	// Init cron scheduler for chat mode so the agent can use the cron tool
@@ -322,6 +382,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 				SystemPrompt: agentCfg.SystemPrompt,
 				Skills:       skillLoader,
 				Memory:       memMgr,
+				Cortex:       cx,
 			}
 			return cronRT.RunSync(ctx, prompt, nil)
 		}
@@ -383,10 +444,14 @@ func runChat(agentID, configPath, modelOverride string) error {
 		SystemPrompt: agentCfg.SystemPrompt,
 		Skills:       skillLoader,
 		Memory:       memMgr,
+		Cortex:       cx,
 	}
 
+	// Track current session key for switching
+	currentSessionKey := "cli_local"
+
 	fmt.Printf("GoClaw chat — agent %q (model: %s)\n", agentID, modelStr)
-	fmt.Println("Type /quit to exit.")
+	fmt.Println("Type /quit to exit, /sessions to list sessions, /new to create a new session.")
 	fmt.Println()
 
 	// Interactive REPL
@@ -414,6 +479,131 @@ func runChat(agentID, configPath, modelOverride string) error {
 		if input == "/quit" || input == "/exit" {
 			fmt.Println("Goodbye!")
 			return nil
+		}
+
+		// Session management slash commands
+		if input == "/sessions" {
+			sessions, err := sessionStore.List(agentID)
+			if err != nil {
+				fmt.Printf("\033[31mError listing sessions: %v\033[0m\n", err)
+				continue
+			}
+			if len(sessions) == 0 {
+				fmt.Println("No sessions found.")
+				continue
+			}
+			fmt.Println("Sessions:")
+			for _, s := range sessions {
+				marker := "  "
+				if s.Key == currentSessionKey {
+					marker = "* "
+				}
+				lastAct := s.LastActivity.Format("2006-01-02 15:04")
+				if s.LastActivity.IsZero() {
+					lastAct = "-"
+				}
+				fmt.Printf("  %s%-20s  %d entries  %s\n", marker, s.Key, s.EntryCount, lastAct)
+			}
+			continue
+		}
+
+		if strings.HasPrefix(input, "/new") {
+			name := strings.TrimSpace(strings.TrimPrefix(input, "/new"))
+			if name == "" {
+				name = time.Now().Format("20060102-150405")
+			}
+			newKey := "cli_" + name
+			if sessionStore.Exists(agentID, newKey) {
+				fmt.Printf("\033[31mSession %q already exists.\033[0m\n", newKey)
+				continue
+			}
+			if err := sessionStore.Create(agentID, newKey); err != nil {
+				fmt.Printf("\033[31mError creating session: %v\033[0m\n", err)
+				continue
+			}
+			newSess, err := sessionStore.Load(agentID, newKey)
+			if err != nil {
+				fmt.Printf("\033[31mError loading session: %v\033[0m\n", err)
+				continue
+			}
+			sess = newSess
+			rt.Session = sess
+			currentSessionKey = newKey
+			fmt.Printf("Switched to new session %q\n", newKey)
+			continue
+		}
+
+		if strings.HasPrefix(input, "/switch ") {
+			name := strings.TrimSpace(strings.TrimPrefix(input, "/switch "))
+			if name == "" {
+				fmt.Println("Usage: /switch <session-key>")
+				continue
+			}
+			switchKey := name
+			// Allow shorthand without cli_ prefix
+			if !sessionStore.Exists(agentID, switchKey) && sessionStore.Exists(agentID, "cli_"+switchKey) {
+				switchKey = "cli_" + switchKey
+			}
+			if !sessionStore.Exists(agentID, switchKey) {
+				fmt.Printf("\033[31mSession %q not found.\033[0m\n", name)
+				continue
+			}
+			newSess, err := sessionStore.Load(agentID, switchKey)
+			if err != nil {
+				fmt.Printf("\033[31mError loading session: %v\033[0m\n", err)
+				continue
+			}
+			sess = newSess
+			rt.Session = sess
+			currentSessionKey = switchKey
+			fmt.Printf("Switched to session %q (%d entries)\n", switchKey, len(sess.Entries()))
+			continue
+		}
+
+		if strings.HasPrefix(input, "/rename ") {
+			name := strings.TrimSpace(strings.TrimPrefix(input, "/rename "))
+			if name == "" {
+				fmt.Println("Usage: /rename <new-name>")
+				continue
+			}
+			newKey := "cli_" + name
+			if err := sessionStore.Rename(agentID, currentSessionKey, newKey); err != nil {
+				fmt.Printf("\033[31mError renaming session: %v\033[0m\n", err)
+				continue
+			}
+			// Reload session with new key
+			newSess, err := sessionStore.Load(agentID, newKey)
+			if err != nil {
+				fmt.Printf("\033[31mError reloading session: %v\033[0m\n", err)
+				continue
+			}
+			sess = newSess
+			rt.Session = sess
+			currentSessionKey = newKey
+			fmt.Printf("Session renamed to %q\n", newKey)
+			continue
+		}
+
+		if strings.HasPrefix(input, "/delete ") {
+			name := strings.TrimSpace(strings.TrimPrefix(input, "/delete "))
+			if name == "" {
+				fmt.Println("Usage: /delete <session-key>")
+				continue
+			}
+			delKey := name
+			if !sessionStore.Exists(agentID, delKey) && sessionStore.Exists(agentID, "cli_"+delKey) {
+				delKey = "cli_" + delKey
+			}
+			if delKey == currentSessionKey {
+				fmt.Println("\033[31mCannot delete the active session.\033[0m")
+				continue
+			}
+			if err := sessionStore.Delete(agentID, delKey); err != nil {
+				fmt.Printf("\033[31mError deleting session: %v\033[0m\n", err)
+				continue
+			}
+			fmt.Printf("Session %q deleted.\n", delKey)
+			continue
 		}
 
 		// Handle /screenshot command

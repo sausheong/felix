@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sausheong/cortex"
 	"github.com/sausheong/goclaw/internal/agent"
 	"github.com/sausheong/goclaw/internal/channel"
 	"github.com/sausheong/goclaw/internal/config"
@@ -32,6 +33,7 @@ type ChannelManager struct {
 	config       *config.Config
 	skills       *skill.Loader
 	memory       *memory.Manager
+	cortex       *cortex.Cortex
 	dmPolicy     string // "ignore", "respond", "notify"
 
 	connectTimeout time.Duration // 0 means no timeout (blocks until connected)
@@ -78,6 +80,13 @@ func (cm *ChannelManager) SetMemory(m *memory.Manager) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.memory = m
+}
+
+// SetCortex sets the Cortex knowledge graph for the channel manager.
+func (cm *ChannelManager) SetCortex(cx *cortex.Cortex) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.cortex = cx
 }
 
 // SetConnectTimeout sets a per-channel connect timeout. When non-zero,
@@ -299,6 +308,7 @@ func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel,
 		SystemPrompt: agentCfg.SystemPrompt,
 		Skills:       cm.skills,
 		Memory:       cm.memory,
+		Cortex:       cm.cortex,
 	}
 
 	slog.Info("processing message",

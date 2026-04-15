@@ -21,6 +21,7 @@ type Config struct {
 	Channels  ChannelsConfig           `json:"channels"`
 	Heartbeat HeartbeatConfig          `json:"heartbeat"`
 	Memory    MemoryConfig             `json:"memory"`
+	Cortex    CortexConfig             `json:"cortex"`
 	Security  SecurityConfig           `json:"security"`
 
 	mu   sync.RWMutex
@@ -126,6 +127,12 @@ type MemoryConfig struct {
 	EmbeddingProvider string `json:"embeddingProvider"`
 	EmbeddingModel    string `json:"embeddingModel"`
 	MaxEntries        int    `json:"maxEntries"`
+}
+
+type CortexConfig struct {
+	Enabled  bool   `json:"enabled"`
+	DBPath   string `json:"dbPath"`   // path to brain.db (default: ~/.goclaw/brain.db)
+	LLMModel string `json:"llmModel"` // model for extraction/decomposition (default: gpt-4o-mini)
 }
 
 type SecurityConfig struct {
@@ -315,6 +322,35 @@ func (c *Config) GetAgent(id string) (*AgentConfig, bool) {
 // Path returns the file path this config was loaded from.
 func (c *Config) Path() string {
 	return c.path
+}
+
+// SetPath sets the file path for saving.
+func (c *Config) SetPath(path string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.path = path
+}
+
+// Save writes the config to disk as formatted JSON.
+func (c *Config) Save() error {
+	c.mu.RLock()
+	path := c.path
+	c.mu.RUnlock()
+
+	if path == "" {
+		path = DefaultConfigPath()
+	}
+
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	return nil
 }
 
 // stripJSON5 removes single-line comments and trailing commas from JSON5

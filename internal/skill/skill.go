@@ -269,7 +269,7 @@ func FormatForPrompt(skills []Skill) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("\n\n## Available Skills\n\n")
+	b.WriteString("\n\n## Available Skills\n\nIMPORTANT: The following skills are matched to the user's request. You MUST use these skills and their CLI tools via bash instead of alternative approaches (like opening a browser or using APIs directly). The skill provides the correct command-line tool and usage instructions — follow them.\n\n")
 
 	for _, s := range skills {
 		b.WriteString("### ")

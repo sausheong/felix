@@ -11,9 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sausheong/cortex"
 	"github.com/sausheong/goclaw/internal/agent"
 	"github.com/sausheong/goclaw/internal/channel"
 	"github.com/sausheong/goclaw/internal/config"
+	cortexadapter "github.com/sausheong/goclaw/internal/cortex"
 	"github.com/sausheong/goclaw/internal/cron"
 	"github.com/sausheong/goclaw/internal/gateway"
 	"github.com/sausheong/goclaw/internal/heartbeat"
@@ -225,8 +227,22 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		}
 	}
 
+	// Init Cortex knowledge graph
+	var cx *cortex.Cortex
+	if cfg.Cortex.Enabled {
+		openaiOpts := ResolveProviderOpts("openai", cfg)
+		var initErr error
+		cx, initErr = cortexadapter.Init(cfg.Cortex, openaiOpts.APIKey)
+		if initErr != nil {
+			slog.Warn("failed to init cortex", "error", initErr)
+		}
+	}
+
 	// Init WebSocket handler
 	wsHandler := gateway.NewWebSocketHandler(providers, toolReg, sessionStore, cfg)
+	wsHandler.SetSkills(skillLoader)
+	wsHandler.SetMemory(memMgr)
+	wsHandler.SetCortex(cx)
 
 	// Init message router
 	fallbackAgent := "default"
@@ -239,6 +255,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	chanMgr := gateway.NewChannelManager(msgRouter, providers, toolReg, sessionStore, cfg, cfg.Security.DMPolicy.UnknownSenders)
 	chanMgr.SetSkills(skillLoader)
 	chanMgr.SetMemory(memMgr)
+	chanMgr.SetCortex(cx)
 	if opt.ConnectTimeout > 0 {
 		chanMgr.SetConnectTimeout(opt.ConnectTimeout)
 	}
@@ -275,6 +292,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	agentRunner.SetSender(chanMgr)
 	agentRunner.SetSkills(skillLoader)
 	agentRunner.SetMemory(memMgr)
+	agentRunner.SetCortex(cx)
 	tools.RegisterAskAgent(toolReg, agentRunner)
 
 	// Config hot-reload
@@ -337,6 +355,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					SystemPrompt: agentSystemPrompt,
 					Skills:       skillLoader,
 					Memory:       memMgr,
+					Cortex:       cx,
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -380,6 +399,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					SystemPrompt: agentSystemPrompt,
 					Skills:       skillLoader,
 					Memory:       memMgr,
+					Cortex:       cx,
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -420,6 +440,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					SystemPrompt: defaultCfg.SystemPrompt,
 					Skills:       skillLoader,
 					Memory:       memMgr,
+					Cortex:       cx,
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -443,6 +464,10 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		UIHandler:      gateway.NewUIHandler(cfg, version),
 		ChatHandler:    gateway.NewChatHandler(port),
 		JobsHandler:    gateway.NewJobsHandler(port),
+		Settings: gateway.NewSettingsHandlers(cfg, func(newCfg *config.Config) {
+			wsHandler.UpdateConfig(newCfg)
+			slog.Info("config updated via settings page")
+		}),
 		LogBuffer:      logBuf,
 	})
 
@@ -454,6 +479,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		chanMgr.Stop()
 		if configWatcher != nil {
 			configWatcher.Stop()
+		}
+		if cx != nil {
+			cx.Close()
 		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

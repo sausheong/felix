@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/sausheong/cortex"
 	"github.com/sausheong/goclaw/internal/agent"
 	"github.com/sausheong/goclaw/internal/config"
 	"github.com/sausheong/goclaw/internal/llm"
@@ -25,6 +26,7 @@ type AgentRunnerImpl struct {
 	sender       tools.MessageSender // optional: for send_message in delegated agents
 	skills       *skill.Loader
 	memory       *memory.Manager
+	cortex       *cortex.Cortex
 }
 
 // NewAgentRunner creates an AgentRunnerImpl.
@@ -53,6 +55,11 @@ func (r *AgentRunnerImpl) SetSkills(skills *skill.Loader) {
 // SetMemory sets the memory manager for delegated agents.
 func (r *AgentRunnerImpl) SetMemory(mem *memory.Manager) {
 	r.memory = mem
+}
+
+// SetCortex sets the Cortex knowledge graph for delegated agents.
+func (r *AgentRunnerImpl) SetCortex(cx *cortex.Cortex) {
+	r.cortex = cx
 }
 
 // RunAgent delegates a task to the specified agent and returns the text response.
@@ -105,6 +112,7 @@ func (r *AgentRunnerImpl) RunAgent(ctx context.Context, agentID, prompt string) 
 		SystemPrompt: agentCfg.SystemPrompt,
 		Skills:       r.skills,
 		Memory:       r.memory,
+		Cortex:       r.cortex,
 	}
 
 	slog.Info("delegating to agent", "agent", agentID, "prompt_len", len(prompt))

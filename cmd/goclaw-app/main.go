@@ -129,7 +129,7 @@ func onReady() {
 	mChat := systray.AddMenuItem("Chat", "Open chat in browser")
 	mJobs := systray.AddMenuItem("Jobs", "Open jobs in browser")
 	mLogs := systray.AddMenuItem("Logs", "Open logs in browser")
-	mSettings := systray.AddMenuItem("Settings", "Open config file")
+	mSettings := systray.AddMenuItem("Settings", "Open settings in browser")
 	mRestart := systray.AddMenuItem("Restart", "Restart the gateway")
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Shut down and exit")
@@ -144,7 +144,7 @@ func onReady() {
 			case <-mLogs.ClickedCh:
 				openURL("http://localhost:" + itoa(port) + "/logs")
 			case <-mSettings.ClickedCh:
-				openFile(config.DefaultConfigPath())
+				openURL("http://localhost:" + itoa(port) + "/settings")
 			case <-mRestart.ClickedCh:
 				slog.Info("restarting gateway")
 				result.Cleanup()

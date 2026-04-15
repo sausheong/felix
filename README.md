@@ -226,6 +226,7 @@ GoClaw supports four provider kinds. Each provider is defined in the `providers`
 | `anthropic` | Anthropic's Claude API | `api_key` |
 | `openai` | OpenAI's API (GPT models) | `api_key` |
 | `gemini` | Google's Gemini API | `api_key` |
+| `qwen` | Alibaba Cloud's Qwen (Tongyi Qianwen) API | `api_key` |
 | `openai-compatible` | Any OpenAI-compatible API (Ollama, LM Studio, DeepSeek, LiteLLM, etc.) | `base_url`, optionally `api_key` |
 
 **Standard providers (Anthropic, OpenAI):**
@@ -244,6 +245,10 @@ GoClaw supports four provider kinds. Each provider is defined in the `providers`
     "gemini": {
       "kind": "gemini",
       "api_key": "AIza..."
+    },
+    "qwen": {
+      "kind": "qwen",
+      "api_key": "sk-..."  // DashScope API key
     }
   }
 }
@@ -295,6 +300,8 @@ Agents reference models as `provider/model-name`, where the provider name matche
 "model": "deepseek/deepseek-chat"                  // DeepSeek
 "model": "gemini/gemini-2.5-flash"                 // Google Gemini
 "model": "lmstudio/qwen2.5-coder-14b"             // LM Studio local model
+"model": "qwen/qwen-plus"                          // Qwen Plus (Alibaba Cloud)
+"model": "qwen/qwen-max"                           // Qwen Max (most capable)
 ```
 
 ### API keys via environment variables
@@ -306,6 +313,7 @@ export ANTHROPIC_API_KEY="sk-ant-api03-..."
 export OPENAI_API_KEY="sk-proj-..."
 export DEEPSEEK_API_KEY="sk-..."
 export GEMINI_API_KEY="AIza..."
+export QWEN_API_KEY="sk-..."  // DashScope API key
 ```
 
 The naming convention is `{PROVIDER}_API_KEY` (or `{PROVIDER}_AUTH_TOKEN`), and `{PROVIDER}_BASE_URL` for custom endpoints — where `{PROVIDER}` is the uppercased provider name from your config.
