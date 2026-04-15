@@ -33,7 +33,7 @@ func detectImageMIME(data []byte, hint string) string {
 	return hint
 }
 
-const defaultIdentityBase = `You are a helpful AI assistant called GoClaw. Be concise and helpful. When executing tasks, think step by step and use your tools to accomplish the user's goals.`
+const defaultIdentityBase = `You are a helpful AI assistant called Felix. Be concise and helpful. When executing tasks, think step by step and use your tools to accomplish the user's goals.`
 
 // toolHints maps tool names to usage guidance injected into the default identity.
 var toolHints = map[string]string{

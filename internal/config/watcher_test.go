@@ -13,7 +13,7 @@ import (
 
 func TestWatcherDetectsChanges(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "goclaw.json5")
+	cfgPath := filepath.Join(dir, "felix.json5")
 
 	// Write initial valid config
 	initialConfig := `{
@@ -52,7 +52,7 @@ func TestWatcherDetectsChanges(t *testing.T) {
 
 func TestWatcherStopDoesNotHang(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "goclaw.json5")
+	cfgPath := filepath.Join(dir, "felix.json5")
 
 	initialConfig := `{
 		"gateway": {"host": "127.0.0.1", "port": 18789},

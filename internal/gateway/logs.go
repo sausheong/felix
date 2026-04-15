@@ -204,7 +204,7 @@ const logsHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GoClaw Logs</title>
+<title>Felix Logs</title>
 <style>
 :root {
 	--bg: #1a1a2e;
@@ -315,7 +315,7 @@ body {
 </head>
 <body>
 <div id="header">
-	<h1>GoClaw Logs</h1>
+	<h1>Felix Logs</h1>
 	<span class="spacer"></span>
 	<button id="scroll-btn" title="Toggle auto-scroll">&#8615; Auto</button>
 	<button id="clear-btn" title="Clear logs display">Clear</button>
@@ -350,9 +350,9 @@ body {
 			document.documentElement.classList.remove('light');
 			themeBtn.innerHTML = '&#9790;';
 		}
-		localStorage.setItem('goclaw-logs-theme', mode);
+		localStorage.setItem('felix-logs-theme', mode);
 	}
-	setTheme(localStorage.getItem('goclaw-logs-theme') || 'dark');
+	setTheme(localStorage.getItem('felix-logs-theme') || 'dark');
 	themeBtn.addEventListener('click', function() {
 		var current = document.documentElement.classList.contains('light') ? 'light' : 'dark';
 		setTheme(current === 'light' ? 'dark' : 'light');

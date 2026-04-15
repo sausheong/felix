@@ -11,7 +11,7 @@ import (
 	"github.com/sausheong/felix/internal/llm"
 )
 
-// Tool is the interface that all GoClaw tools must implement.
+// Tool is the interface that all Felix tools must implement.
 type Tool interface {
 	Name() string
 	Description() string

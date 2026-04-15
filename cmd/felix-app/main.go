@@ -43,7 +43,7 @@ func main() {
 func initLogFile() {
 	dir := config.DefaultDataDir()
 	os.MkdirAll(dir, 0o755)
-	f, err := os.OpenFile(filepath.Join(dir, "goclaw-app.log"),
+	f, err := os.OpenFile(filepath.Join(dir, "felix-app.log"),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return
@@ -85,7 +85,7 @@ func onReady() {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("panic in onReady", "error", r)
-			showError(fmt.Sprintf("GoClaw crashed: %v", r))
+			showError(fmt.Sprintf("Felix crashed: %v", r))
 			systray.Quit()
 		}
 	}()
@@ -96,7 +96,7 @@ func onReady() {
 	} else {
 		systray.SetIcon(icon)
 	}
-	systray.SetTooltip("GoClaw")
+	systray.SetTooltip("Felix")
 
 	// Start gateway in the background
 	result, err := startup.StartGateway("", version, startup.Options{
@@ -104,7 +104,7 @@ func onReady() {
 	})
 	if err != nil {
 		slog.Error("failed to start gateway", "error", err)
-		showError(fmt.Sprintf("GoClaw failed to start:\n\n%v\n\nCheck config at:\n%s", err, config.DefaultConfigPath()))
+		showError(fmt.Sprintf("Felix failed to start:\n\n%v\n\nCheck config at:\n%s", err, config.DefaultConfigPath()))
 		systray.Quit()
 		return
 	}

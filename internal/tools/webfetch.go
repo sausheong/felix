@@ -75,7 +75,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (Tool
 		return ToolResult{Error: fmt.Sprintf("invalid URL: %v", err)}, nil
 	}
 
-	req.Header.Set("User-Agent", "GoClaw/1.0 (AI Agent Gateway)")
+	req.Header.Set("User-Agent", "Felix/1.0 (AI Agent Gateway)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,application/json;q=0.7,*/*;q=0.5")
 	for k, v := range in.Headers {
 		req.Header.Set(k, v)

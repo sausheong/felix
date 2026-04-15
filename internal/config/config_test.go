@@ -21,14 +21,14 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestLoadMissingFile(t *testing.T) {
-	cfg, err := Load("/nonexistent/path/goclaw.json5")
+	cfg, err := Load("/nonexistent/path/felix.json5")
 	require.NoError(t, err)
 	assert.Equal(t, "default", cfg.Agents.List[0].ID)
 }
 
 func TestLoadJSON5(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "goclaw.json5")
+	path := filepath.Join(dir, "felix.json5")
 
 	content := `{
   // This is a comment

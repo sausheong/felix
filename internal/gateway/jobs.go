@@ -18,7 +18,7 @@ const jobsHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GoClaw Jobs</title>
+<title>Felix Jobs</title>
 <style>
 :root {
 	--bg: #1a1a2e;
@@ -206,7 +206,7 @@ body {
 </head>
 <body>
 <div id="header">
-	<h1>GoClaw Jobs</h1>
+	<h1>Felix Jobs</h1>
 	<span class="spacer"></span>
 	<button id="theme-btn" title="Toggle light/dark mode">&#9790;</button>
 	<span class="status" id="conn-status">connecting...</span>
@@ -235,10 +235,10 @@ body {
 			themeBtn.innerHTML = '&#9790;';
 			themeBtn.title = 'Switch to light mode';
 		}
-		localStorage.setItem('goclaw-theme', mode);
+		localStorage.setItem('felix-theme', mode);
 	}
 
-	var saved = localStorage.getItem('goclaw-theme') || 'dark';
+	var saved = localStorage.getItem('felix-theme') || 'dark';
 	setTheme(saved);
 
 	themeBtn.addEventListener('click', function() {

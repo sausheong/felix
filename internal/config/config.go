@@ -12,7 +12,7 @@ import (
 	"sync"
 )
 
-// Config is the top-level GoClaw configuration.
+// Config is the top-level Felix configuration.
 type Config struct {
 	Gateway   GatewayConfig            `json:"gateway"`
 	Providers map[string]ProviderConfig `json:"providers"`
@@ -103,7 +103,7 @@ type ChannelsConfig struct {
 
 type WhatsAppConfig struct {
 	PhoneNumber    string   `json:"phone_number"`    // for display/identification only
-	DBPath         string   `json:"db_path"`          // SQLite path for device state (default: ~/.goclaw/whatsapp.db)
+	DBPath         string   `json:"db_path"`          // SQLite path for device state (default: ~/.felix/whatsapp.db)
 	AllowedSenders []string `json:"allowed_senders"`  // phone numbers or JIDs allowed to send messages (empty = allow all)
 }
 
@@ -131,7 +131,7 @@ type MemoryConfig struct {
 
 type CortexConfig struct {
 	Enabled  bool   `json:"enabled"`
-	DBPath   string `json:"dbPath"`   // path to brain.db (default: ~/.goclaw/brain.db)
+	DBPath   string `json:"dbPath"`   // path to brain.db (default: ~/.felix/brain.db)
 	LLMModel string `json:"llmModel"` // model for extraction/decomposition (default: gpt-4o-mini)
 }
 
@@ -154,21 +154,21 @@ type GroupPolicyConfig struct {
 	RequireMention bool `json:"requireMention"`
 }
 
-// DefaultDataDir returns the default GoClaw data directory.
+// DefaultDataDir returns the default Felix data directory.
 func DefaultDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".goclaw"
+		return ".felix"
 	}
-	return filepath.Join(home, ".goclaw")
+	return filepath.Join(home, ".felix")
 }
 
 // DefaultConfigPath returns the default config file path.
 func DefaultConfigPath() string {
-	return filepath.Join(DefaultDataDir(), "goclaw.json5")
+	return filepath.Join(DefaultDataDir(), "felix.json5")
 }
 
-// Load reads and parses a GoClaw config file. It supports JSON5 by
+// Load reads and parses a Felix config file. It supports JSON5 by
 // stripping comments and trailing commas before unmarshalling.
 func Load(path string) (*Config, error) {
 	if path == "" {

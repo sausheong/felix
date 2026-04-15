@@ -86,7 +86,7 @@ const settingsHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GoClaw Settings</title>
+<title>Felix Settings</title>
 <style>
 :root {
 	--bg: #1a1a2e;
@@ -309,7 +309,7 @@ body {
 </head>
 <body>
 <div id="header">
-	<h1>GoClaw Settings</h1>
+	<h1>Felix Settings</h1>
 	<span class="spacer"></span>
 	<span id="status-msg"></span>
 	<button id="save-btn" disabled>Save</button>
@@ -336,9 +336,9 @@ body {
 			document.documentElement.classList.remove('light');
 			themeBtn.innerHTML = '&#9790;';
 		}
-		localStorage.setItem('goclaw-theme', mode);
+		localStorage.setItem('felix-theme', mode);
 	}
-	setTheme(localStorage.getItem('goclaw-theme') || 'dark');
+	setTheme(localStorage.getItem('felix-theme') || 'dark');
 	themeBtn.addEventListener('click', function() {
 		var cur = document.documentElement.classList.contains('light') ? 'light' : 'dark';
 		setTheme(cur === 'light' ? 'dark' : 'light');

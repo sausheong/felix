@@ -20,13 +20,13 @@ func testConfig() *config.Config {
 					ID:        "supervisor",
 					Name:      "Supervisor",
 					Model:     "anthropic/claude-sonnet-4-5-20250514",
-					Workspace: "/tmp/goclaw-test-supervisor",
+					Workspace: "/tmp/felix-test-supervisor",
 				},
 				{
 					ID:        "assistant",
 					Name:      "Assistant",
 					Model:     "anthropic/claude-haiku-3-5-20241022",
-					Workspace: "/tmp/goclaw-test-assistant",
+					Workspace: "/tmp/felix-test-assistant",
 					Tools: config.ToolPolicy{
 						Allow: []string{"read_file", "bash"},
 					},

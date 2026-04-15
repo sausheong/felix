@@ -1,4 +1,4 @@
-// Package cortex provides an adapter between GoClaw and the Cortex knowledge
+// Package cortex provides an adapter between Felix and the Cortex knowledge
 // graph library. It handles initialization, conversation ingestion, and
 // formatting recall results for the agent system prompt.
 package cortex

@@ -36,7 +36,7 @@ const uiHTML = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>GoClaw Control Panel</title>
+<title>Felix Control Panel</title>
 <style>
 	* { margin: 0; padding: 0; box-sizing: border-box; }
 	body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #1a1a2e; color: #e0e0e0; padding: 2rem; }
@@ -55,7 +55,7 @@ const uiHTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1><span class="status"></span> GoClaw</h1>
+<h1><span class="status"></span> Felix</h1>
 <p class="subtitle">Version %s &mdash; %s</p>
 
 <div class="card">

@@ -1,5 +1,5 @@
 // Package startup provides shared gateway startup logic used by both the
-// CLI (cmd/goclaw) and the menu bar app (cmd/goclaw-app).
+// CLI (cmd/felix) and the menu bar app (cmd/felix-app).
 package startup
 
 import (

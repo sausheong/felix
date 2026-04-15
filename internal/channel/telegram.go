@@ -46,7 +46,7 @@ func (t *TelegramChannel) Name() string { return "telegram" }
 
 // SetSendOnly enables send-only mode. When true, Connect will establish the
 // bot client but skip polling for updates, avoiding conflicts with another
-// running instance (e.g. goclaw start).
+// running instance (e.g. felix start).
 func (t *TelegramChannel) SetSendOnly(v bool) { t.sendOnly = v }
 
 // BotUsername returns the bot's username (available after Connect).
@@ -218,7 +218,7 @@ func (t *TelegramChannel) defaultHandler(ctx context.Context, b *bot.Bot, update
 	if text == "/start" {
 		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: msg.Chat.ID,
-			Text:   "Hello! I'm GoClaw, your AI assistant. Send me a message to get started.",
+			Text:   "Hello! I'm Felix, your AI assistant. Send me a message to get started.",
 		})
 		if err != nil {
 			slog.Error("telegram send /start response", "error", err)

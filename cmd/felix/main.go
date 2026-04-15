@@ -43,9 +43,9 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "goclaw",
-		Short: "GoClaw — self-hosted AI agent gateway",
-		Long:  "GoClaw is a self-hosted AI agent gateway that connects Telegram and CLI to LLMs.",
+		Use:   "felix",
+		Short: "Felix — self-hosted AI agent gateway",
+		Long:  "Felix is a self-hosted AI agent gateway that connects Telegram and CLI to LLMs.",
 	}
 
 	rootCmd.AddCommand(
@@ -68,7 +68,7 @@ func startCmd() *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the GoClaw gateway server",
+		Short: "Start the Felix gateway server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStart(configPath)
 		},
@@ -180,7 +180,7 @@ func versionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("goclaw %s (commit: %s)\n", version, commit)
+			fmt.Printf("felix %s (commit: %s)\n", version, commit)
 		},
 	}
 }
@@ -450,7 +450,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 	// Track current session key for switching
 	currentSessionKey := "cli_local"
 
-	fmt.Printf("GoClaw chat — agent %q (model: %s)\n", agentID, modelStr)
+	fmt.Printf("Felix chat — agent %q (model: %s)\n", agentID, modelStr)
 	fmt.Println("Type /quit to exit, /sessions to list sessions, /new to create a new session.")
 	fmt.Println()
 
@@ -976,7 +976,7 @@ func splitRespectingEscapes(s string) []string {
 // On macOS: uses screencapture with interactive window selection.
 // On Linux: tries maim, gnome-screenshot, or scrot.
 func captureScreenshot() (llm.ImageContent, error) {
-	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("goclaw-screenshot-%d.png", time.Now().UnixNano()))
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("felix-screenshot-%d.png", time.Now().UnixNano()))
 	defer os.Remove(tmpFile)
 
 	var cmd *exec.Cmd
@@ -1079,7 +1079,7 @@ func runStatus() error {
 func onboardCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "onboard",
-		Short: "Interactive setup wizard for GoClaw",
+		Short: "Interactive setup wizard for Felix",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runOnboard()
 		},
@@ -1129,10 +1129,10 @@ func runOnboard() error {
 
 	// Welcome
 	fmt.Println()
-	fmt.Println("Welcome to GoClaw!")
+	fmt.Println("Welcome to Felix!")
 	fmt.Println("==================")
 	fmt.Println()
-	fmt.Println("GoClaw is a self-hosted AI agent gateway that connects")
+	fmt.Println("Felix is a self-hosted AI agent gateway that connects")
 	fmt.Println("Telegram and CLI to LLMs like Claude, GPT, and more.")
 	fmt.Println()
 	fmt.Println("This wizard will help you set up your configuration.")
@@ -1287,7 +1287,7 @@ func runOnboard() error {
 	if strings.ToLower(setupWhatsApp) == "y" {
 		fmt.Println()
 		fmt.Println("WhatsApp uses the Web multidevice protocol.")
-		fmt.Println("On first 'goclaw start', a QR code will appear in the terminal.")
+		fmt.Println("On first 'felix start', a QR code will appear in the terminal.")
 		fmt.Println("Scan it with WhatsApp on your phone to link this device.")
 		fmt.Println()
 
@@ -1305,7 +1305,7 @@ func runOnboard() error {
 			Match:   config.BindingMatch{Channel: "whatsapp"},
 		})
 
-		fmt.Println("WhatsApp configured. QR code will appear on first 'goclaw start'.")
+		fmt.Println("WhatsApp configured. QR code will appear on first 'felix start'.")
 	}
 
 	// Step 6: Write config
@@ -1341,7 +1341,7 @@ func runOnboard() error {
 
 	identityPath := filepath.Join(workspace, "IDENTITY.md")
 	if _, err := os.Stat(identityPath); os.IsNotExist(err) {
-		identity := `You are a helpful AI assistant called GoClaw. You can read files, write files, edit files, execute bash commands on the user's machine, fetch web pages, and search the web. Be concise and helpful. When executing tasks, think step by step and use your tools to accomplish the user's goals.`
+		identity := `You are a helpful AI assistant called Felix. You can read files, write files, edit files, execute bash commands on the user's machine, fetch web pages, and search the web. Be concise and helpful. When executing tasks, think step by step and use your tools to accomplish the user's goals.`
 		os.WriteFile(identityPath, []byte(identity), 0o644)
 		fmt.Printf("Created workspace at %s\n", workspace)
 	}
@@ -1350,15 +1350,15 @@ func runOnboard() error {
 	fmt.Println()
 	fmt.Println("Setup complete! Next steps:")
 	fmt.Println()
-	fmt.Println("  goclaw start   — Start the gateway server")
-	fmt.Println("  goclaw chat    — Start an interactive chat session")
+	fmt.Println("  felix start   — Start the gateway server")
+	fmt.Println("  felix chat    — Start an interactive chat session")
 	fmt.Println()
 	if cfg.Channels.Telegram.Token != "" {
-		fmt.Println("  Your Telegram bot is configured and will start with 'goclaw start'.")
+		fmt.Println("  Your Telegram bot is configured and will start with 'felix start'.")
 		fmt.Println()
 	}
 	if cfg.Channels.WhatsApp.DBPath != "" {
-		fmt.Println("  WhatsApp is configured. A QR code will appear on first 'goclaw start'.")
+		fmt.Println("  WhatsApp is configured. A QR code will appear on first 'felix start'.")
 		fmt.Println()
 	}
 
@@ -1369,7 +1369,7 @@ func doctorCmd() *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Run diagnostic checks on your GoClaw setup",
+		Short: "Run diagnostic checks on your Felix setup",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDoctor(configPath)
 		},
@@ -1397,7 +1397,7 @@ func runDoctor(configPath string) error {
 		}
 	}
 
-	fmt.Println("GoClaw Doctor")
+	fmt.Println("Felix Doctor")
 	fmt.Println("=============")
 	fmt.Println()
 
@@ -1527,7 +1527,7 @@ func runDoctor(configPath string) error {
 	fmt.Println()
 	fmt.Printf("Results: %d passed, %d warnings, %d failed\n", pass, warn, fail)
 	if fail > 0 {
-		fmt.Println("\nFix the failures above before running 'goclaw start'.")
+		fmt.Println("\nFix the failures above before running 'felix start'.")
 	} else if warn > 0 {
 		fmt.Println("\nSetup looks good with minor warnings.")
 	} else {

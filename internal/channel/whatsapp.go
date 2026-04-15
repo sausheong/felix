@@ -221,7 +221,7 @@ func (w *WhatsAppChannel) eventHandler(evt interface{}) {
 		w.status = StatusDisconnected
 		w.mu.Unlock()
 	case *events.LoggedOut:
-		slog.Warn("whatsapp logged out — re-run 'goclaw start' to scan QR code again")
+		slog.Warn("whatsapp logged out — re-run 'felix start' to scan QR code again")
 		w.mu.Lock()
 		w.status = StatusError
 		w.mu.Unlock()

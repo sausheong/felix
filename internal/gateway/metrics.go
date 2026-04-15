@@ -78,39 +78,39 @@ func (m *Metrics) Handler() http.HandlerFunc {
 
 		var b strings.Builder
 
-		b.WriteString("# HELP goclaw_uptime_seconds Time since gateway started.\n")
-		b.WriteString("# TYPE goclaw_uptime_seconds gauge\n")
-		fmt.Fprintf(&b, "goclaw_uptime_seconds %.1f\n\n", time.Since(m.startTime).Seconds())
+		b.WriteString("# HELP felix_uptime_seconds Time since gateway started.\n")
+		b.WriteString("# TYPE felix_uptime_seconds gauge\n")
+		fmt.Fprintf(&b, "felix_uptime_seconds %.1f\n\n", time.Since(m.startTime).Seconds())
 
-		b.WriteString("# HELP goclaw_http_requests_total Total HTTP requests.\n")
-		b.WriteString("# TYPE goclaw_http_requests_total counter\n")
-		fmt.Fprintf(&b, "goclaw_http_requests_total %d\n\n", m.requestsTotal.Load())
+		b.WriteString("# HELP felix_http_requests_total Total HTTP requests.\n")
+		b.WriteString("# TYPE felix_http_requests_total counter\n")
+		fmt.Fprintf(&b, "felix_http_requests_total %d\n\n", m.requestsTotal.Load())
 
-		b.WriteString("# HELP goclaw_ws_connections_active Active WebSocket connections.\n")
-		b.WriteString("# TYPE goclaw_ws_connections_active gauge\n")
-		fmt.Fprintf(&b, "goclaw_ws_connections_active %d\n\n", m.wsConnections.Load())
+		b.WriteString("# HELP felix_ws_connections_active Active WebSocket connections.\n")
+		b.WriteString("# TYPE felix_ws_connections_active gauge\n")
+		fmt.Fprintf(&b, "felix_ws_connections_active %d\n\n", m.wsConnections.Load())
 
-		b.WriteString("# HELP goclaw_ws_messages_total Total WebSocket messages received.\n")
-		b.WriteString("# TYPE goclaw_ws_messages_total counter\n")
-		fmt.Fprintf(&b, "goclaw_ws_messages_total %d\n\n", m.wsMessagesTotal.Load())
+		b.WriteString("# HELP felix_ws_messages_total Total WebSocket messages received.\n")
+		b.WriteString("# TYPE felix_ws_messages_total counter\n")
+		fmt.Fprintf(&b, "felix_ws_messages_total %d\n\n", m.wsMessagesTotal.Load())
 
-		b.WriteString("# HELP goclaw_tool_calls_total Total tool calls.\n")
-		b.WriteString("# TYPE goclaw_tool_calls_total counter\n")
-		fmt.Fprintf(&b, "goclaw_tool_calls_total %d\n\n", m.toolCallsTotal.Load())
+		b.WriteString("# HELP felix_tool_calls_total Total tool calls.\n")
+		b.WriteString("# TYPE felix_tool_calls_total counter\n")
+		fmt.Fprintf(&b, "felix_tool_calls_total %d\n\n", m.toolCallsTotal.Load())
 
-		b.WriteString("# HELP goclaw_llm_calls_total Total LLM API calls.\n")
-		b.WriteString("# TYPE goclaw_llm_calls_total counter\n")
-		fmt.Fprintf(&b, "goclaw_llm_calls_total %d\n\n", m.llmCallsTotal.Load())
+		b.WriteString("# HELP felix_llm_calls_total Total LLM API calls.\n")
+		b.WriteString("# TYPE felix_llm_calls_total counter\n")
+		fmt.Fprintf(&b, "felix_llm_calls_total %d\n\n", m.llmCallsTotal.Load())
 
-		b.WriteString("# HELP goclaw_errors_total Total errors.\n")
-		b.WriteString("# TYPE goclaw_errors_total counter\n")
-		fmt.Fprintf(&b, "goclaw_errors_total %d\n\n", m.errorsTotal.Load())
+		b.WriteString("# HELP felix_errors_total Total errors.\n")
+		b.WriteString("# TYPE felix_errors_total counter\n")
+		fmt.Fprintf(&b, "felix_errors_total %d\n\n", m.errorsTotal.Load())
 
 		// Per-tool breakdown
 		m.mu.RLock()
 		if len(m.toolCounts) > 0 {
-			b.WriteString("# HELP goclaw_tool_calls_by_tool Tool calls by tool name.\n")
-			b.WriteString("# TYPE goclaw_tool_calls_by_tool counter\n")
+			b.WriteString("# HELP felix_tool_calls_by_tool Tool calls by tool name.\n")
+			b.WriteString("# TYPE felix_tool_calls_by_tool counter\n")
 
 			// Sort tool names for deterministic output
 			names := make([]string, 0, len(m.toolCounts))
@@ -120,7 +120,7 @@ func (m *Metrics) Handler() http.HandlerFunc {
 			sort.Strings(names)
 
 			for _, name := range names {
-				fmt.Fprintf(&b, "goclaw_tool_calls_by_tool{tool=%q} %d\n", name, m.toolCounts[name].Load())
+				fmt.Fprintf(&b, "felix_tool_calls_by_tool{tool=%q} %d\n", name, m.toolCounts[name].Load())
 			}
 		}
 		m.mu.RUnlock()

@@ -30,15 +30,15 @@ func TestMetricsHandler(t *testing.T) {
 	body := w.Body.String()
 
 	assert.Equal(t, 200, w.Code)
-	assert.Contains(t, body, "goclaw_http_requests_total 2")
-	assert.Contains(t, body, "goclaw_ws_connections_active 1")
-	assert.Contains(t, body, "goclaw_ws_messages_total 1")
-	assert.Contains(t, body, "goclaw_tool_calls_total 3")
-	assert.Contains(t, body, "goclaw_llm_calls_total 1")
-	assert.Contains(t, body, "goclaw_errors_total 1")
-	assert.Contains(t, body, `goclaw_tool_calls_by_tool{tool="bash"} 2`)
-	assert.Contains(t, body, `goclaw_tool_calls_by_tool{tool="read_file"} 1`)
-	assert.Contains(t, body, "goclaw_uptime_seconds")
+	assert.Contains(t, body, "felix_http_requests_total 2")
+	assert.Contains(t, body, "felix_ws_connections_active 1")
+	assert.Contains(t, body, "felix_ws_messages_total 1")
+	assert.Contains(t, body, "felix_tool_calls_total 3")
+	assert.Contains(t, body, "felix_llm_calls_total 1")
+	assert.Contains(t, body, "felix_errors_total 1")
+	assert.Contains(t, body, `felix_tool_calls_by_tool{tool="bash"} 2`)
+	assert.Contains(t, body, `felix_tool_calls_by_tool{tool="read_file"} 1`)
+	assert.Contains(t, body, "felix_uptime_seconds")
 
 	// Check Content-Type
 	assert.True(t, strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain"))
@@ -54,5 +54,5 @@ func TestMetricsDecWSConnections(t *testing.T) {
 	w := httptest.NewRecorder()
 	m.Handler()(w, req)
 
-	assert.Contains(t, w.Body.String(), "goclaw_ws_connections_active 1")
+	assert.Contains(t, w.Body.String(), "felix_ws_connections_active 1")
 }

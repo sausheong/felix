@@ -45,7 +45,7 @@ func NewLoader() *Loader {
 }
 
 // LoadFrom scans directories for SKILL.md files and loads all found skills.
-// It accepts multiple directories (e.g. workspace/skills/ and ~/.goclaw/skills/).
+// It accepts multiple directories (e.g. workspace/skills/ and ~/.felix/skills/).
 func (l *Loader) LoadFrom(dirs ...string) error {
 	var loaded []Skill
 

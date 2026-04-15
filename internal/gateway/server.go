@@ -24,7 +24,7 @@ type ServerOptions struct {
 	LogBuffer      *LogBuffer       // optional log buffer for /logs
 }
 
-// Server is the GoClaw gateway HTTP + WebSocket server.
+// Server is the Felix gateway HTTP + WebSocket server.
 type Server struct {
 	httpServer *http.Server
 	router     chi.Router

@@ -104,7 +104,7 @@ func duckDuckGoSearch(ctx context.Context, query string, maxResults int) ([]sear
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "GoClaw/1.0 (AI Agent Gateway)")
+	req.Header.Set("User-Agent", "Felix/1.0 (AI Agent Gateway)")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

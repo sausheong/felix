@@ -22,7 +22,7 @@ const chatHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GoClaw Chat</title>
+<title>Felix Chat</title>
 <style>
 :root {
 	--bg: #1a1a2e;
@@ -381,7 +381,7 @@ html.light #header .logo {
 </head>
 <body>
 <div id="header">
-	<h1>GoClaw</h1>
+	<h1>Felix</h1>
 	<select id="agent-select" title="Select agent"></select>
 	<select id="session-select" title="Select session"></select>
 	<button id="new-session-btn" title="New session">+ New</button>
@@ -416,7 +416,7 @@ html.light #header .logo {
 	var toggleToolsBtn = document.getElementById('toggle-tools-btn');
 
 	// Tool visibility toggle
-	var toolsHidden = localStorage.getItem('goclaw-hide-tools') === 'true';
+	var toolsHidden = localStorage.getItem('felix-hide-tools') === 'true';
 	function applyToolVisibility() {
 		if (toolsHidden) {
 			messagesEl.classList.add('hide-tools');
@@ -429,7 +429,7 @@ html.light #header .logo {
 	applyToolVisibility();
 	toggleToolsBtn.addEventListener('click', function() {
 		toolsHidden = !toolsHidden;
-		localStorage.setItem('goclaw-hide-tools', toolsHidden);
+		localStorage.setItem('felix-hide-tools', toolsHidden);
 		applyToolVisibility();
 	});
 
@@ -444,10 +444,10 @@ html.light #header .logo {
 			themeBtn.innerHTML = '&#9790;';
 			themeBtn.title = 'Switch to light mode';
 		}
-		localStorage.setItem('goclaw-theme', mode);
+		localStorage.setItem('felix-theme', mode);
 	}
 
-	var saved = localStorage.getItem('goclaw-theme') || 'dark';
+	var saved = localStorage.getItem('felix-theme') || 'dark';
 	setTheme(saved);
 
 	themeBtn.addEventListener('click', function() {
