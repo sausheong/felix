@@ -243,6 +243,10 @@ body {
 	height: 22px;
 	flex: none;
 }
+.field label.toggle {
+	min-width: 40px;
+	width: 40px;
+}
 .toggle input {
 	opacity: 0;
 	width: 0;
