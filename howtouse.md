@@ -1,6 +1,6 @@
-# How to Use GoClaw
+# How to Use Felix
 
-GoClaw is a self-hosted AI agent gateway. It runs as a single binary on your machine and connects messaging channels (CLI, Telegram, WhatsApp) to LLM providers (Claude, GPT, Ollama, and more). You talk to it, and it talks back — with the ability to read files, write code, run commands, and browse the web on your behalf.
+Felix is a self-hosted AI agent gateway. It runs as a single binary on your machine and connects messaging channels (CLI, Telegram, WhatsApp) to LLM providers (Claude, GPT, Ollama, and more). You talk to it, and it talks back — with the ability to read files, write code, run commands, and browse the web on your behalf.
 
 ## Table of Contents
 
@@ -34,14 +34,14 @@ GoClaw is a self-hosted AI agent gateway. It runs as a single binary on your mac
 
 ```bash
 make build              # CLI binary
-make build-app          # macOS menu bar app (GoClaw.app)
-make build-app-windows  # Windows system tray app (goclaw-app.exe)
+make build-app          # macOS menu bar app (Felix.app)
+make build-app-windows  # Windows system tray app (felix-app.exe)
 ```
 
 ### 2. Run the setup wizard
 
 ```bash
-./goclaw onboard
+./felix onboard
 ```
 
 The wizard walks you through choosing an LLM provider, entering your API key, and optionally setting up Telegram or WhatsApp.
@@ -50,24 +50,24 @@ The wizard walks you through choosing an LLM provider, entering your API key, an
 
 **Interactive CLI session (no gateway needed):**
 ```bash
-./goclaw chat
+./felix chat
 ```
 
 **Or start the full gateway (enables Telegram, WhatsApp, WebSocket API):**
 ```bash
-./goclaw start
+./felix start
 ```
 
 **Or launch the system tray app:**
 ```bash
-open GoClaw.app    # macOS
-goclaw-app.exe     # Windows
+open Felix.app    # macOS
+felix-app.exe     # Windows
 ```
 
 ### 4. Verify your setup
 
 ```bash
-./goclaw doctor
+./felix doctor
 ```
 
 This checks your config file, data directories, API keys, agent workspaces, and channel configurations.
@@ -78,19 +78,19 @@ This checks your config file, data directories, API keys, agent workspaces, and 
 
 | Command | Description |
 |---------|-------------|
-| `goclaw onboard` | Interactive setup wizard |
-| `goclaw start` | Start the gateway server (HTTP + WebSocket + all channels) |
-| `goclaw chat` | Start an interactive CLI chat session |
-| `goclaw chat myagent` | Chat with a specific agent |
-| `goclaw chat -m openai/gpt-4o` | Chat with a model override |
-| `goclaw status` | Query the running gateway for agent status |
-| `goclaw doctor` | Run diagnostic checks |
-| `goclaw doctor -c /path/to/config.json5` | Doctor with a custom config path |
-| `goclaw version` | Print version and commit info |
+| `felix onboard` | Interactive setup wizard |
+| `felix start` | Start the gateway server (HTTP + WebSocket + all channels) |
+| `felix chat` | Start an interactive CLI chat session |
+| `felix chat myagent` | Chat with a specific agent |
+| `felix chat -m openai/gpt-4o` | Chat with a model override |
+| `felix status` | Query the running gateway for agent status |
+| `felix doctor` | Run diagnostic checks |
+| `felix doctor -c /path/to/config.json5` | Doctor with a custom config path |
+| `felix version` | Print version and commit info |
 
 ### Chat session commands
 
-Inside a `goclaw chat` session:
+Inside a `felix chat` session:
 
 ```
 > Hello, what files are in this directory?
@@ -106,26 +106,26 @@ The agent can read files, write files, edit files, run shell commands, fetch web
 
 ## System Tray App (macOS & Windows)
 
-GoClaw includes a system tray app that runs the gateway in the background. No terminal window needed — just double-click to launch. Supported on macOS and Windows.
+Felix includes a system tray app that runs the gateway in the background. No terminal window needed — just double-click to launch. Supported on macOS and Windows.
 
 ### Build
 
 ```bash
-make build-app          # macOS — produces GoClaw.app
-make build-app-windows  # Windows — produces goclaw-app.exe
+make build-app          # macOS — produces Felix.app
+make build-app-windows  # Windows — produces felix-app.exe
 ```
 
 ### Usage
 
-**macOS:** Double-click `GoClaw.app`, drag it to `/Applications`, or launch from the terminal:
+**macOS:** Double-click `Felix.app`, drag it to `/Applications`, or launch from the terminal:
 
 ```bash
-open GoClaw.app
+open Felix.app
 ```
 
-**Windows:** Double-click `goclaw-app.exe`. The app runs as a system tray icon in the taskbar notification area.
+**Windows:** Double-click `felix-app.exe`. The app runs as a system tray icon in the taskbar notification area.
 
-> **Note:** On Windows 10/11, new tray icons may be hidden in the overflow area. Click the `^` arrow in the bottom-right of the taskbar to find it. To keep it always visible, go to **Settings → Personalization → Taskbar → Other system tray icons** and enable GoClaw.
+> **Note:** On Windows 10/11, new tray icons may be hidden in the overflow area. Click the `^` arrow in the bottom-right of the taskbar to find it. To keep it always visible, go to **Settings → Personalization → Taskbar → Other system tray icons** and enable Felix.
 
 A claw machine icon appears in the system tray / menu bar. The gateway starts automatically in the background.
 
@@ -136,7 +136,7 @@ A claw machine icon appears in the system tray / menu bar. The gateway starts au
 | **Chat** | Opens `http://localhost:18789/chat` in your default browser |
 | **Jobs** | Opens the cron jobs dashboard (`http://localhost:18789/jobs`) showing active scheduled tasks |
 | **Logs** | Opens the logs viewer (`http://localhost:18789/logs`) |
-| **Settings** | Opens `~/.goclaw/goclaw.json5` in your default text editor |
+| **Settings** | Opens `~/.felix/felix.json5` in your default text editor |
 | **Restart** | Restarts the gateway without quitting the app |
 | **Quit** | Gracefully shuts down the gateway and exits the app |
 
@@ -157,7 +157,7 @@ The root URL `http://localhost:18789` redirects to `/chat` for convenience.
 
 ### Environment variables and API keys
 
-**macOS:** `.app` bundles do not inherit environment variables from your shell profile (`.zshrc`, `.bashrc`, etc.). GoClaw.app handles this by automatically sourcing your shell environment at startup, so API keys like `ANTHROPIC_API_KEY` work as expected.
+**macOS:** `.app` bundles do not inherit environment variables from your shell profile (`.zshrc`, `.bashrc`, etc.). Felix.app handles this by automatically sourcing your shell environment at startup, so API keys like `ANTHROPIC_API_KEY` work as expected.
 
 **Windows:** Set environment variables via System Settings, or permanently via PowerShell:
 
@@ -182,24 +182,24 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 }
 ```
 
-### How it differs from `goclaw start`
+### How it differs from `felix start`
 
-Both `goclaw start` and the tray app run the same gateway with the same config file. The differences:
+Both `felix start` and the tray app run the same gateway with the same config file. The differences:
 
-| | `goclaw start` | Tray App |
+| | `felix start` | Tray App |
 |---|---|---|
 | Runs in | Terminal (foreground) | System tray (background) |
 | Chat interface | WebSocket API / web chat | Web chat in browser |
 | Quit | Ctrl+C | Tray menu > Quit |
 | Environment vars | Inherited from shell | macOS: loaded from shell profile; Windows: system env vars |
-| Logs | Printed to terminal | Written to `~/.goclaw/goclaw-app.log` |
+| Logs | Printed to terminal | Written to `~/.felix/felix-app.log` |
 | Error display | Terminal output | macOS: log file; Windows: message box dialog |
 
 ---
 
 ## Configuration
 
-GoClaw uses a JSON5 config file at `~/.goclaw/goclaw.json5` (on Windows: `C:\Users\<you>\.goclaw\goclaw.json5`). JSON5 supports comments and trailing commas, making it easier to maintain.
+Felix uses a JSON5 config file at `~/.felix/felix.json5` (on Windows: `C:\Users\<you>\.felix\felix.json5`). JSON5 supports comments and trailing commas, making it easier to maintain.
 
 ### Minimal config
 
@@ -259,13 +259,13 @@ The naming convention is `{PROVIDER}_API_KEY` or `{PROVIDER}_AUTH_TOKEN`, and `{
 
 ### Config hot-reload
 
-GoClaw watches the config file for changes. When you edit `goclaw.json5` while the gateway is running, it hot-reloads automatically — no restart needed.
+Felix watches the config file for changes. When you edit `felix.json5` while the gateway is running, it hot-reloads automatically — no restart needed.
 
 ---
 
 ## LLM Providers
 
-GoClaw supports multiple LLM providers simultaneously. Each provider is defined in the `providers` section of the config with a unique name and a `kind` that determines how GoClaw communicates with it.
+Felix supports multiple LLM providers simultaneously. Each provider is defined in the `providers` section of the config with a unique name and a `kind` that determines how Felix communicates with it.
 
 ### Provider kinds
 
@@ -470,7 +470,7 @@ Available models: `deepseek-chat`, `deepseek-coder`, `deepseek-reasoner`.
 
 #### Google Gemini
 
-GoClaw has a native Gemini provider using the official Google GenAI SDK.
+Felix has a native Gemini provider using the official Google GenAI SDK.
 
 1. Get an API key from [aistudio.google.com](https://aistudio.google.com/apikey)
 2. Add to your config:
@@ -534,8 +534,8 @@ lmstudio/qwen2.5-coder-14b             → uses the "lmstudio" provider
 You can override the model for a CLI chat session without changing the config:
 
 ```bash
-goclaw chat -m openai/gpt-4o
-goclaw chat -m ollama/codellama
+felix chat -m openai/gpt-4o
+felix chat -m ollama/codellama
 ```
 
 ### Using multiple providers
@@ -569,17 +569,17 @@ Only providers that are actually referenced by agents are initialized at startup
 
 ### CLI
 
-The CLI channel is always available via `goclaw chat`. It renders Markdown responses in your terminal.
+The CLI channel is always available via `felix chat`. It renders Markdown responses in your terminal.
 
 ```bash
 # Default agent
-goclaw chat
+felix chat
 
 # Specific agent
-goclaw chat coder
+felix chat coder
 
 # Override the model for this session
-goclaw chat -m anthropic/claude-opus-4-0-20250514
+felix chat -m anthropic/claude-opus-4-0-20250514
 ```
 
 ### Telegram
@@ -606,7 +606,7 @@ Connect a Telegram bot so you can chat with your agent from your phone.
 }
 ```
 
-4. Start the gateway: `goclaw start`
+4. Start the gateway: `felix start`
 5. Message your bot on Telegram
 
 **Group chats:** By default, the bot only responds in groups when mentioned (`@yourbotname`). This is controlled by the `security.groupPolicy.requireMention` setting.
@@ -625,7 +625,7 @@ Connect your personal WhatsApp account via the Web multidevice protocol. No Meta
 {
   "channels": {
     "whatsapp": {
-      "db_path": "~/.goclaw/whatsapp.db",
+      "db_path": "~/.felix/whatsapp.db",
       "phone_number": "+1234567890"  // optional, for display only
     }
   },
@@ -635,7 +635,7 @@ Connect your personal WhatsApp account via the Web multidevice protocol. No Meta
 }
 ```
 
-2. Start the gateway: `goclaw start`
+2. Start the gateway: `felix start`
 3. On first start, a QR code appears in the terminal
 4. Open WhatsApp on your phone > Settings > Linked Devices > Link a Device
 5. Scan the QR code
@@ -650,19 +650,19 @@ After the initial pairing, credentials are stored in the SQLite database and rec
 
 ## Image / Vision Support
 
-GoClaw supports sending images to vision-capable LLMs (Claude, GPT-4o, etc.) across all three channels. The LLM sees the actual image pixels — not just metadata.
+Felix supports sending images to vision-capable LLMs (Claude, GPT-4o, etc.) across all three channels. The LLM sees the actual image pixels — not just metadata.
 
 ### How it works
 
 1. **You send an image** via Telegram, WhatsApp, or CLI
-2. **GoClaw downloads the image bytes** (from Telegram's API, WhatsApp's protocol, or the local filesystem)
+2. **Felix downloads the image bytes** (from Telegram's API, WhatsApp's protocol, or the local filesystem)
 3. **The image is passed to the LLM** as a multipart content block alongside your text
 4. **The LLM responds** with a description, analysis, or answer about the image
 5. **Images are persisted** in the session history (base64-encoded in JSONL) so the LLM can reference them in follow-up messages
 
 ### CLI
 
-In `goclaw chat`, include an image file path in your message. GoClaw detects image paths, reads the file, and sends the bytes to the LLM.
+In `felix chat`, include an image file path in your message. Felix detects image paths, reads the file, and sends the bytes to the LLM.
 
 **Supported input formats:**
 
@@ -687,7 +687,7 @@ In `goclaw chat`, include an image file path in your message. GoClaw detects ima
 
 ### Screenshots
 
-Use the `/screenshot` command in `goclaw chat` to interactively capture a window and send it to the LLM.
+Use the `/screenshot` command in `felix chat` to interactively capture a window and send it to the LLM.
 
 ```bash
 # Capture a window (click to select) and ask the LLM about it
@@ -757,7 +757,7 @@ You can run multiple agents, each with its own model, workspace, and tool permis
         "id": "coder",
         "name": "Coder",
         "model": "anthropic/claude-sonnet-4-5-20250514",
-        "workspace": "~/.goclaw/workspace-coder",
+        "workspace": "~/.felix/workspace-coder",
         "tools": {
           "allow": ["read_file", "write_file", "edit_file", "bash"]
         }
@@ -766,7 +766,7 @@ You can run multiple agents, each with its own model, workspace, and tool permis
         "id": "researcher",
         "name": "Researcher",
         "model": "openai/gpt-4o",
-        "workspace": "~/.goclaw/workspace-researcher",
+        "workspace": "~/.felix/workspace-researcher",
         "tools": {
           "allow": ["read_file", "web_fetch", "web_search"]
         }
@@ -775,7 +775,7 @@ You can run multiple agents, each with its own model, workspace, and tool permis
         "id": "local",
         "name": "Local Assistant",
         "model": "ollama/llama3",
-        "workspace": "~/.goclaw/workspace-local",
+        "workspace": "~/.felix/workspace-local",
         "tools": {
           "allow": ["read_file"]
         }
@@ -793,9 +793,9 @@ You can run multiple agents, each with its own model, workspace, and tool permis
 Chat with a specific agent:
 
 ```bash
-goclaw chat coder
-goclaw chat researcher
-goclaw chat local
+felix chat coder
+felix chat researcher
+felix chat local
 ```
 
 ### Inter-agent delegation
@@ -823,7 +823,7 @@ Inline config example:
 Or use an `IDENTITY.md` file in the workspace:
 
 ```bash
-cat > ~/.goclaw/workspace-coder/IDENTITY.md << 'EOF'
+cat > ~/.felix/workspace-coder/IDENTITY.md << 'EOF'
 You are a senior Go developer. You write clean, idiomatic Go code.
 You prefer the standard library over external dependencies.
 Always write tests for new code.
@@ -835,7 +835,7 @@ EOF
 Every agent automatically knows:
 
 - **Who it is** — its own name and ID (e.g., "You are the 'Coder' agent (id: coder)")
-- **Where its config lives** — the path to `goclaw.json5` and the data directory
+- **Where its config lives** — the path to `felix.json5` and the data directory
 - **What other agents exist** — a summary of all configured agents with their IDs, models, and tools
 - **What channels are connected** — which messaging channels (Telegram, WhatsApp, CLI) are configured
 
@@ -906,7 +906,7 @@ Skills are Markdown files with YAML frontmatter that get injected into the agent
 
 ### Skill file format
 
-Create a `SKILL.md` file in `~/.goclaw/skills/<skill-name>/SKILL.md` or in the agent's workspace at `<workspace>/skills/<skill-name>/SKILL.md`:
+Create a `SKILL.md` file in `~/.felix/skills/<skill-name>/SKILL.md` or in the agent's workspace at `<workspace>/skills/<skill-name>/SKILL.md`:
 
 ```markdown
 ---
@@ -928,14 +928,14 @@ tags:
 
 ### How skills are matched
 
-When a user sends a message, GoClaw matches it against skill names, descriptions, and tags using keyword scoring. The top 3 matching skills are injected into the agent's system prompt for that turn.
+When a user sends a message, Felix matches it against skill names, descriptions, and tags using keyword scoring. The top 3 matching skills are injected into the agent's system prompt for that turn.
 
 For example, if the user says "commit my changes", skills tagged with `git` or `commit` will be included.
 
 ### Skill directories
 
 Skills are loaded from:
-1. `~/.goclaw/skills/` — shared across all agents
+1. `~/.felix/skills/` — shared across all agents
 2. `<agent-workspace>/skills/` — agent-specific skills
 
 ---
@@ -956,7 +956,7 @@ Memory gives agents persistent knowledge across conversations. Entries are store
 
 ### How it works
 
-- Memory entries are stored as `.md` files in `~/.goclaw/memory/entries/`
+- Memory entries are stored as `.md` files in `~/.felix/memory/entries/`
 - When enabled, relevant memories are automatically retrieved and injected into the agent's context each turn
 - The agent can create, update, and delete memory entries during conversations
 - Retrieval uses BM25 keyword search over entry content
@@ -966,7 +966,7 @@ Memory gives agents persistent knowledge across conversations. Entries are store
 Create a Markdown file directly:
 
 ```bash
-cat > ~/.goclaw/memory/entries/project-conventions.md << 'EOF'
+cat > ~/.felix/memory/entries/project-conventions.md << 'EOF'
 # Project Conventions
 
 - We use Go 1.22+ with generics where appropriate
@@ -1000,7 +1000,7 @@ The heartbeat daemon periodically sends a checklist to the agent for proactive a
 Place a `HEARTBEAT.md` file in the agent's workspace:
 
 ```bash
-cat > ~/.goclaw/workspace-default/HEARTBEAT.md << 'EOF'
+cat > ~/.felix/workspace-default/HEARTBEAT.md << 'EOF'
 - Check if the web server at localhost:8080 is responding
 - Check disk usage and warn if any partition is above 90%
 - Check if there are any failed systemd services
@@ -1077,7 +1077,7 @@ All actions except `navigate` accept an optional `url` parameter. When provided,
 ```
 You: Go to https://news.ycombinator.com and get the title of the top story.
 Agent: [uses browser tool: get_text with url="https://news.ycombinator.com", selector=".titleline"]
-       The top story is: "Show HN: GoClaw — self-hosted AI agent gateway in Go"
+       The top story is: "Show HN: Felix — self-hosted AI agent gateway in Go"
 
 You: Take a screenshot of that page.
 Agent: [uses browser tool: screenshot with url="https://news.ycombinator.com"]
@@ -1234,9 +1234,9 @@ Agent: [uses cron tool: action="remove", name="disk-check"]
 
 ### Static vs dynamic cron
 
-GoClaw supports cron jobs in two ways:
+Felix supports cron jobs in two ways:
 
-1. **Static (config file)** — Define cron jobs in `goclaw.json5` under the agent's `cron` array. These persist across restarts.
+1. **Static (config file)** — Define cron jobs in `felix.json5` under the agent's `cron` array. These persist across restarts.
 2. **Dynamic (cron tool)** — Agents create jobs at runtime via the `cron` tool. These are created on-the-fly during conversations.
 
 Both use the same underlying scheduler. Static jobs are ideal for always-on tasks, while dynamic jobs let agents self-organize based on user requests.
@@ -1411,7 +1411,7 @@ Approval levels:
 
 ## WebSocket API
 
-When the gateway is running (`goclaw start`), it exposes a JSON-RPC 2.0 API over WebSocket at `ws://127.0.0.1:18789/ws`.
+When the gateway is running (`felix start`), it exposes a JSON-RPC 2.0 API over WebSocket at `ws://127.0.0.1:18789/ws`.
 
 ### HTTP endpoints
 
@@ -1545,7 +1545,7 @@ Control how the agent responds to unknown senders on messaging channels:
         "id": "assistant",
         "name": "Personal Assistant",
         "model": "anthropic/claude-sonnet-4-5-20250514",
-        "workspace": "~/.goclaw/workspace-assistant",
+        "workspace": "~/.felix/workspace-assistant",
         "tools": {
           "allow": ["read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search"]
         }
@@ -1559,7 +1559,7 @@ Control how the agent responds to unknown senders on messaging channels:
   ],
   "channels": {
     "telegram": { "token": "123456:ABC...", "mode": "polling" },
-    "whatsapp": { "db_path": "~/.goclaw/whatsapp.db" },
+    "whatsapp": { "db_path": "~/.felix/whatsapp.db" },
     "cli": { "enabled": true, "interactive": true }
   },
   "memory": { "enabled": true },
@@ -1686,12 +1686,12 @@ The lead agent can use `ask_agent` to delegate coding tasks to the coder and rev
 
 ## Data Directory
 
-All GoClaw state lives in `~/.goclaw/` (on Windows: `C:\Users\<you>\.goclaw\`):
+All Felix state lives in `~/.felix/` (on Windows: `C:\Users\<you>\.felix\`):
 
 ```
-~/.goclaw/
-  goclaw.json5           # Configuration file
-  goclaw-app.log         # Tray app log file (macOS & Windows)
+~/.felix/
+  felix.json5           # Configuration file
+  felix-app.log         # Tray app log file (macOS & Windows)
   sessions/              # Conversation history (JSONL files)
   memory/entries/        # Memory entries (Markdown files)
   skills/                # Shared skills (SKILL.md files)

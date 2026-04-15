@@ -1,10 +1,10 @@
-![GoClaw](goclaw.jpg)
+![Felix](felix.jpg)
 
-# GoClaw
+# Felix
 
 A self-hosted AI agent gateway written in Go. Single binary, low memory, fast startup.
 
-GoClaw connects messaging channels (Telegram, WhatsApp, CLI) to LLMs (Claude, GPT, Gemini, DeepSeek, Ollama), enabling autonomous task execution on your own hardware. Inspired by [OpenClaw](https://github.com/openclaw/openclaw), rewritten in Go for single-binary deployment, sub-50MB memory, and <100ms startup.
+Felix connects messaging channels (Telegram, WhatsApp, CLI) to LLMs (Claude, GPT, Gemini, DeepSeek, Ollama), enabling autonomous task execution on your own hardware. Inspired by [OpenClaw](https://github.com/openclaw/openclaw), rewritten in Go for single-binary deployment, sub-50MB memory, and <100ms startup.
 
 ---
 
@@ -23,13 +23,13 @@ GoClaw connects messaging channels (Telegram, WhatsApp, CLI) to LLMs (Claude, GP
 - **Vision/image support** — send photos via Telegram, WhatsApp, or CLI and the LLM describes/analyzes them
 - **Tool policies** — per-agent allow/deny lists for all ten tools
 - **Session persistence** — append-only JSONL files with DAG structure and branching
-- **Config hot-reload** — edit goclaw.json5 while running, changes apply immediately
+- **Config hot-reload** — edit felix.json5 while running, changes apply immediately
 - **WebSocket API** — JSON-RPC 2.0 control plane for programmatic access
 - **Local-first** — all data lives on your filesystem, no external database
 
 ## Why Go?
 
-| | OpenClaw (Node.js) | GoClaw (Go) |
+| | OpenClaw (Node.js) | Felix (Go) |
 |---|---|---|
 | **Deployment** | Node.js 22+, npm, dependency install | Single static binary |
 | **Memory** | ~150-400MB | ~20-50MB |
@@ -45,14 +45,14 @@ GoClaw connects messaging channels (Telegram, WhatsApp, CLI) to LLMs (Claude, GP
 
 ```bash
 make build              # Build the CLI binary
-make build-app          # Build the macOS menu bar app (GoClaw.app)
-make build-app-windows  # Build the Windows system tray app (goclaw-app.exe)
+make build-app          # Build the macOS menu bar app (Felix.app)
+make build-app-windows  # Build the Windows system tray app (felix-app.exe)
 ```
 
 ### Setup
 
 ```bash
-./goclaw onboard
+./felix onboard
 ```
 
 The wizard walks you through choosing an LLM provider, entering your API key, and optionally setting up Telegram and/or WhatsApp.
@@ -61,20 +61,20 @@ The wizard walks you through choosing an LLM provider, entering your API key, an
 
 ```bash
 # Interactive CLI session (no gateway needed)
-./goclaw chat
+./felix chat
 
 # Start the full gateway (enables Telegram, WhatsApp, WebSocket API)
-./goclaw start
+./felix start
 
 # Or launch the system tray app
-open GoClaw.app              # macOS
-goclaw-app.exe               # Windows
+open Felix.app              # macOS
+felix-app.exe               # Windows
 ```
 
 ### Verify
 
 ```bash
-./goclaw doctor
+./felix doctor
 ```
 
 ---
@@ -83,33 +83,33 @@ goclaw-app.exe               # Windows
 
 | Command | Description |
 |---------|-------------|
-| `goclaw onboard` | Interactive setup wizard |
-| `goclaw start` | Start the gateway server |
-| `goclaw start -c path/to/config.json5` | Start with a custom config |
-| `goclaw chat` | Interactive CLI chat with the default agent |
-| `goclaw chat myagent` | Chat with a specific agent |
-| `goclaw chat -m openai/gpt-4o` | Chat with a model override |
-| `goclaw status` | Query the running gateway for agent status |
-| `goclaw doctor` | Run diagnostic checks |
-| `goclaw version` | Print version and commit info |
+| `felix onboard` | Interactive setup wizard |
+| `felix start` | Start the gateway server |
+| `felix start -c path/to/config.json5` | Start with a custom config |
+| `felix chat` | Interactive CLI chat with the default agent |
+| `felix chat myagent` | Chat with a specific agent |
+| `felix chat -m openai/gpt-4o` | Chat with a model override |
+| `felix status` | Query the running gateway for agent status |
+| `felix doctor` | Run diagnostic checks |
+| `felix version` | Print version and commit info |
 
 ---
 
 ## System Tray App
 
-GoClaw ships a system tray app that runs the gateway as a background service. Supported on macOS and Windows.
+Felix ships a system tray app that runs the gateway as a background service. Supported on macOS and Windows.
 
 ### Build
 
 ```bash
-make build-app          # macOS — produces GoClaw.app
-make build-app-windows  # Windows — produces goclaw-app.exe
+make build-app          # macOS — produces Felix.app
+make build-app-windows  # Windows — produces felix-app.exe
 ```
 
 ### Launch
 
-- **macOS:** Double-click `GoClaw.app` or drag it to `/Applications`
-- **Windows:** Double-click `goclaw-app.exe`
+- **macOS:** Double-click `Felix.app` or drag it to `/Applications`
+- **Windows:** Double-click `felix-app.exe`
 
 ### Menu items
 
@@ -117,7 +117,7 @@ make build-app-windows  # Windows — produces goclaw-app.exe
 |------|--------|
 | **Chat** | Opens a web-based chat interface in your default browser |
 | **Jobs** | Opens the cron jobs dashboard (`/jobs`) showing active scheduled tasks |
-| **Settings** | Opens `~/.goclaw/goclaw.json5` in your default editor |
+| **Settings** | Opens `~/.felix/felix.json5` in your default editor |
 | **Restart** | Restarts the gateway |
 | **Quit** | Gracefully shuts down the gateway and exits |
 
@@ -133,7 +133,7 @@ The app serves a chat page at `http://localhost:18789/chat` (also accessible at 
 
 ### Environment variables
 
-**macOS:** `.app` bundles don't inherit shell environment variables. GoClaw.app automatically loads your shell profile (`~/.zshrc`, `~/.bashrc`) at startup, so API keys set via `export ANTHROPIC_API_KEY=...` work as expected.
+**macOS:** `.app` bundles don't inherit shell environment variables. Felix.app automatically loads your shell profile (`~/.zshrc`, `~/.bashrc`) at startup, so API keys set via `export ANTHROPIC_API_KEY=...` work as expected.
 
 **Windows:** Set environment variables via System Settings or PowerShell:
 
@@ -154,17 +154,17 @@ Single-process, hub-and-spoke design. All components run in one binary.
 
 ### Core Components
 
-- **Gateway Server** (`cmd/goclaw/`) — HTTP + WebSocket server on `:18789` using chi router + gorilla/websocket. Entry point for all CLI subcommands via cobra.
+- **Gateway Server** (`cmd/felix/`) — HTTP + WebSocket server on `:18789` using chi router + gorilla/websocket. Entry point for all CLI subcommands via cobra.
 - **Channel Adapters** — Implement the `Channel` interface. Three adapters ship: Telegram (`go-telegram/bot`), WhatsApp (`whatsmeow`), and CLI (stdin/stdout). The interface is generic for future extensibility.
 - **Agent Runtime** — The think-act loop: assemble context (identity + skills + memory + history), stream LLM response, execute tool calls with policy checks, loop until final text response.
 - **LLM Client** — Abstracted behind `LLMProvider` interface with `ChatStream()` and `Embed()` methods. Providers: Anthropic (custom SSE), OpenAI (`sashabaranov/go-openai`), Google Gemini (`google/generative-ai-go`), Ollama (OpenAI-compatible HTTP).
 - **Session Manager** — Append-only JSONL files with DAG structure. One file per session. Supports compaction when history exceeds context window.
 - **Message Router** — Declarative bindings (JSON) map channel + account + peer to agent IDs. Priority: peer.id > peer.kind > accountId > channel > default.
-- **Memory Manager** — BM25 text search over Markdown files in `~/.goclaw/memory/`.
+- **Memory Manager** — BM25 text search over Markdown files in `~/.felix/memory/`.
 - **Skill System** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance. Compatible with OpenClaw/Claude Code/Cursor skill format.
 - **Heartbeat Daemon** — Background goroutine on configurable interval (default 30min), reads `HEARTBEAT.md`, sends to agent for proactive actions.
 - **Cron Scheduler** — Recurring prompts on configurable intervals (e.g., "24h", "1h", "30m"). Supports pause, resume, remove, and schedule updates at runtime.
-- **Config Manager** — JSON5 config at `~/.goclaw/goclaw.json5`, hot-reloaded via fsnotify.
+- **Config Manager** — JSON5 config at `~/.felix/felix.json5`, hot-reloaded via fsnotify.
 
 ### Key Interfaces
 
@@ -209,17 +209,17 @@ Uses the WhatsApp Web multidevice protocol via [whatsmeow](https://github.com/tu
 
 ### CLI
 
-Interactive terminal chat with Markdown rendering. Available via `goclaw chat` without starting the full gateway. Supports image input — paste or drag-and-drop a file path to send images to the LLM for vision analysis.
+Interactive terminal chat with Markdown rendering. Available via `felix chat` without starting the full gateway. Supports image input — paste or drag-and-drop a file path to send images to the LLM for vision analysis.
 
 ---
 
 ## Configuration
 
-All configuration lives in `~/.goclaw/goclaw.json5` (JSON5 format for comments and trailing commas).
+All configuration lives in `~/.felix/felix.json5` (JSON5 format for comments and trailing commas).
 
 ### LLM Providers
 
-GoClaw supports four provider kinds. Each provider is defined in the `providers` section of the config with a unique name, a `kind`, and connection details.
+Felix supports four provider kinds. Each provider is defined in the `providers` section of the config with a unique name, a `kind`, and connection details.
 
 | Kind | Description | Requires |
 |------|-------------|----------|
@@ -333,7 +333,7 @@ The naming convention is `{PROVIDER}_API_KEY` (or `{PROVIDER}_AUTH_TOKEN`), and 
         "id": "default",
         "name": "Assistant",
         "model": "anthropic/claude-sonnet-4-5-20250514",
-        "workspace": "~/.goclaw/workspace-default",
+        "workspace": "~/.felix/workspace-default",
         "system_prompt": "You are a helpful coding assistant.",  // optional: overrides IDENTITY.md
         "tools": {
           "allow": ["read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "send_message", "cron", "ask_agent"]
@@ -348,7 +348,7 @@ The naming convention is `{PROVIDER}_API_KEY` (or `{PROVIDER}_AUTH_TOKEN`), and 
   ],
   "channels": {
     "telegram": { "token": "123456:ABC...", "mode": "polling" },
-    "whatsapp": { "db_path": "~/.goclaw/whatsapp.db" },
+    "whatsapp": { "db_path": "~/.felix/whatsapp.db" },
     "cli": { "enabled": true }
   },
   "memory": { "enabled": true },
@@ -386,11 +386,11 @@ Tool access is controlled per-agent via allow/deny policies.
 
 ## Data Directory
 
-All state lives in `~/.goclaw/` (on Windows: `C:\Users\<you>\.goclaw\`) — no external database required.
+All state lives in `~/.felix/` (on Windows: `C:\Users\<you>\.felix\`) — no external database required.
 
 ```
-~/.goclaw/
-  goclaw.json5             # Configuration file
+~/.felix/
+  felix.json5             # Configuration file
   sessions/                # Conversation history (JSONL)
   memory/entries/          # Memory entries (Markdown)
   skills/                  # Shared skills (SKILL.md files)
@@ -424,7 +424,7 @@ HTTP endpoints: `GET /health` (health check), `GET /ws` (WebSocket), `GET /metri
 
 ## Security
 
-GoClaw is designed to run on your own hardware. The following measures protect your system, credentials, and data.
+Felix is designed to run on your own hardware. The following measures protect your system, credentials, and data.
 
 ### Network & Transport
 
@@ -474,8 +474,8 @@ GoClaw is designed to run on your own hardware. The following measures protect y
 
 ```bash
 make build                  # Build the CLI binary
-make build-app              # Build the macOS menu bar app (GoClaw.app)
-make build-app-windows      # Build the Windows system tray app (goclaw-app.exe)
+make build-app              # Build the macOS menu bar app (Felix.app)
+make build-app-windows      # Build the Windows system tray app (felix-app.exe)
 make test                   # Run all tests
 make test-race              # Run tests with race detector
 make lint                   # Run golangci-lint
@@ -536,7 +536,7 @@ Per-package test coverage:
 
 ## Feature Comparison with OpenClaw
 
-| Feature | OpenClaw | GoClaw |
+| Feature | OpenClaw | Felix |
 |---------|----------|--------|
 | Gateway (WebSocket control plane) | Yes | Yes |
 | Telegram channel | Yes | Yes |
@@ -567,4 +567,4 @@ Per-package test coverage:
 
 ## Documentation
 
-- [How to Use GoClaw](howtouse.md) — detailed examples, use cases, and example configurations
+- [How to Use Felix](howtouse.md) — detailed examples, use cases, and example configurations

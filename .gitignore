@@ -1,5 +1,5 @@
 # Binaries
-/goclaw
+/felix
 *.exe
 *.exe~
 *.dll
@@ -38,4 +38,4 @@ security-audit.md
 
 # others
 claw-machine.png
-GoClaw.app
+Felix.app
