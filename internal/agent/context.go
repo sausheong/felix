@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sausheong/goclaw/internal/config"
-	"github.com/sausheong/goclaw/internal/llm"
-	"github.com/sausheong/goclaw/internal/session"
+	"github.com/sausheong/felix/internal/config"
+	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/session"
 )
 
 const maxToolResultLen = 10000 // truncate tool results longer than this

@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/sausheong/goclaw/internal/channel"
-	"github.com/sausheong/goclaw/internal/config"
+	"github.com/sausheong/felix/internal/channel"
+	"github.com/sausheong/felix/internal/config"
 )
 
 func TestRouterChannelMatch(t *testing.T) {

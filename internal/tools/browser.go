@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
-	"github.com/sausheong/goclaw/internal/llm"
+	"github.com/sausheong/felix/internal/llm"
 )
 
 const browserTimeout = 60 * time.Second

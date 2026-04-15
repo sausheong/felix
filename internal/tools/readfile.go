@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sausheong/goclaw/internal/llm"
+	"github.com/sausheong/felix/internal/llm"
 )
 
 // ReadFileTool reads the contents of a file.

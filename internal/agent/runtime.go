@@ -8,12 +8,12 @@ import (
 	"strings"
 
 	"github.com/sausheong/cortex"
-	cortexadapter "github.com/sausheong/goclaw/internal/cortex"
-	"github.com/sausheong/goclaw/internal/llm"
-	"github.com/sausheong/goclaw/internal/memory"
-	"github.com/sausheong/goclaw/internal/session"
-	"github.com/sausheong/goclaw/internal/skill"
-	"github.com/sausheong/goclaw/internal/tools"
+	cortexadapter "github.com/sausheong/felix/internal/cortex"
+	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/memory"
+	"github.com/sausheong/felix/internal/session"
+	"github.com/sausheong/felix/internal/skill"
+	"github.com/sausheong/felix/internal/tools"
 )
 
 // EventType identifies the kind of agent event.

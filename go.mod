@@ -1,4 +1,4 @@
-module github.com/sausheong/goclaw
+module github.com/sausheong/felix
 
 go 1.25.1
 

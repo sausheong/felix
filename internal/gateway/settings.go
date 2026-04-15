@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/sausheong/goclaw/internal/config"
+	"github.com/sausheong/felix/internal/config"
 )
 
 // SettingsHandlers holds the HTTP handlers for the settings page and config API.

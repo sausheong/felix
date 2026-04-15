@@ -16,7 +16,7 @@ import (
 	"github.com/sausheong/cortex/extractor/hybrid"
 	"github.com/sausheong/cortex/extractor/llmext"
 	cortexoai "github.com/sausheong/cortex/llm/openai"
-	"github.com/sausheong/goclaw/internal/config"
+	"github.com/sausheong/felix/internal/config"
 )
 
 // Init opens (or creates) a Cortex knowledge graph using the provided config

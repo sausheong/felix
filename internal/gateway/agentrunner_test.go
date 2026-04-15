@@ -6,10 +6,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sausheong/goclaw/internal/config"
-	"github.com/sausheong/goclaw/internal/llm"
-	"github.com/sausheong/goclaw/internal/session"
-	"github.com/sausheong/goclaw/internal/tools"
+	"github.com/sausheong/felix/internal/config"
+	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/session"
+	"github.com/sausheong/felix/internal/tools"
 )
 
 func testConfig() *config.Config {

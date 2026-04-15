@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/sausheong/goclaw/internal/llm"
+	"github.com/sausheong/felix/internal/llm"
 )
 
 // Policy defines allow/deny rules for tool execution.

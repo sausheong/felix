@@ -1,8 +1,8 @@
 package router
 
 import (
-	"github.com/sausheong/goclaw/internal/channel"
-	"github.com/sausheong/goclaw/internal/config"
+	"github.com/sausheong/felix/internal/channel"
+	"github.com/sausheong/felix/internal/config"
 )
 
 // Router matches inbound messages to agent IDs using binding rules.

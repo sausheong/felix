@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sausheong/goclaw/internal/config"
+	"github.com/sausheong/felix/internal/config"
 )
 
 // NewUIHandler returns an HTTP handler that serves a minimal control dashboard.

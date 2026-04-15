@@ -9,12 +9,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sausheong/goclaw/internal/channel"
-	"github.com/sausheong/goclaw/internal/config"
-	"github.com/sausheong/goclaw/internal/llm"
-	"github.com/sausheong/goclaw/internal/router"
-	"github.com/sausheong/goclaw/internal/session"
-	"github.com/sausheong/goclaw/internal/tools"
+	"github.com/sausheong/felix/internal/channel"
+	"github.com/sausheong/felix/internal/config"
+	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/router"
+	"github.com/sausheong/felix/internal/session"
+	"github.com/sausheong/felix/internal/tools"
 )
 
 // mockChannel is a test double for the Channel interface.

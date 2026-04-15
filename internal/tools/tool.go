@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sausheong/goclaw/internal/llm"
+	"github.com/sausheong/felix/internal/llm"
 )
 
 // Tool is the interface that all GoClaw tools must implement.

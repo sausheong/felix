@@ -16,8 +16,8 @@ import (
 
 	"time"
 
-	"github.com/sausheong/goclaw/internal/config"
-	"github.com/sausheong/goclaw/internal/startup"
+	"github.com/sausheong/felix/internal/config"
+	"github.com/sausheong/felix/internal/startup"
 )
 
 //go:embed icon.png

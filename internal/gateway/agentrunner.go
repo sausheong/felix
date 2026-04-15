@@ -6,13 +6,13 @@ import (
 	"log/slog"
 
 	"github.com/sausheong/cortex"
-	"github.com/sausheong/goclaw/internal/agent"
-	"github.com/sausheong/goclaw/internal/config"
-	"github.com/sausheong/goclaw/internal/llm"
-	"github.com/sausheong/goclaw/internal/memory"
-	"github.com/sausheong/goclaw/internal/session"
-	"github.com/sausheong/goclaw/internal/skill"
-	"github.com/sausheong/goclaw/internal/tools"
+	"github.com/sausheong/felix/internal/agent"
+	"github.com/sausheong/felix/internal/config"
+	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/memory"
+	"github.com/sausheong/felix/internal/session"
+	"github.com/sausheong/felix/internal/skill"
+	"github.com/sausheong/felix/internal/tools"
 )
 
 // AgentRunnerImpl implements tools.AgentRunner by constructing a fresh
