@@ -207,6 +207,12 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	var memMgr *memory.Manager
 	if cfg.Memory.Enabled {
 		memMgr = memory.NewManager(filepath.Join(dataDir, "memory"))
+		if cfg.Memory.EmbeddingProvider != "" {
+			pcfg := cfg.GetProvider(cfg.Memory.EmbeddingProvider)
+			embedder := memory.NewOpenAIEmbedder(pcfg.APIKey, pcfg.BaseURL, cfg.Memory.EmbeddingModel)
+			memMgr.SetEmbedder(embedder)
+			slog.Info("memory vector search enabled", "provider", cfg.Memory.EmbeddingProvider, "model", cfg.Memory.EmbeddingModel)
+		}
 		if err := memMgr.Load(); err != nil {
 			slog.Warn("failed to load memory", "error", err)
 		}
