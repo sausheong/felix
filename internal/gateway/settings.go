@@ -618,6 +618,10 @@ body {
 			if (!cfg.cortex) cfg.cortex = {};
 			cfg.cortex.dbPath = v;
 		});
+		makeField(s, 'Provider', 'select', {value: cx.provider || 'openai', options: ['openai', 'anthropic']}, function(v) {
+			if (!cfg.cortex) cfg.cortex = {};
+			cfg.cortex.provider = v;
+		});
 		makeField(s, 'API Key', 'password', cx.apiKey || '', function(v) {
 			if (!cfg.cortex) cfg.cortex = {};
 			cfg.cortex.apiKey = v;

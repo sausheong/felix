@@ -15,6 +15,7 @@ import (
 	"github.com/sausheong/cortex/extractor/deterministic"
 	"github.com/sausheong/cortex/extractor/hybrid"
 	"github.com/sausheong/cortex/extractor/llmext"
+	cortexanthropic "github.com/sausheong/cortex/llm/anthropic"
 	cortexoai "github.com/sausheong/cortex/llm/openai"
 	"github.com/sausheong/felix/internal/config"
 )
@@ -31,21 +32,37 @@ func Init(cfg config.CortexConfig) (*cortex.Cortex, error) {
 
 	if cfg.APIKey != "" {
 		model := cfg.LLMModel
-		if model == "" {
-			model = "gpt-5.4-mini"
+		provider := cfg.Provider
+		if provider == "" {
+			provider = "openai"
 		}
 
-		llm := cortexoai.NewLLM(cfg.APIKey, cortexoai.WithModel(model))
-		embedder := cortexoai.NewEmbedder(cfg.APIKey)
 		detExt := deterministic.New()
-		llmExt := llmext.New(llm)
-		extractor := hybrid.New(detExt, llmExt)
 
-		opts = append(opts,
-			cortex.WithLLM(llm),
-			cortex.WithEmbedder(embedder),
-			cortex.WithExtractor(extractor),
-		)
+		switch provider {
+		case "anthropic":
+			if model == "" {
+				model = "claude-sonnet-4-5-20250929"
+			}
+			llm := cortexanthropic.NewLLM(cfg.APIKey, cortexanthropic.WithModel(model))
+			extractor := hybrid.New(detExt, llmext.New(llm))
+			opts = append(opts,
+				cortex.WithLLM(llm),
+				cortex.WithExtractor(extractor),
+			)
+		default: // "openai"
+			if model == "" {
+				model = "gpt-5.4-mini"
+			}
+			llm := cortexoai.NewLLM(cfg.APIKey, cortexoai.WithModel(model))
+			embedder := cortexoai.NewEmbedder(cfg.APIKey)
+			extractor := hybrid.New(detExt, llmext.New(llm))
+			opts = append(opts,
+				cortex.WithLLM(llm),
+				cortex.WithEmbedder(embedder),
+				cortex.WithExtractor(extractor),
+			)
+		}
 	}
 
 	cx, err := cortex.Open(dbPath, opts...)
