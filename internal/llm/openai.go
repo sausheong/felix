@@ -159,10 +159,10 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 	}
 
 	openaiReq := openai.ChatCompletionRequest{
-		Model:     model,
-		Messages:  msgs,
-		MaxTokens: maxTokens,
-		Stream:    true,
+		Model:                model,
+		Messages:             msgs,
+		MaxCompletionTokens:  maxTokens,
+		Stream:               true,
 	}
 
 	if len(tools) > 0 {
