@@ -834,17 +834,6 @@ html.dark .error-state { background: #450a0a; }
 			cfg.cortex.llmModel = v;
 		});
 
-		// Heartbeat
-		var hb = cfg.heartbeat || {};
-		var hbSec = makeSection(p, 'Heartbeat');
-		makeField(hbSec, 'Enabled', 'toggle', hb.enabled, function(v) {
-			if (!cfg.heartbeat) cfg.heartbeat = {};
-			cfg.heartbeat.enabled = v;
-		});
-		makeField(hbSec, 'Interval', 'text', hb.interval || '30m', function(v) {
-			if (!cfg.heartbeat) cfg.heartbeat = {};
-			cfg.heartbeat.interval = v;
-		});
 	}
 
 	// === Security Panel ===
