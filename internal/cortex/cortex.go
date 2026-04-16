@@ -21,8 +21,9 @@ import (
 )
 
 // Init opens (or creates) a Cortex knowledge graph using the provided config.
-// The API key and model are read from cfg.APIKey and cfg.LLMModel.
-func Init(cfg config.CortexConfig) (*cortex.Cortex, error) {
+// apiKey is the API key for the configured provider, looked up by the caller
+// from cfg.Providers[cfg.Cortex.Provider].
+func Init(cfg config.CortexConfig, apiKey string) (*cortex.Cortex, error) {
 	dbPath := cfg.DBPath
 	if dbPath == "" {
 		dbPath = filepath.Join(config.DefaultDataDir(), "brain.db")
@@ -30,7 +31,7 @@ func Init(cfg config.CortexConfig) (*cortex.Cortex, error) {
 
 	var opts []cortex.Option
 
-	if cfg.APIKey != "" {
+	if apiKey != "" {
 		model := cfg.LLMModel
 		provider := cfg.Provider
 		if provider == "" {
@@ -44,7 +45,7 @@ func Init(cfg config.CortexConfig) (*cortex.Cortex, error) {
 			if model == "" {
 				model = "claude-sonnet-4-5-20250929"
 			}
-			llm := cortexanthropic.NewLLM(cfg.APIKey, cortexanthropic.WithModel(model))
+			llm := cortexanthropic.NewLLM(apiKey, cortexanthropic.WithModel(model))
 			extractor := hybrid.New(detExt, llmext.New(llm))
 			opts = append(opts,
 				cortex.WithLLM(llm),
@@ -54,8 +55,8 @@ func Init(cfg config.CortexConfig) (*cortex.Cortex, error) {
 			if model == "" {
 				model = "gpt-5.4-mini"
 			}
-			llm := cortexoai.NewLLM(cfg.APIKey, cortexoai.WithModel(model))
-			embedder := cortexoai.NewEmbedder(cfg.APIKey)
+			llm := cortexoai.NewLLM(apiKey, cortexoai.WithModel(model))
+			embedder := cortexoai.NewEmbedder(apiKey)
 			extractor := hybrid.New(detExt, llmext.New(llm))
 			opts = append(opts,
 				cortex.WithLLM(llm),

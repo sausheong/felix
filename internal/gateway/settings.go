@@ -622,11 +622,7 @@ body {
 			if (!cfg.cortex) cfg.cortex = {};
 			cfg.cortex.provider = v;
 		});
-		makeField(s, 'API Key', 'password', cx.apiKey || '', function(v) {
-			if (!cfg.cortex) cfg.cortex = {};
-			cfg.cortex.apiKey = v;
-		});
-		makeField(s, 'LLM Model', 'text', cx.llmModel || '', function(v) {
+makeField(s, 'LLM Model', 'text', cx.llmModel || '', function(v) {
 			if (!cfg.cortex) cfg.cortex = {};
 			cfg.cortex.llmModel = v;
 		});

@@ -277,7 +277,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 	var cx *cortex.Cortex
 	if cfg.Cortex.Enabled {
 		var cxErr error
-		cx, cxErr = cortexadapter.Init(cfg.Cortex)
+		cx, cxErr = cortexadapter.Init(cfg.Cortex, cfg.GetProvider(cfg.Cortex.Provider).APIKey)
 		if cxErr != nil {
 			slog.Warn("failed to init cortex", "error", cxErr)
 		} else {
