@@ -325,6 +325,22 @@ func (c *Config) Path() string {
 	return c.path
 }
 
+// UpdateFrom copies all configuration fields from src into c under c's lock.
+// Use this to refresh the in-memory config after a save without replacing the pointer.
+func (c *Config) UpdateFrom(src *Config) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Gateway = src.Gateway
+	c.Providers = src.Providers
+	c.Agents = src.Agents
+	c.Bindings = src.Bindings
+	c.Channels = src.Channels
+	c.Heartbeat = src.Heartbeat
+	c.Memory = src.Memory
+	c.Cortex = src.Cortex
+	c.Security = src.Security
+}
+
 // SetPath sets the file path for saving.
 func (c *Config) SetPath(path string) {
 	c.mu.Lock()

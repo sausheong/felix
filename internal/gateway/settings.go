@@ -68,6 +68,9 @@ func NewSettingsHandlers(cfg *config.Config, onSave func(*config.Config)) *Setti
 				return
 			}
 
+			// Update the in-memory config so the GET handler returns fresh values.
+			cfg.UpdateFrom(&newCfg)
+
 			slog.Info("config saved via settings page")
 
 			// Trigger hot-reload callback if configured.
