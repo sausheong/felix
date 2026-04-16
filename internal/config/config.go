@@ -305,6 +305,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if c.Cortex.Enabled && c.Cortex.Provider == "" {
+		c.Cortex.Provider = "openai"
+	}
+
 	return nil
 }
 
