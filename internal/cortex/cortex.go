@@ -84,41 +84,42 @@ var trivialPhrases = map[string]bool{
 	"good night":   true,
 }
 
-// ShouldIngest returns true if the conversation exchange contains enough
+// ShouldIngest returns true if the conversation thread contains enough
 // substance to be worth storing in the knowledge graph.
-func ShouldIngest(userMsg, assistantReply string) bool {
-	// Skip if user message is a trivial phrase.
-	if trivialPhrases[strings.ToLower(strings.TrimSpace(userMsg))] {
+func ShouldIngest(thread []conversation.Message) bool {
+	if len(thread) == 0 {
 		return false
 	}
-
-	// Skip if combined text is too short.
-	combined := len(strings.TrimSpace(userMsg)) + len(strings.TrimSpace(assistantReply))
-	if combined < minIngestLen {
+	// Skip if the first user message is a trivial phrase.
+	if trivialPhrases[strings.ToLower(strings.TrimSpace(thread[0].Content))] {
 		return false
 	}
-
-	return true
+	// Require at least one assistant message and enough combined content.
+	total := 0
+	hasAssistant := false
+	for _, m := range thread {
+		total += len(strings.TrimSpace(m.Content))
+		if m.Role == "assistant" {
+			hasAssistant = true
+		}
+	}
+	return hasAssistant && total >= minIngestLen
 }
 
-// IngestConversation feeds a completed user+assistant exchange into the
-// Cortex knowledge graph. It skips trivial or short exchanges.
+// IngestThread feeds a completed conversation thread into the Cortex knowledge
+// graph. The thread should contain all messages for the exchange: user message,
+// tool calls (as assistant messages), tool results (as user messages), and the
+// final assistant reply. It skips trivial or short threads.
 // It runs synchronously; callers should run it in a goroutine if they
 // don't want to block.
-func IngestConversation(ctx context.Context, cx *cortex.Cortex, userMsg, assistantReply string) {
-	if !ShouldIngest(userMsg, assistantReply) {
-		slog.Debug("cortex: skipping trivial conversation ingest",
-			"user_len", len(userMsg), "assistant_len", len(assistantReply))
+func IngestThread(ctx context.Context, cx *cortex.Cortex, thread []conversation.Message) {
+	if !ShouldIngest(thread) {
+		slog.Debug("cortex: skipping trivial thread ingest", "len", len(thread))
 		return
 	}
-
 	conn := conversation.New()
-	msgs := []conversation.Message{
-		{Role: "user", Content: userMsg},
-		{Role: "assistant", Content: assistantReply},
-	}
-	if err := conn.Ingest(ctx, cx, msgs); err != nil {
-		slog.Warn("cortex: conversation ingest failed", "error", err)
+	if err := conn.Ingest(ctx, cx, thread); err != nil {
+		slog.Warn("cortex: thread ingest failed", "error", err)
 	}
 }
 
