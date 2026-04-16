@@ -196,7 +196,10 @@ main { padding: 2rem 0 4rem; }
 	border-bottom: 2px solid var(--color-border);
 	margin-bottom: 1.75rem;
 	overflow-x: auto;
+	scrollbar-width: none;
+	-ms-overflow-style: none;
 }
+.finger-tabs::-webkit-scrollbar { display: none; }
 .finger-tab {
 	padding: 0.6rem 1.25rem;
 	font-size: 0.9rem;
