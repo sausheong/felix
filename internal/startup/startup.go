@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/sausheong/cortex"
@@ -34,29 +33,15 @@ type Result struct {
 	Cleanup   func() // call to gracefully shut down everything
 }
 
-// ResolveProviderOpts builds ProviderOptions for a given provider name,
-// merging config file settings with environment variables.
-// Env vars take precedence over config values.
+// ResolveProviderOpts builds ProviderOptions for a given provider name
+// from the config file only.
 func ResolveProviderOpts(name string, cfg *config.Config) llm.ProviderOptions {
 	pcfg := cfg.GetProvider(name)
-	opts := llm.ProviderOptions{
+	return llm.ProviderOptions{
 		APIKey:  pcfg.APIKey,
 		BaseURL: pcfg.BaseURL,
 		Kind:    pcfg.Kind,
 	}
-
-	envPrefix := strings.ToUpper(name)
-	if v := os.Getenv(envPrefix + "_API_KEY"); v != "" {
-		opts.APIKey = v
-	}
-	if v := os.Getenv(envPrefix + "_AUTH_TOKEN"); v != "" {
-		opts.APIKey = v
-	}
-	if v := os.Getenv(envPrefix + "_BASE_URL"); v != "" {
-		opts.BaseURL = v
-	}
-
-	return opts
 }
 
 // InitProviders creates LLM providers from config.
