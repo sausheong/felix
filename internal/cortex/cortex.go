@@ -32,7 +32,7 @@ func Init(cfg config.CortexConfig) (*cortex.Cortex, error) {
 	if cfg.APIKey != "" {
 		model := cfg.LLMModel
 		if model == "" {
-			model = "gpt-4o-mini"
+			model = "gpt-5.4-mini"
 		}
 
 		llm := cortexoai.NewLLM(cfg.APIKey, cortexoai.WithModel(model))
