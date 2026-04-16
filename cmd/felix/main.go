@@ -276,9 +276,8 @@ func runChat(agentID, configPath, modelOverride string) error {
 	// Init Cortex knowledge graph
 	var cx *cortex.Cortex
 	if cfg.Cortex.Enabled {
-		openaiOpts := startup.ResolveProviderOpts("openai", cfg)
 		var cxErr error
-		cx, cxErr = cortexadapter.Init(cfg.Cortex, openaiOpts.APIKey)
+		cx, cxErr = cortexadapter.Init(cfg.Cortex)
 		if cxErr != nil {
 			slog.Warn("failed to init cortex", "error", cxErr)
 		} else {

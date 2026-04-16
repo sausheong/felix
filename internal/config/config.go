@@ -132,6 +132,7 @@ type MemoryConfig struct {
 type CortexConfig struct {
 	Enabled  bool   `json:"enabled"`
 	DBPath   string `json:"dbPath"`   // path to brain.db (default: ~/.felix/brain.db)
+	APIKey   string `json:"apiKey"`   // OpenAI API key for LLM extraction and embedding
 	LLMModel string `json:"llmModel"` // model for extraction/decomposition (default: gpt-4o-mini)
 }
 

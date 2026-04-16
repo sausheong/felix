@@ -230,9 +230,8 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// Init Cortex knowledge graph
 	var cx *cortex.Cortex
 	if cfg.Cortex.Enabled {
-		openaiOpts := ResolveProviderOpts("openai", cfg)
 		var initErr error
-		cx, initErr = cortexadapter.Init(cfg.Cortex, openaiOpts.APIKey)
+		cx, initErr = cortexadapter.Init(cfg.Cortex)
 		if initErr != nil {
 			slog.Warn("failed to init cortex", "error", initErr)
 		}

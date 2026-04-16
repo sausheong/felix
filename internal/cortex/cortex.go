@@ -19,10 +19,9 @@ import (
 	"github.com/sausheong/felix/internal/config"
 )
 
-// Init opens (or creates) a Cortex knowledge graph using the provided config
-// and OpenAI API key. The API key is used for both LLM extraction and
-// embedding via the cortex/llm/openai package.
-func Init(cfg config.CortexConfig, openaiAPIKey string) (*cortex.Cortex, error) {
+// Init opens (or creates) a Cortex knowledge graph using the provided config.
+// The API key and model are read from cfg.APIKey and cfg.LLMModel.
+func Init(cfg config.CortexConfig) (*cortex.Cortex, error) {
 	dbPath := cfg.DBPath
 	if dbPath == "" {
 		dbPath = filepath.Join(config.DefaultDataDir(), "brain.db")
@@ -30,14 +29,14 @@ func Init(cfg config.CortexConfig, openaiAPIKey string) (*cortex.Cortex, error) 
 
 	var opts []cortex.Option
 
-	if openaiAPIKey != "" {
+	if cfg.APIKey != "" {
 		model := cfg.LLMModel
 		if model == "" {
-			model = "gpt-5.4-mini"
+			model = "gpt-4o-mini"
 		}
 
-		llm := cortexoai.NewLLM(openaiAPIKey, cortexoai.WithModel(model))
-		embedder := cortexoai.NewEmbedder(openaiAPIKey)
+		llm := cortexoai.NewLLM(cfg.APIKey, cortexoai.WithModel(model))
+		embedder := cortexoai.NewEmbedder(cfg.APIKey)
 		detExt := deterministic.New()
 		llmExt := llmext.New(llm)
 		extractor := hybrid.New(detExt, llmExt)
