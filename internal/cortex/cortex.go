@@ -91,7 +91,7 @@ func ShouldIngest(thread []conversation.Message) bool {
 		return false
 	}
 	// Skip if the first user message is a trivial phrase.
-	if trivialPhrases[strings.ToLower(strings.TrimSpace(thread[0].Content))] {
+	if thread[0].Role == "user" && trivialPhrases[strings.ToLower(strings.TrimSpace(thread[0].Content))] {
 		return false
 	}
 	// Require at least one assistant message and enough combined content.
