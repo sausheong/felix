@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sausheong/cortex"
+	"github.com/sausheong/cortex/connector/conversation"
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
@@ -75,6 +76,32 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			r.Session.Append(session.UserMessageEntry(userMsg))
 		}
 
+		// Initialise Cortex thread and recall (once, before the loop).
+		var thread []conversation.Message
+		cortexContext := ""
+		if r.Cortex != nil {
+			thread = []conversation.Message{{Role: "user", Content: userMsg}}
+
+			results, err := r.Cortex.Recall(ctx, userMsg, cortex.WithLimit(5))
+			if err != nil {
+				slog.Debug("cortex recall error", "error", err)
+				cortexContext = cortexadapter.CortexHint
+			} else {
+				cortexContext = cortexadapter.CortexHint
+				if extra := cortexadapter.FormatResults(results); extra != "" {
+					cortexContext += extra
+				}
+			}
+
+			// Deferred ingest fires on every goroutine exit path.
+			cx := r.Cortex
+			defer func() {
+				if len(thread) > 1 {
+					go cortexadapter.IngestThread(context.Background(), cx, thread)
+				}
+			}()
+		}
+
 		maxTurns := r.MaxTurns
 		if maxTurns == 0 {
 			maxTurns = 25
@@ -106,15 +133,9 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				}
 			}
 
-			// Inject Cortex knowledge graph context
-			if r.Cortex != nil {
-				systemPrompt += cortexadapter.CortexHint
-				results, err := r.Cortex.Recall(ctx, userMsg, cortex.WithLimit(5))
-				if err != nil {
-					slog.Debug("cortex recall error", "error", err)
-				} else if extra := cortexadapter.FormatResults(results); extra != "" {
-					systemPrompt += extra
-				}
+			// Inject Cortex context (recalled once before the loop).
+			if cortexContext != "" {
+				systemPrompt += cortexContext
 			}
 
 			history := r.Session.History()
@@ -167,24 +188,29 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// Save assistant response to session
 			if textContent.Len() > 0 {
 				r.Session.Append(session.AssistantMessageEntry(textContent.String()))
+				if r.Cortex != nil {
+					thread = append(thread, conversation.Message{
+						Role:    "assistant",
+						Content: textContent.String(),
+					})
+				}
 			}
 
 			// If no tool calls, we're done
 			if len(toolCalls) == 0 {
-				// Auto-ingest conversation into Cortex in background
-				if r.Cortex != nil && textContent.Len() > 0 {
-					cx := r.Cortex
-					uMsg := userMsg
-					aMsg := textContent.String()
-					go cortexadapter.IngestConversation(context.Background(), cx, uMsg, aMsg)
-				}
 				events <- AgentEvent{Type: EventDone}
 				return
 			}
 
-			// Save tool calls to session
+			// Save tool calls to session and accumulate in Cortex thread.
 			for _, tc := range toolCalls {
 				r.Session.Append(session.ToolCallEntry(tc.ID, tc.Name, tc.Input))
+				if r.Cortex != nil {
+					thread = append(thread, conversation.Message{
+						Role:    "assistant",
+						Content: fmt.Sprintf("[tool: %s]\n%s", tc.Name, string(tc.Input)),
+					})
+				}
 			}
 
 			// Execute tools
@@ -228,8 +254,15 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					})
 				}
 
-				// Save tool result to session
+				// Save tool result to session and accumulate in Cortex thread.
 				r.Session.Append(session.ToolResultEntry(tc.ID, result.Output, result.Error, imgData))
+				if r.Cortex != nil {
+					content := result.Output
+					if result.Error != "" {
+						content = "[error] " + result.Error
+					}
+					thread = append(thread, conversation.Message{Role: "user", Content: content})
+				}
 
 				events <- AgentEvent{
 					Type:     EventToolResult,
