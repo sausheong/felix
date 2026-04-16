@@ -97,7 +97,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			cx := r.Cortex
 			defer func() {
 				if len(thread) > 1 {
-					go cortexadapter.IngestThread(context.Background(), cx, thread)
+					cortexadapter.IngestThreadAsync(context.Background(), cx, thread)
 				}
 			}()
 		}

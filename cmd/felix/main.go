@@ -281,7 +281,10 @@ func runChat(agentID, configPath, modelOverride string) error {
 		if cxErr != nil {
 			slog.Warn("failed to init cortex", "error", cxErr)
 		} else {
-			defer cx.Close()
+			defer func() {
+				cortexadapter.Drain()
+				cx.Close()
+			}()
 		}
 	}
 

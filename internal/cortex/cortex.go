@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/cortex/connector/conversation"
@@ -19,6 +20,25 @@ import (
 	cortexoai "github.com/sausheong/cortex/llm/openai"
 	"github.com/sausheong/felix/internal/config"
 )
+
+// ingestWG tracks in-flight background ingest goroutines.
+// Call Drain() before closing the Cortex database to ensure all writes complete.
+var ingestWG sync.WaitGroup
+
+// IngestThreadAsync queues a conversation thread for background ingestion into
+// the Cortex knowledge graph. Call Drain() before closing the database to
+// ensure all queued writes complete.
+func IngestThreadAsync(ctx context.Context, cx *cortex.Cortex, thread []conversation.Message) {
+	ingestWG.Go(func() {
+		IngestThread(ctx, cx, thread)
+	})
+}
+
+// Drain waits for all in-flight IngestThreadAsync calls to complete.
+// Call this before closing the Cortex database (cx.Close()).
+func Drain() {
+	ingestWG.Wait()
+}
 
 // Init opens (or creates) a Cortex knowledge graph using the provided config.
 // apiKey is the API key for the configured provider, looked up by the caller

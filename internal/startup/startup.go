@@ -465,6 +465,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			configWatcher.Stop()
 		}
 		if cx != nil {
+			cortexadapter.Drain()
 			cx.Close()
 		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
