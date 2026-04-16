@@ -558,7 +558,7 @@ html.light #header .logo {
 	function renderMd(text) {
 		// 1. Extract code blocks into placeholders
 		var codeBlocks = [];
-		var s = text.replace(/` + "```" + `(\\w*)\n([\\s\\S]*?)` + "```" + `/g, function(_, lang, code) {
+		var s = text.replace(/` + "```" + `(\w*)\n([\s\S]*?)` + "```" + `/g, function(_, lang, code) {
 			var idx = codeBlocks.length;
 			codeBlocks.push('<pre><code>' + escHtml(code.trimEnd()) + '</code></pre>');
 			return '__CB' + idx + '__';
