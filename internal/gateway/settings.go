@@ -618,7 +618,7 @@ body {
 			if (!cfg.cortex) cfg.cortex = {};
 			cfg.cortex.dbPath = v;
 		});
-		makeField(s, 'Provider', 'select', {value: cx.provider || 'openai', options: ['openai', 'anthropic']}, function(v) {
+		makeField(s, 'Provider', 'select', {value: cx.provider || '', options: Object.keys(cfg.providers || {})}, function(v) {
 			if (!cfg.cortex) cfg.cortex = {};
 			cfg.cortex.provider = v;
 		});
