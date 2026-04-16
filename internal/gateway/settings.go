@@ -801,7 +801,10 @@ html.dark .error-state { background: #450a0a; }
 			cfg.memory.enabled = v;
 		});
 		var memRow = makeRow(memSec);
-		makeField(memRow, 'Embedding Provider', 'text', m.embeddingProvider || '', function(v) {
+		makeField(memRow, 'Embedding Provider', 'select', {
+			value: m.embeddingProvider || '',
+			options: Object.keys(cfg.providers || {})
+		}, function(v) {
 			if (!cfg.memory) cfg.memory = {};
 			cfg.memory.embeddingProvider = v;
 		});
