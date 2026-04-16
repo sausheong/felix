@@ -91,177 +91,207 @@ const settingsHTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Felix Settings</title>
 <style>
+/* === Custom Properties === */
 :root {
-	--bg: #1a1a2e;
-	--bg-header: #16213e;
-	--bg-card: #16213e;
-	--bg-input: #0d1b36;
-	--border: #0f3460;
-	--text: #e0e0e0;
-	--text-muted: #888;
-	--text-strong: #fff;
-	--accent: #16dbaa;
-	--accent2: #53a8b6;
-	--btn-text: #1a1a2e;
-	--placeholder: #555;
-	--error: #e74c3c;
-	--success: #27ae60;
+	--color-primary: #2563eb;
+	--color-primary-hover: #1d4ed8;
+	--color-bg: #f8fafc;
+	--color-surface: #ffffff;
+	--color-text: #1e293b;
+	--color-text-muted: #64748b;
+	--color-border: #e2e8f0;
+	--color-error: #dc2626;
+	--color-success: #16a34a;
+	--radius: 8px;
+	--shadow: 0 1px 3px rgba(0,0,0,0.1);
+	--shadow-md: 0 4px 6px rgba(0,0,0,0.1);
 }
-html.light {
-	--bg: #f5f5f5;
-	--bg-header: #ffffff;
-	--bg-card: #ffffff;
-	--bg-input: #ffffff;
-	--border: #ddd;
-	--text: #1a1a1a;
-	--text-muted: #777;
-	--text-strong: #000;
-	--accent: #0fa888;
-	--accent2: #3a7f8c;
-	--btn-text: #fff;
-	--placeholder: #999;
-	--error: #d32f2f;
-	--success: #219a52;
+html.dark {
+	--color-primary: #3b82f6;
+	--color-primary-hover: #60a5fa;
+	--color-bg: #0f172a;
+	--color-surface: #1e293b;
+	--color-text: #e2e8f0;
+	--color-text-muted: #94a3b8;
+	--color-border: #334155;
+	--color-error: #ef4444;
+	--color-success: #22c55e;
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* === Reset === */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
-	background: var(--bg);
-	color: var(--text);
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+	background: var(--color-bg);
+	color: var(--color-text);
 	min-height: 100vh;
-	transition: background 0.3s, color 0.3s;
+	line-height: 1.6;
 }
+
+/* === Header / Nav === */
 #header {
-	background: var(--bg-header);
+	background: var(--color-surface);
+	border-bottom: 1px solid var(--color-border);
 	padding: 0.75rem 1.5rem;
-	border-bottom: 1px solid var(--border);
+	box-shadow: var(--shadow);
 	display: flex;
 	align-items: center;
 	gap: 0.75rem;
+	position: sticky;
+	top: 0;
+	z-index: 10;
 }
-#header h1 { font-size: 1.1rem; color: var(--accent); }
-#header .spacer { margin-left: auto; }
-.header-btn {
-	background: none;
-	border: 1px solid var(--border);
-	border-radius: 6px;
-	padding: 0.3rem 0.5rem;
-	cursor: pointer;
-	font-size: 0.8rem;
-	line-height: 1;
-	color: var(--text);
-	transition: border-color 0.3s;
-}
-.header-btn:hover { border-color: var(--accent); }
-#save-btn {
-	background: var(--accent);
-	color: var(--btn-text);
+#header h1 { font-size: 1.1rem; font-weight: 700; color: var(--color-text); }
+.spacer { margin-left: auto; }
+#status-msg { font-size: 0.85rem; }
+#status-msg.success { color: var(--color-success); }
+#status-msg.error { color: var(--color-error); }
+
+/* === Buttons === */
+.btn-primary {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.45rem 1rem;
+	background: var(--color-primary);
+	color: #fff;
 	border: none;
-	border-radius: 6px;
-	padding: 0.4rem 1rem;
-	font-size: 0.85rem;
-	font-weight: 600;
+	border-radius: var(--radius);
+	font-size: 0.875rem;
+	font-weight: 500;
 	cursor: pointer;
+	transition: background 0.15s;
 }
-#save-btn:hover { opacity: 0.85; }
-#save-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-#status-msg {
-	font-size: 0.8rem;
-	margin-left: 0.5rem;
+.btn-primary:hover { background: var(--color-primary-hover); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-icon {
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius);
+	padding: 0.3rem 0.55rem;
+	cursor: pointer;
+	font-size: 1rem;
+	line-height: 1;
+	color: var(--color-text);
+	transition: border-color 0.15s;
 }
-#content {
-	max-width: 800px;
-	margin: 1.5rem auto;
-	padding: 0 1.5rem 3rem;
+.btn-icon:hover { border-color: var(--color-primary); }
+
+/* === Main Layout === */
+main { padding: 2rem 0 4rem; }
+.container { max-width: 960px; margin: 0 auto; padding: 0 1.5rem; }
+
+/* === Settings Card === */
+.settings-wide {
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius);
+	padding: 2rem;
+	box-shadow: var(--shadow-md);
 }
-.section {
-	background: var(--bg-card);
-	border: 1px solid var(--border);
-	border-radius: 10px;
-	padding: 1.25rem;
-	margin-bottom: 1rem;
+
+/* === Finger Tabs === */
+.finger-tabs {
+	display: flex;
+	gap: 0;
+	border-bottom: 2px solid var(--color-border);
+	margin-bottom: 1.75rem;
+	overflow-x: auto;
 }
-.section h2 {
-	font-size: 0.95rem;
-	color: var(--accent2);
-	margin-bottom: 1rem;
-	border-bottom: 1px solid var(--border);
-	padding-bottom: 0.5rem;
+.finger-tab {
+	padding: 0.6rem 1.25rem;
+	font-size: 0.9rem;
+	font-weight: 500;
+	color: var(--color-text-muted);
+	cursor: pointer;
+	border: none;
+	background: none;
+	border-bottom: 2px solid transparent;
+	margin-bottom: -2px;
+	white-space: nowrap;
+	transition: color 0.15s, border-color 0.15s;
 }
-.field {
-	margin-bottom: 0.75rem;
+.finger-tab:hover { color: var(--color-text); }
+.finger-tab.active {
+	color: var(--color-primary);
+	border-bottom-color: var(--color-primary);
+}
+.finger-panel { display: none; }
+.finger-panel.active { display: block; }
+
+/* === Form Groups (label above input) === */
+.form-group { margin-bottom: 1rem; }
+.form-group > label {
+	display: block;
+	font-size: 0.875rem;
+	font-weight: 500;
+	margin-bottom: 0.3rem;
+	color: var(--color-text);
+}
+.form-group input[type="text"],
+.form-group input[type="password"],
+.form-group input[type="number"],
+.form-group select,
+.form-group textarea {
+	width: 100%;
+	padding: 0.5rem 0.75rem;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius);
+	font-size: 0.9rem;
+	background: var(--color-surface);
+	color: var(--color-text);
+	font-family: inherit;
+	transition: border-color 0.15s, box-shadow 0.15s;
+}
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+	outline: none;
+	border-color: var(--color-primary);
+	box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
+}
+.form-group textarea {
+	min-height: 80px;
+	resize: vertical;
+	font-family: "SF Mono", "Fira Code", monospace;
+	font-size: 0.85rem;
+}
+html.dark .form-group input,
+html.dark .form-group select,
+html.dark .form-group textarea { background: #0f172a; }
+
+/* === 2-column Row === */
+.form-row {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 1rem;
+}
+
+/* === Toggle Group === */
+.toggle-group {
 	display: flex;
 	align-items: center;
-	gap: 0.75rem;
+	gap: 0.65rem;
+	margin-bottom: 1rem;
 }
-.field label {
-	min-width: 140px;
-	font-size: 0.85rem;
-	color: var(--text-muted);
-	flex-shrink: 0;
+.toggle-label {
+	font-size: 0.875rem;
+	font-weight: 500;
+	color: var(--color-text);
 }
-.field input[type="text"],
-.field input[type="number"],
-.field input[type="password"] {
-	flex: 1;
-	background: var(--bg-input);
-	border: 1px solid var(--border);
-	border-radius: 6px;
-	padding: 0.4rem 0.6rem;
-	color: var(--text);
-	font-family: "SF Mono", "Fira Code", monospace;
-	font-size: 0.85rem;
-	outline: none;
-}
-.field input:focus { border-color: var(--accent); }
-.field select {
-	flex: 1;
-	background: var(--bg-input);
-	border: 1px solid var(--border);
-	border-radius: 6px;
-	padding: 0.4rem 0.6rem;
-	color: var(--text);
-	font-family: inherit;
-	font-size: 0.85rem;
-	outline: none;
-}
-.field textarea {
-	flex: 1;
-	background: var(--bg-input);
-	border: 1px solid var(--border);
-	border-radius: 6px;
-	padding: 0.4rem 0.6rem;
-	color: var(--text);
-	font-family: "SF Mono", "Fira Code", monospace;
-	font-size: 0.8rem;
-	outline: none;
-	resize: vertical;
-	min-height: 60px;
-}
-.field textarea:focus { border-color: var(--accent); }
 .toggle {
 	position: relative;
 	width: 40px;
-	min-width: 40px;
 	height: 22px;
-	flex: none;
+	flex-shrink: 0;
 }
-.field label.toggle {
-	min-width: 40px;
-	width: 40px;
-}
-.toggle input {
-	opacity: 0;
-	width: 0;
-	height: 0;
-}
+.toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
 .toggle .slider {
 	position: absolute;
 	cursor: pointer;
 	top: 0; left: 0; right: 0; bottom: 0;
-	background: var(--border);
+	background: var(--color-border);
 	border-radius: 22px;
-	transition: 0.3s;
+	transition: 0.25s;
 }
 .toggle .slider:before {
 	content: "";
@@ -270,48 +300,91 @@ body {
 	width: 16px;
 	left: 3px;
 	bottom: 3px;
-	background: var(--text);
+	background: #fff;
 	border-radius: 50%;
-	transition: 0.3s;
+	transition: 0.25s;
 }
-.toggle input:checked + .slider { background: var(--accent); }
+.toggle input:checked + .slider { background: var(--color-primary); }
 .toggle input:checked + .slider:before { transform: translateX(18px); }
-.dynamic-list { margin-top: 0.5rem; }
+
+/* === Panel Sections (sub-headings within a panel) === */
+.panel-section { margin-bottom: 0.25rem; }
+.panel-section + .panel-section {
+	margin-top: 1.5rem;
+	padding-top: 1.25rem;
+	border-top: 1px solid var(--color-border);
+}
+.panel-section h3 {
+	font-size: 1rem;
+	font-weight: 600;
+	color: var(--color-text);
+	margin-bottom: 1rem;
+}
+
+/* === Dynamic Cards (Providers / Agents) === */
+.dynamic-list { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 0.75rem; }
 .dynamic-item {
-	background: var(--bg-input);
-	border: 1px solid var(--border);
-	border-radius: 8px;
-	padding: 0.75rem;
-	margin-bottom: 0.5rem;
+	background: var(--color-bg);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius);
+	padding: 1rem 1rem 0.25rem;
 	position: relative;
 }
-.dynamic-item .field { margin-bottom: 0.5rem; }
-.dynamic-item .field:last-child { margin-bottom: 0; }
+.dynamic-item-title {
+	font-weight: 600;
+	font-size: 0.9rem;
+	color: var(--color-text);
+	margin-bottom: 0.75rem;
+}
 .remove-btn {
 	position: absolute;
-	top: 0.5rem;
-	right: 0.5rem;
+	top: 0.75rem;
+	right: 0.75rem;
 	background: none;
 	border: none;
-	color: var(--error);
+	color: var(--color-error);
 	cursor: pointer;
 	font-size: 1.1rem;
 	line-height: 1;
-	padding: 0.2rem;
+	padding: 0.1rem 0.25rem;
+	opacity: 0.6;
+	border-radius: 4px;
 }
-.remove-btn:hover { opacity: 0.7; }
+.remove-btn:hover { opacity: 1; background: rgba(220,38,38,0.08); }
 .add-btn {
-	background: none;
-	border: 1px dashed var(--border);
-	border-radius: 6px;
-	padding: 0.4rem 0.75rem;
-	color: var(--accent2);
-	cursor: pointer;
-	font-size: 0.8rem;
+	display: block;
 	width: 100%;
-	margin-top: 0.25rem;
+	background: none;
+	border: 1px dashed var(--color-border);
+	border-radius: var(--radius);
+	padding: 0.5rem;
+	color: var(--color-text-muted);
+	cursor: pointer;
+	font-size: 0.875rem;
+	transition: border-color 0.15s, color 0.15s;
 }
-.add-btn:hover { border-color: var(--accent); color: var(--accent); }
+.add-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+
+/* === Loading / Error === */
+.loading-state {
+	text-align: center;
+	padding: 3rem;
+	color: var(--color-text-muted);
+}
+.error-state {
+	padding: 1rem;
+	background: #fee2e2;
+	color: var(--color-error);
+	border-radius: var(--radius);
+}
+html.dark .error-state { background: #450a0a; }
+
+/* === Responsive === */
+@media (max-width: 600px) {
+	.form-row { grid-template-columns: 1fr; }
+	.finger-tab { padding: 0.5rem 0.75rem; font-size: 0.8rem; }
+	.settings-wide { padding: 1rem; }
+}
 </style>
 </head>
 <body>
@@ -319,59 +392,94 @@ body {
 	<h1>Felix Settings</h1>
 	<span class="spacer"></span>
 	<span id="status-msg"></span>
-	<button id="save-btn" disabled>Save</button>
-	<button class="header-btn" id="theme-btn" title="Toggle light/dark mode">&#9790;</button>
+	<button class="btn-primary" id="save-btn" disabled>Save</button>
+	<button class="btn-icon" id="theme-btn" title="Toggle light/dark mode">&#9790;</button>
 </div>
-<div id="content">
-	<div id="loading" style="text-align:center;padding:3rem;color:var(--text-muted)">Loading configuration...</div>
+<main>
+<div class="container">
+	<div id="loading" class="loading-state">Loading configuration&#8230;</div>
+	<div id="settings-root" style="display:none">
+		<div class="settings-wide">
+			<div class="finger-tabs" id="tabs">
+				<button class="finger-tab active" data-tab="gateway">Gateway</button>
+				<button class="finger-tab" data-tab="providers">Providers</button>
+				<button class="finger-tab" data-tab="agents">Agents</button>
+				<button class="finger-tab" data-tab="channels">Channels</button>
+				<button class="finger-tab" data-tab="intelligence">Intelligence</button>
+				<button class="finger-tab" data-tab="security">Security</button>
+			</div>
+			<div class="finger-panel active" id="panel-gateway"></div>
+			<div class="finger-panel" id="panel-providers"></div>
+			<div class="finger-panel" id="panel-agents"></div>
+			<div class="finger-panel" id="panel-channels"></div>
+			<div class="finger-panel" id="panel-intelligence"></div>
+			<div class="finger-panel" id="panel-security"></div>
+		</div>
+	</div>
 </div>
+</main>
 
 <script>
 (function() {
-	var content = document.getElementById('content');
 	var saveBtn = document.getElementById('save-btn');
 	var statusMsg = document.getElementById('status-msg');
 	var themeBtn = document.getElementById('theme-btn');
+	var loading = document.getElementById('loading');
+	var settingsRoot = document.getElementById('settings-root');
 	var cfg = null;
 
-	// Theme
+	// === Theme ===
 	function setTheme(mode) {
-		if (mode === 'light') {
-			document.documentElement.classList.add('light');
+		if (mode === 'dark') {
+			document.documentElement.classList.add('dark');
 			themeBtn.innerHTML = '&#9728;';
 		} else {
-			document.documentElement.classList.remove('light');
+			document.documentElement.classList.remove('dark');
 			themeBtn.innerHTML = '&#9790;';
 		}
 		localStorage.setItem('felix-theme', mode);
 	}
-	setTheme(localStorage.getItem('felix-theme') || 'dark');
+	setTheme(localStorage.getItem('felix-theme') || 'light');
 	themeBtn.addEventListener('click', function() {
-		var cur = document.documentElement.classList.contains('light') ? 'light' : 'dark';
-		setTheme(cur === 'light' ? 'dark' : 'light');
+		setTheme(document.documentElement.classList.contains('dark') ? 'light' : 'dark');
 	});
 
+	// === Tab switching ===
+	var tabBtns = document.querySelectorAll('.finger-tab');
+	tabBtns.forEach(function(btn) {
+		btn.addEventListener('click', function() {
+			tabBtns.forEach(function(b) { b.classList.remove('active'); });
+			document.querySelectorAll('.finger-panel').forEach(function(p) { p.classList.remove('active'); });
+			btn.classList.add('active');
+			var panel = document.getElementById('panel-' + btn.dataset.tab);
+			if (panel) panel.classList.add('active');
+		});
+	});
+
+	// === Status message ===
 	function showStatus(msg, isError) {
 		statusMsg.textContent = msg;
-		statusMsg.style.color = isError ? 'var(--error)' : 'var(--success)';
-		if (!isError) setTimeout(function() { statusMsg.textContent = ''; }, 3000);
+		statusMsg.className = isError ? 'error' : 'success';
+		if (!isError) setTimeout(function() { statusMsg.textContent = ''; statusMsg.className = ''; }, 3000);
 	}
 
-	// Load config
+	// === Load config ===
 	fetch(location.pathname + '/api/config')
 		.then(function(r) { return r.json(); })
 		.then(function(data) {
 			cfg = data;
+			loading.style.display = 'none';
+			settingsRoot.style.display = 'block';
 			render();
 			saveBtn.disabled = false;
 		})
 		.catch(function(err) {
-			content.innerHTML = '<div style="color:var(--error);padding:2rem">Failed to load config: ' + err.message + '</div>';
+			loading.className = 'error-state';
+			loading.textContent = 'Failed to load config: ' + err.message;
 		});
 
-	// Save
+	// === Save ===
 	saveBtn.addEventListener('click', function() {
-		collectFromForm();
 		saveBtn.disabled = true;
 		fetch(location.pathname + '/api/config', {
 			method: 'POST',
@@ -393,106 +501,153 @@ body {
 		});
 	});
 
+	// === Render all panels ===
 	function render() {
-		content.innerHTML = '';
 		renderGateway();
 		renderProviders();
 		renderAgents();
 		renderChannels();
-		renderMemory();
-		renderCortex();
-		renderHeartbeat();
+		renderIntelligence();
 		renderSecurity();
 	}
 
-	function makeSection(title) {
-		var s = document.createElement('div');
-		s.className = 'section';
-		var h = document.createElement('h2');
-		h.textContent = title;
-		s.appendChild(h);
-		content.appendChild(s);
-		return s;
+	// === Helper: toggle-group ===
+	function makeToggle(parent, label, checked, onChange) {
+		var g = document.createElement('div');
+		g.className = 'toggle-group';
+		var t = document.createElement('label');
+		t.className = 'toggle';
+		var inp = document.createElement('input');
+		inp.type = 'checkbox';
+		inp.checked = !!checked;
+		inp.addEventListener('change', function() { onChange(inp.checked); });
+		var sl = document.createElement('span');
+		sl.className = 'slider';
+		t.appendChild(inp);
+		t.appendChild(sl);
+		var lbl = document.createElement('span');
+		lbl.className = 'toggle-label';
+		lbl.textContent = label;
+		g.appendChild(t);
+		g.appendChild(lbl);
+		parent.appendChild(g);
+		return g;
 	}
 
+	// === Helper: form-group (label above input) ===
 	function makeField(parent, label, type, value, onChange) {
-		var f = document.createElement('div');
-		f.className = 'field';
+		if (type === 'toggle') {
+			return makeToggle(parent, label, value, onChange);
+		}
+		var g = document.createElement('div');
+		g.className = 'form-group';
 		var l = document.createElement('label');
 		l.textContent = label;
-		f.appendChild(l);
+		g.appendChild(l);
 
-		if (type === 'toggle') {
-			var t = document.createElement('label');
-			t.className = 'toggle';
-			var inp = document.createElement('input');
-			inp.type = 'checkbox';
-			inp.checked = !!value;
-			inp.addEventListener('change', function() { onChange(inp.checked); });
-			var sl = document.createElement('span');
-			sl.className = 'slider';
-			t.appendChild(inp);
-			t.appendChild(sl);
-			f.appendChild(t);
-		} else if (type === 'select') {
-			// value = {value, options}
+		if (type === 'select') {
 			var sel = document.createElement('select');
-			for (var i = 0; i < value.options.length; i++) {
+			var opts = (value && value.options) ? value.options : [];
+			var cur = (value && value.value != null) ? value.value : '';
+			for (var i = 0; i < opts.length; i++) {
 				var opt = document.createElement('option');
-				opt.value = value.options[i];
-				opt.textContent = value.options[i];
-				if (value.options[i] === value.value) opt.selected = true;
+				opt.value = opts[i];
+				opt.textContent = opts[i];
+				if (opts[i] === cur) opt.selected = true;
 				sel.appendChild(opt);
 			}
 			sel.addEventListener('change', function() { onChange(sel.value); });
-			f.appendChild(sel);
+			g.appendChild(sel);
 		} else if (type === 'textarea') {
 			var ta = document.createElement('textarea');
 			ta.value = value || '';
 			ta.addEventListener('input', function() { onChange(ta.value); });
-			f.appendChild(ta);
+			g.appendChild(ta);
 		} else {
 			var inp = document.createElement('input');
 			inp.type = type || 'text';
 			inp.value = value != null ? value : '';
+			if (type === 'password') inp.placeholder = '(leave blank to keep)';
 			inp.addEventListener('input', function() {
-				onChange(type === 'number' ? parseInt(inp.value, 10) || 0 : inp.value);
+				onChange(type === 'number' ? (parseInt(inp.value, 10) || 0) : inp.value);
 			});
-			f.appendChild(inp);
+			g.appendChild(inp);
 		}
 
-		parent.appendChild(f);
-		return f;
+		parent.appendChild(g);
+		return g;
 	}
 
+	// === Helper: 2-column row ===
+	function makeRow(parent) {
+		var row = document.createElement('div');
+		row.className = 'form-row';
+		parent.appendChild(row);
+		return row;
+	}
+
+	// === Helper: panel section with optional heading ===
+	function makeSection(panel, title) {
+		var sec = document.createElement('div');
+		sec.className = 'panel-section';
+		if (title) {
+			var h = document.createElement('h3');
+			h.textContent = title;
+			sec.appendChild(h);
+		}
+		panel.appendChild(sec);
+		return sec;
+	}
+
+	// === Gateway Panel ===
 	function renderGateway() {
-		var s = makeSection('Gateway');
+		var p = document.getElementById('panel-gateway');
+		p.innerHTML = '';
+		var sec = makeSection(p, null);
 		var gw = cfg.gateway || {};
-		makeField(s, 'Host', 'text', gw.host, function(v) { cfg.gateway.host = v; });
-		makeField(s, 'Port', 'number', gw.port, function(v) { cfg.gateway.port = v; });
-		makeField(s, 'Auth Token', 'text', (gw.auth || {}).token, function(v) {
+		var row = makeRow(sec);
+		makeField(row, 'Host', 'text', gw.host || '', function(v) {
+			if (!cfg.gateway) cfg.gateway = {};
+			cfg.gateway.host = v;
+		});
+		makeField(row, 'Port', 'number', gw.port || 18789, function(v) {
+			if (!cfg.gateway) cfg.gateway = {};
+			cfg.gateway.port = v;
+		});
+		makeField(sec, 'Auth Token', 'text', (gw.auth || {}).token || '', function(v) {
+			if (!cfg.gateway) cfg.gateway = {};
 			if (!cfg.gateway.auth) cfg.gateway.auth = {};
 			cfg.gateway.auth.token = v;
 		});
-		makeField(s, 'Reload Mode', 'select', {value: (gw.reload || {}).mode || 'hybrid', options: ['hybrid', 'manual', 'auto-restart']}, function(v) {
+		makeField(sec, 'Reload Mode', 'select', {
+			value: (gw.reload || {}).mode || 'hybrid',
+			options: ['hybrid', 'manual', 'auto-restart']
+		}, function(v) {
+			if (!cfg.gateway) cfg.gateway = {};
 			if (!cfg.gateway.reload) cfg.gateway.reload = {};
 			cfg.gateway.reload.mode = v;
 		});
 	}
 
+	// === Providers Panel ===
 	function renderProviders() {
-		var s = makeSection('Providers');
+		var p = document.getElementById('panel-providers');
+		p.innerHTML = '';
+		var sec = makeSection(p, null);
 		var providers = cfg.providers || {};
 		var names = Object.keys(providers);
+		var list = document.createElement('div');
+		list.className = 'dynamic-list';
+		sec.appendChild(list);
 
 		for (var i = 0; i < names.length; i++) {
 			(function(name) {
-				var p = providers[name];
+				var prov = providers[name];
 				var item = document.createElement('div');
 				item.className = 'dynamic-item';
 
 				var title = document.createElement('div');
-				title.style.cssText = 'font-weight:600;color:var(--text-strong);margin-bottom:0.5rem;font-size:0.9rem;';
+				title.className = 'dynamic-item-title';
 				title.textContent = name;
 				item.appendChild(title);
 
@@ -502,11 +657,12 @@ body {
 				rm.onclick = function() { delete cfg.providers[name]; render(); };
 				item.appendChild(rm);
 
-				makeField(item, 'Kind', 'text', p.kind || '', function(v) { cfg.providers[name].kind = v; });
-				makeField(item, 'API Key', 'text', p.api_key || '', function(v) { cfg.providers[name].api_key = v; });
-				makeField(item, 'Base URL', 'text', p.base_url || '', function(v) { cfg.providers[name].base_url = v; });
+				var row = makeRow(item);
+				makeField(row, 'Kind', 'text', prov.kind || '', function(v) { cfg.providers[name].kind = v; });
+				makeField(row, 'Base URL', 'text', prov.base_url || '', function(v) { cfg.providers[name].base_url = v; });
+				makeField(item, 'API Key', 'password', '', function(v) { if (v) cfg.providers[name].api_key = v; });
 
-				s.appendChild(item);
+				list.appendChild(item);
 			})(names[i]);
 		}
 
@@ -520,12 +676,18 @@ body {
 			cfg.providers[name] = {kind: '', api_key: '', base_url: ''};
 			render();
 		};
-		s.appendChild(addBtn);
+		sec.appendChild(addBtn);
 	}
 
+	// === Agents Panel ===
 	function renderAgents() {
-		var s = makeSection('Agents');
+		var p = document.getElementById('panel-agents');
+		p.innerHTML = '';
+		var sec = makeSection(p, null);
 		var agents = (cfg.agents || {}).list || [];
+		var list = document.createElement('div');
+		list.className = 'dynamic-list';
+		sec.appendChild(list);
 
 		for (var i = 0; i < agents.length; i++) {
 			(function(idx) {
@@ -539,22 +701,34 @@ body {
 				rm.onclick = function() { cfg.agents.list.splice(idx, 1); render(); };
 				item.appendChild(rm);
 
-				makeField(item, 'ID', 'text', a.id, function(v) { cfg.agents.list[idx].id = v; });
-				makeField(item, 'Name', 'text', a.name, function(v) { cfg.agents.list[idx].name = v; });
-				makeField(item, 'Model', 'text', a.model, function(v) { cfg.agents.list[idx].model = v; });
-				makeField(item, 'Sandbox', 'select', {value: a.sandbox || 'none', options: ['none', 'docker', 'namespace']}, function(v) { cfg.agents.list[idx].sandbox = v; });
-				makeField(item, 'Max Turns', 'number', a.maxTurns || 0, function(v) { cfg.agents.list[idx].maxTurns = v; });
-				makeField(item, 'System Prompt', 'textarea', a.system_prompt || '', function(v) { cfg.agents.list[idx].system_prompt = v; });
-				makeField(item, 'Allowed Tools', 'text', ((a.tools || {}).allow || []).join(', '), function(v) {
+				var row1 = makeRow(item);
+				makeField(row1, 'ID', 'text', a.id || '', function(v) { cfg.agents.list[idx].id = v; });
+				makeField(row1, 'Name', 'text', a.name || '', function(v) { cfg.agents.list[idx].name = v; });
+
+				var row2 = makeRow(item);
+				makeField(row2, 'Model', 'text', a.model || '', function(v) { cfg.agents.list[idx].model = v; });
+				makeField(row2, 'Max Turns', 'number', a.maxTurns || 0, function(v) { cfg.agents.list[idx].maxTurns = v; });
+
+				makeField(item, 'Sandbox', 'select', {
+					value: a.sandbox || 'none',
+					options: ['none', 'docker', 'namespace']
+				}, function(v) { cfg.agents.list[idx].sandbox = v; });
+
+				makeField(item, 'System Prompt', 'textarea', a.system_prompt || '', function(v) {
+					cfg.agents.list[idx].system_prompt = v;
+				});
+
+				var row3 = makeRow(item);
+				makeField(row3, 'Allowed Tools', 'text', ((a.tools || {}).allow || []).join(', '), function(v) {
 					if (!cfg.agents.list[idx].tools) cfg.agents.list[idx].tools = {};
 					cfg.agents.list[idx].tools.allow = v.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
 				});
-				makeField(item, 'Denied Tools', 'text', ((a.tools || {}).deny || []).join(', '), function(v) {
+				makeField(row3, 'Denied Tools', 'text', ((a.tools || {}).deny || []).join(', '), function(v) {
 					if (!cfg.agents.list[idx].tools) cfg.agents.list[idx].tools = {};
 					cfg.agents.list[idx].tools.deny = v.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
 				});
 
-				s.appendChild(item);
+				list.appendChild(item);
 			})(i);
 		}
 
@@ -567,114 +741,143 @@ body {
 			cfg.agents.list.push({id: '', name: '', model: '', sandbox: 'none', tools: {allow: []}});
 			render();
 		};
-		s.appendChild(addBtn);
+		sec.appendChild(addBtn);
 	}
 
+	// === Channels Panel ===
 	function renderChannels() {
-		var s = makeSection('Channels');
+		var p = document.getElementById('panel-channels');
+		p.innerHTML = '';
 		var ch = cfg.channels || {};
-		var cli = ch.cli || {};
-		var tg = ch.telegram || {};
 
-		makeField(s, 'CLI Enabled', 'toggle', cli.enabled, function(v) {
+		// CLI
+		var cliSec = makeSection(p, 'CLI');
+		makeField(cliSec, 'Enabled', 'toggle', (ch.cli || {}).enabled, function(v) {
 			if (!cfg.channels) cfg.channels = {};
 			if (!cfg.channels.cli) cfg.channels.cli = {};
 			cfg.channels.cli.enabled = v;
 		});
-		makeField(s, 'Telegram Token', 'text', tg.token || '', function(v) {
+
+		// Telegram
+		var tg = ch.telegram || {};
+		var tgSec = makeSection(p, 'Telegram');
+		makeField(tgSec, 'Bot Token', 'password', '', function(v) {
 			if (!cfg.channels) cfg.channels = {};
 			if (!cfg.channels.telegram) cfg.channels.telegram = {};
 			cfg.channels.telegram.token = v;
 		});
-		makeField(s, 'Telegram Mode', 'select', {value: tg.mode || 'polling', options: ['polling', 'webhook']}, function(v) {
+		var tgRow = makeRow(tgSec);
+		makeField(tgRow, 'Mode', 'select', {
+			value: tg.mode || 'polling',
+			options: ['polling', 'webhook']
+		}, function(v) {
 			if (!cfg.channels) cfg.channels = {};
 			if (!cfg.channels.telegram) cfg.channels.telegram = {};
 			cfg.channels.telegram.mode = v;
 		});
+		makeField(tgRow, 'Require Mention in Groups', 'toggle',
+			((cfg.security || {}).groupPolicy || {}).requireMention,
+			function(v) {
+				if (!cfg.security) cfg.security = {};
+				if (!cfg.security.groupPolicy) cfg.security.groupPolicy = {};
+				cfg.security.groupPolicy.requireMention = v;
+			}
+		);
 	}
 
-	function renderMemory() {
-		var s = makeSection('Memory');
+	// === Intelligence Panel (Memory + Cortex + Heartbeat) ===
+	function renderIntelligence() {
+		var p = document.getElementById('panel-intelligence');
+		p.innerHTML = '';
+
+		// Memory
 		var m = cfg.memory || {};
-		makeField(s, 'Enabled', 'toggle', m.enabled, function(v) {
+		var memSec = makeSection(p, 'Memory');
+		makeField(memSec, 'Enabled', 'toggle', m.enabled, function(v) {
 			if (!cfg.memory) cfg.memory = {};
 			cfg.memory.enabled = v;
 		});
-		makeField(s, 'Embedding Provider', 'text', m.embeddingProvider || '', function(v) {
+		var memRow = makeRow(memSec);
+		makeField(memRow, 'Embedding Provider', 'text', m.embeddingProvider || '', function(v) {
 			if (!cfg.memory) cfg.memory = {};
 			cfg.memory.embeddingProvider = v;
 		});
-		makeField(s, 'Embedding Model', 'text', m.embeddingModel || '', function(v) {
+		makeField(memRow, 'Embedding Model', 'text', m.embeddingModel || '', function(v) {
 			if (!cfg.memory) cfg.memory = {};
 			cfg.memory.embeddingModel = v;
 		});
-	}
 
-	function renderCortex() {
-		var s = makeSection('Cortex');
+		// Cortex
 		var cx = cfg.cortex || {};
-		makeField(s, 'Enabled', 'toggle', cx.enabled, function(v) {
+		var cxSec = makeSection(p, 'Cortex');
+		makeField(cxSec, 'Enabled', 'toggle', cx.enabled, function(v) {
 			if (!cfg.cortex) cfg.cortex = {};
 			cfg.cortex.enabled = v;
 		});
-		makeField(s, 'DB Path', 'text', cx.dbPath || '', function(v) {
+		makeField(cxSec, 'DB Path', 'text', cx.dbPath || '', function(v) {
 			if (!cfg.cortex) cfg.cortex = {};
 			cfg.cortex.dbPath = v;
 		});
-		makeField(s, 'Provider', 'select', {value: cx.provider || '', options: Object.keys(cfg.providers || {})}, function(v) {
+		var cxRow = makeRow(cxSec);
+		makeField(cxRow, 'Provider', 'select', {
+			value: cx.provider || '',
+			options: Object.keys(cfg.providers || {})
+		}, function(v) {
 			if (!cfg.cortex) cfg.cortex = {};
 			cfg.cortex.provider = v;
 		});
-makeField(s, 'LLM Model', 'text', cx.llmModel || '', function(v) {
+		makeField(cxRow, 'LLM Model', 'text', cx.llmModel || '', function(v) {
 			if (!cfg.cortex) cfg.cortex = {};
 			cfg.cortex.llmModel = v;
 		});
-	}
 
-	function renderHeartbeat() {
-		var s = makeSection('Heartbeat');
+		// Heartbeat
 		var hb = cfg.heartbeat || {};
-		makeField(s, 'Enabled', 'toggle', hb.enabled, function(v) {
+		var hbSec = makeSection(p, 'Heartbeat');
+		makeField(hbSec, 'Enabled', 'toggle', hb.enabled, function(v) {
 			if (!cfg.heartbeat) cfg.heartbeat = {};
 			cfg.heartbeat.enabled = v;
 		});
-		makeField(s, 'Interval', 'text', hb.interval || '30m', function(v) {
+		makeField(hbSec, 'Interval', 'text', hb.interval || '30m', function(v) {
 			if (!cfg.heartbeat) cfg.heartbeat = {};
 			cfg.heartbeat.interval = v;
 		});
 	}
 
+	// === Security Panel ===
 	function renderSecurity() {
-		var s = makeSection('Security');
-		var sec = cfg.security || {};
-		var exec = sec.execApprovals || {};
-		var dm = sec.dmPolicy || {};
-		var grp = sec.groupPolicy || {};
+		var p = document.getElementById('panel-security');
+		p.innerHTML = '';
+		var sec = makeSection(p, null);
+		var security = cfg.security || {};
+		var exec = security.execApprovals || {};
+		var dm = security.dmPolicy || {};
 
-		makeField(s, 'Exec Level', 'select', {value: exec.level || 'full', options: ['full', 'allowlist', 'deny']}, function(v) {
+		var row = makeRow(sec);
+		makeField(row, 'Exec Approvals Level', 'select', {
+			value: exec.level || 'full',
+			options: ['full', 'allowlist', 'deny']
+		}, function(v) {
 			if (!cfg.security) cfg.security = {};
 			if (!cfg.security.execApprovals) cfg.security.execApprovals = {};
 			cfg.security.execApprovals.level = v;
 		});
-		makeField(s, 'Exec Allowlist', 'text', (exec.allowlist || []).join(', '), function(v) {
-			if (!cfg.security) cfg.security = {};
-			if (!cfg.security.execApprovals) cfg.security.execApprovals = {};
-			cfg.security.execApprovals.allowlist = v.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
-		});
-		makeField(s, 'Unknown Senders', 'select', {value: dm.unknownSenders || 'ignore', options: ['ignore', 'respond', 'notify']}, function(v) {
+		makeField(row, 'Unknown Senders (DM Policy)', 'select', {
+			value: dm.unknownSenders || 'ignore',
+			options: ['ignore', 'respond', 'notify']
+		}, function(v) {
 			if (!cfg.security) cfg.security = {};
 			if (!cfg.security.dmPolicy) cfg.security.dmPolicy = {};
 			cfg.security.dmPolicy.unknownSenders = v;
 		});
-		makeField(s, 'Require Mention', 'toggle', grp.requireMention, function(v) {
-			if (!cfg.security) cfg.security = {};
-			if (!cfg.security.groupPolicy) cfg.security.groupPolicy = {};
-			cfg.security.groupPolicy.requireMention = v;
-		});
-	}
-
-	function collectFromForm() {
-		// cfg is already updated in real-time via onChange callbacks
+		makeField(sec, 'Exec Allowlist (comma-separated commands)', 'text',
+			(exec.allowlist || []).join(', '),
+			function(v) {
+				if (!cfg.security) cfg.security = {};
+				if (!cfg.security.execApprovals) cfg.security.execApprovals = {};
+				cfg.security.execApprovals.allowlist = v.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+			}
+		);
 	}
 })();
 </script>
