@@ -155,7 +155,7 @@ func FormatResults(results []cortex.Result) string {
 		case "chunk":
 			b.WriteString("- [context] ")
 		default:
-			b.WriteString(fmt.Sprintf("- [%s] ", r.Type))
+			fmt.Fprintf(&b, "- [%s] ", r.Type)
 		}
 		content := r.Content
 		if len(content) > 500 {
