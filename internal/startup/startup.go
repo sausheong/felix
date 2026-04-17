@@ -242,7 +242,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	msgRouter := router.NewRouter(cfg.Bindings, fallbackAgent)
 
 	// Init channel manager
-	chanMgr := gateway.NewChannelManager(msgRouter, providers, toolReg, sessionStore, cfg, cfg.Security.DMPolicy.UnknownSenders)
+	chanMgr := gateway.NewChannelManager(msgRouter, providers, toolReg, sessionStore, cfg)
 	chanMgr.SetSkills(skillLoader)
 	chanMgr.SetMemory(memMgr)
 	chanMgr.SetCortex(cx)

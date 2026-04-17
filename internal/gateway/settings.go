@@ -1109,24 +1109,14 @@ html.dark .error-state { background: #450a0a; }
 		var sec = makeSection(p, null);
 		var security = cfg.security || {};
 		var exec = security.execApprovals || {};
-		var dm = security.dmPolicy || {};
 
-		var row = makeRow(sec);
-		makeField(row, 'Exec Approvals Level', 'select', {
+		makeField(sec, 'Exec Approvals Level', 'select', {
 			value: exec.level || 'full',
 			options: ['full', 'allowlist', 'deny']
 		}, function(v) {
 			if (!cfg.security) cfg.security = {};
 			if (!cfg.security.execApprovals) cfg.security.execApprovals = {};
 			cfg.security.execApprovals.level = v;
-		});
-		makeField(row, 'Unknown Senders (DM Policy)', 'select', {
-			value: dm.unknownSenders || 'ignore',
-			options: ['ignore', 'respond', 'notify']
-		}, function(v) {
-			if (!cfg.security) cfg.security = {};
-			if (!cfg.security.dmPolicy) cfg.security.dmPolicy = {};
-			cfg.security.dmPolicy.unknownSenders = v;
 		});
 		makeField(sec, 'Exec Allowlist (comma-separated commands)', 'text',
 			(exec.allowlist || []).join(', '),

@@ -132,7 +132,7 @@ func TestChannelManagerRouting(t *testing.T) {
 
 	toolReg := tools.NewRegistry()
 
-	cm := NewChannelManager(r, providers, toolReg, sessionStore, cfg, "respond")
+	cm := NewChannelManager(r, providers, toolReg, sessionStore, cfg)
 
 	// Create and register two mock channels
 	mock1 := newMockChannel("mock1")
@@ -194,7 +194,7 @@ func TestChannelManagerFallbackChatID(t *testing.T) {
 
 	toolReg := tools.NewRegistry()
 
-	cm := NewChannelManager(r, providers, toolReg, sessionStore, cfg, "respond")
+	cm := NewChannelManager(r, providers, toolReg, sessionStore, cfg)
 
 	mock := newMockChannel("test")
 	cm.Register(mock)

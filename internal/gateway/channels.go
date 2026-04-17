@@ -25,16 +25,15 @@ import (
 // It listens on each registered channel, routes inbound messages to the
 // appropriate agent, runs the agent loop, and sends the response back.
 type ChannelManager struct {
-	channels       map[string]channel.Channel
-	router         *router.Router
-	providers      map[string]llm.LLMProvider
-	tools          *tools.Registry
-	sessionStore   *session.Store
-	config         *config.Config
-	skills         *skill.Loader
-	memory         *memory.Manager
-	cortex         *cortex.Cortex
-	defaultDMPolicy string // fallback when channel-specific dm_policy is empty
+	channels     map[string]channel.Channel
+	router       *router.Router
+	providers    map[string]llm.LLMProvider
+	tools        *tools.Registry
+	sessionStore *session.Store
+	config       *config.Config
+	skills       *skill.Loader
+	memory       *memory.Manager
+	cortex       *cortex.Cortex
 
 	connectTimeout time.Duration // 0 means no timeout (blocks until connected)
 	cancel         context.CancelFunc
@@ -42,34 +41,29 @@ type ChannelManager struct {
 	mu             sync.RWMutex
 }
 
-// NewChannelManager creates a new ChannelManager.
-// fallbackDMPolicy is used when a channel has no per-channel dm_policy set;
-// per-channel policies live in cfg.Channels.{Telegram,WhatsApp}.DMPolicy.
-// Values: "ignore" drops, "respond" replies, "process" processes silently,
-// "notify" logs and drops.
+// NewChannelManager creates a new ChannelManager. Per-channel DM policies
+// live in cfg.Channels.{Telegram,WhatsApp}.DMPolicy and default to "ignore"
+// when unset. Values: "ignore" drops, "respond" replies, "process" processes
+// silently, "notify" logs and drops.
 func NewChannelManager(
 	r *router.Router,
 	providers map[string]llm.LLMProvider,
 	toolReg *tools.Registry,
 	sessionStore *session.Store,
 	cfg *config.Config,
-	fallbackDMPolicy string,
 ) *ChannelManager {
-	if fallbackDMPolicy == "" {
-		fallbackDMPolicy = "ignore"
-	}
 	return &ChannelManager{
-		channels:        make(map[string]channel.Channel),
-		router:          r,
-		providers:       providers,
-		tools:           toolReg,
-		sessionStore:    sessionStore,
-		config:          cfg,
-		defaultDMPolicy: fallbackDMPolicy,
+		channels:     make(map[string]channel.Channel),
+		router:       r,
+		providers:    providers,
+		tools:        toolReg,
+		sessionStore: sessionStore,
+		config:       cfg,
 	}
 }
 
 // dmPolicyFor returns the effective DM policy for the given channel name.
+// Defaults to "ignore" when the channel has no explicit policy.
 func (cm *ChannelManager) dmPolicyFor(channelName string) string {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -81,7 +75,7 @@ func (cm *ChannelManager) dmPolicyFor(channelName string) string {
 		p = cm.config.Channels.WhatsApp.DMPolicy
 	}
 	if p == "" {
-		p = cm.defaultDMPolicy
+		p = "ignore"
 	}
 	return p
 }

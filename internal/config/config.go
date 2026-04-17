@@ -142,17 +142,12 @@ type CortexConfig struct {
 
 type SecurityConfig struct {
 	ExecApprovals ExecApprovalsConfig `json:"execApprovals"`
-	DMPolicy      DMPolicyConfig      `json:"dmPolicy"`
-	GroupPolicy   GroupPolicyConfig    `json:"groupPolicy"`
+	GroupPolicy   GroupPolicyConfig   `json:"groupPolicy"`
 }
 
 type ExecApprovalsConfig struct {
 	Level     string   `json:"level"` // "deny", "allowlist", "full"
 	Allowlist []string `json:"allowlist"`
-}
-
-type DMPolicyConfig struct {
-	UnknownSenders string `json:"unknownSenders"` // "ignore", "respond", "notify"
 }
 
 type GroupPolicyConfig struct {
@@ -260,7 +255,6 @@ func DefaultConfig() *Config {
 				Level:     "full",
 				Allowlist: []string{"ls", "cat", "find", "grep", "head", "tail", "wc", "pwd", "date"},
 			},
-			DMPolicy:    DMPolicyConfig{UnknownSenders: "ignore"},
 			GroupPolicy: GroupPolicyConfig{RequireMention: true},
 		},
 	}
