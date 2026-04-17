@@ -17,6 +17,7 @@ import (
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
 	"github.com/sausheong/felix/internal/cron"
 	"github.com/sausheong/felix/internal/gateway"
+	"github.com/sausheong/felix/internal/google"
 	"github.com/sausheong/felix/internal/heartbeat"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
@@ -225,6 +226,21 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		cx, initErr = cortexadapter.Init(cfg.Cortex, cfg.GetProvider(cfg.Cortex.Provider).APIKey)
 		if initErr != nil {
 			slog.Warn("failed to init cortex", "error", initErr)
+		}
+	}
+
+	// Init Google integration. The manager is always created (so the OAuth
+	// callback endpoint works); credentials are loaded from config and may be
+	// updated later via the settings UI.
+	googleMgr, gerr := google.NewManager(dataDir)
+	if gerr != nil {
+		slog.Warn("failed to init google manager", "error", gerr)
+	} else {
+		baseURL := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
+		googleMgr.SetCredentials(cfg.Google.ClientID, cfg.Google.ClientSecret, baseURL+google.CallbackPath)
+		if googleMgr.IsConnected() {
+			toolReg.Register(&google.GmailListRecentTool{Manager: googleMgr})
+			slog.Info("google integration connected", "email", googleMgr.ConnectedEmail())
 		}
 	}
 
@@ -457,7 +473,11 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			wsHandler.UpdateConfig(newCfg)
 			slog.Info("config updated via settings page")
 		}),
-		WhatsApp:  gateway.NewWhatsAppHandlers(chanMgr),
+		WhatsApp: gateway.NewWhatsAppHandlers(chanMgr),
+		Google: gateway.NewGoogleHandlers(googleMgr, cfg, func(newCfg *config.Config) {
+			wsHandler.UpdateConfig(newCfg)
+			slog.Info("config updated via google settings")
+		}, fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)),
 		LogBuffer: logBuf,
 	})
 

@@ -22,6 +22,7 @@ type Config struct {
 	Heartbeat HeartbeatConfig          `json:"heartbeat"`
 	Memory    MemoryConfig             `json:"memory"`
 	Cortex    CortexConfig             `json:"cortex"`
+	Google    GoogleConfig             `json:"google"`
 	Security  SecurityConfig           `json:"security"`
 
 	mu   sync.RWMutex
@@ -138,6 +139,14 @@ type CortexConfig struct {
 	DBPath   string `json:"dbPath"`   // path to brain.db (default: ~/.felix/brain.db)
 	Provider string `json:"provider"` // provider name matching a key in cfg.Providers (e.g. "openai", "anthropic")
 	LLMModel string `json:"llmModel"` // model for extraction/decomposition (default: gpt-5.4-mini for openai, claude-sonnet-4-5-20250929 for anthropic)
+}
+
+type GoogleConfig struct {
+	// ClientID and ClientSecret come from a Google Cloud OAuth client (Desktop app type).
+	// Felix's settings UI guides the user through registering one. Empty means
+	// Google integration is not configured.
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
 }
 
 type SecurityConfig struct {

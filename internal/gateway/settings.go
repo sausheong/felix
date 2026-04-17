@@ -952,6 +952,199 @@ html.dark .error-state { background: #450a0a; }
 		}
 
 		refreshWhatsAppStatus();
+
+		// Google Workspace
+		var gSec = makeSection(p, 'Google Workspace');
+		gSec.id = 'google';
+		var gContainer = document.createElement('div');
+		gContainer.id = 'google-container';
+		gSec.appendChild(gContainer);
+		refreshGoogleStatus();
+	}
+
+	// === Google Workspace ===
+	function refreshGoogleStatus() {
+		fetch('/google/status').then(function(r) { return r.json(); }).then(function(d) {
+			renderGoogle(d);
+		}).catch(function() {
+			renderGoogle({configured: false, connected: false});
+		});
+	}
+
+	function renderGoogle(s) {
+		var c = document.getElementById('google-container');
+		if (!c) return;
+		c.innerHTML = '';
+
+		// Surface query-string error/success from the OAuth callback redirect
+		var qs = new URLSearchParams(location.search);
+		var qsErr = qs.get('google_error');
+		var qsOk = qs.get('google_connected');
+		if (qsErr) {
+			var bar = document.createElement('div');
+			bar.style.cssText = 'background:var(--color-error);color:#fff;padding:0.5rem 0.75rem;border-radius:var(--radius);margin-bottom:0.75rem;font-size:0.85rem;';
+			bar.textContent = 'Google: ' + qsErr;
+			c.appendChild(bar);
+		}
+		if (qsOk) {
+			var ok = document.createElement('div');
+			ok.style.cssText = 'background:var(--color-success);color:#fff;padding:0.5rem 0.75rem;border-radius:var(--radius);margin-bottom:0.75rem;font-size:0.85rem;';
+			ok.textContent = 'Google account connected.';
+			c.appendChild(ok);
+		}
+
+		if (s.connected) {
+			renderGoogleConnected(c, s);
+			return;
+		}
+		if (s.configured) {
+			renderGoogleAuthorize(c);
+			return;
+		}
+		renderGoogleWizard(c);
+	}
+
+	function renderGoogleConnected(c, s) {
+		var bar = document.createElement('div');
+		bar.style.cssText = 'display:flex;align-items:center;gap:0.75rem;';
+		bar.innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--color-success);"></span>' +
+			'<span style="font-size:0.875rem;">Connected as <strong>' + (s.email || 'Google account') + '</strong></span>' +
+			'<span style="margin-left:auto;"><button id="google-disconnect" class="btn-primary" style="background:var(--color-error);">Disconnect</button></span>';
+		c.appendChild(bar);
+		document.getElementById('google-disconnect').addEventListener('click', function() {
+			if (!confirm('Disconnect Google? Felix will lose access to Gmail/Drive/Calendar until you reconnect.')) return;
+			fetch('/google/disconnect', {method: 'POST'}).then(function() { refreshGoogleStatus(); });
+		});
+	}
+
+	function renderGoogleAuthorize(c) {
+		var p = document.createElement('p');
+		p.style.cssText = 'color:var(--color-text-muted);font-size:0.9rem;margin-bottom:0.75rem;';
+		p.textContent = 'Credentials saved. Click Connect to grant Felix access to your Google account.';
+		c.appendChild(p);
+		var btn = document.createElement('button');
+		btn.className = 'btn-primary';
+		btn.textContent = 'Connect with Google';
+		btn.addEventListener('click', function() { location.href = '/google/oauth/start'; });
+		c.appendChild(btn);
+		var reset = document.createElement('button');
+		reset.className = 'btn-primary';
+		reset.style.cssText = 'margin-left:0.5rem;background:var(--color-text-muted);';
+		reset.textContent = 'Re-enter Credentials';
+		reset.addEventListener('click', function() { renderGoogleWizard(c); });
+		c.appendChild(reset);
+	}
+
+	function renderGoogleWizard(c) {
+		c.innerHTML = '';
+		var intro = document.createElement('p');
+		intro.style.cssText = 'color:var(--color-text-muted);font-size:0.9rem;margin-bottom:1rem;';
+		intro.innerHTML = 'Felix needs its own Google "app" to ask for permission to access your Gmail, Drive, and Calendar. ' +
+			'This is a one-time setup that takes about 5 minutes. Tokens are stored encrypted on this machine and never leave it.';
+		c.appendChild(intro);
+
+		var steps = [
+			{ n: 1, title: 'Create a project',
+			  body: 'In the page that opens, click <strong>NEW PROJECT</strong>, name it <code>Felix</code>, then click <strong>CREATE</strong>. Wait for it to finish, then come back here.',
+			  href: 'https://console.cloud.google.com/projectcreate', linkText: 'Open Google Cloud Console' },
+			{ n: 2, title: 'Enable the APIs',
+			  body: 'Click <strong>ENABLE</strong> on each of these three pages.',
+			  multiHref: [
+				  ['Enable Gmail API', 'https://console.cloud.google.com/apis/library/gmail.googleapis.com'],
+				  ['Enable Drive API', 'https://console.cloud.google.com/apis/library/drive.googleapis.com'],
+				  ['Enable Calendar API', 'https://console.cloud.google.com/apis/library/calendar-json.googleapis.com'],
+			  ] },
+			{ n: 3, title: 'Set up consent screen',
+			  body: 'Pick <strong>External</strong>, click <strong>CREATE</strong>. Enter <code>Felix</code> as App name, your email for both <em>User support email</em> and <em>Developer contact</em>, and click <strong>SAVE AND CONTINUE</strong> through the rest. On the <em>Test users</em> step, add your own Google account.',
+			  href: 'https://console.cloud.google.com/apis/credentials/consent', linkText: 'Open Consent Screen' },
+			{ n: 4, title: 'Create credentials',
+			  body: 'Click <strong>+ CREATE CREDENTIALS → OAuth client ID</strong>. Application type: <strong>Desktop app</strong>. Name: <code>Felix</code>. Click <strong>CREATE</strong>. A popup will show your Client ID and Client Secret — paste both below.',
+			  href: 'https://console.cloud.google.com/apis/credentials', linkText: 'Open Credentials Page' },
+		];
+
+		steps.forEach(function(step) {
+			var div = document.createElement('div');
+			div.style.cssText = 'margin-bottom:1rem;padding:0.75rem;border:1px solid var(--color-border);border-radius:var(--radius);background:var(--color-bg);';
+			var h = document.createElement('div');
+			h.style.cssText = 'font-weight:600;margin-bottom:0.25rem;font-size:0.9rem;';
+			h.textContent = 'Step ' + step.n + ' of 4 — ' + step.title;
+			div.appendChild(h);
+			var body = document.createElement('div');
+			body.style.cssText = 'font-size:0.85rem;color:var(--color-text);margin-bottom:0.5rem;';
+			body.innerHTML = step.body;
+			div.appendChild(body);
+			if (step.href) {
+				var link = document.createElement('a');
+				link.href = step.href;
+				link.target = '_blank';
+				link.rel = 'noopener noreferrer';
+				link.className = 'btn-primary';
+				link.style.cssText = 'display:inline-block;text-decoration:none;font-size:0.85rem;';
+				link.textContent = step.linkText + ' →';
+				div.appendChild(link);
+			}
+			if (step.multiHref) {
+				step.multiHref.forEach(function(pair) {
+					var a = document.createElement('a');
+					a.href = pair[1]; a.target = '_blank'; a.rel = 'noopener noreferrer';
+					a.className = 'btn-primary';
+					a.style.cssText = 'display:inline-block;text-decoration:none;font-size:0.85rem;margin-right:0.5rem;margin-bottom:0.25rem;';
+					a.textContent = pair[0] + ' →';
+					div.appendChild(a);
+				});
+			}
+			c.appendChild(div);
+		});
+
+		// Paste form
+		var formWrap = document.createElement('div');
+		formWrap.style.cssText = 'padding:0.75rem;border:1px solid var(--color-border);border-radius:var(--radius);';
+		var fh = document.createElement('div');
+		fh.style.cssText = 'font-weight:600;margin-bottom:0.5rem;font-size:0.9rem;';
+		fh.textContent = 'Paste your credentials';
+		formWrap.appendChild(fh);
+
+		var idField = document.createElement('div');
+		idField.className = 'form-group';
+		idField.innerHTML = '<label>Client ID</label><input type="text" id="g-client-id" placeholder="123-abc.apps.googleusercontent.com">';
+		formWrap.appendChild(idField);
+
+		var secField = document.createElement('div');
+		secField.className = 'form-group';
+		secField.innerHTML = '<label>Client Secret</label><input type="text" id="g-client-secret" placeholder="GOCSPX-…">';
+		formWrap.appendChild(secField);
+
+		var err = document.createElement('div');
+		err.id = 'g-error';
+		err.style.cssText = 'color:var(--color-error);font-size:0.85rem;margin-bottom:0.5rem;display:none;';
+		formWrap.appendChild(err);
+
+		var btn = document.createElement('button');
+		btn.className = 'btn-primary';
+		btn.textContent = 'Save & Connect';
+		btn.addEventListener('click', function() {
+			var id = (document.getElementById('g-client-id').value || '').trim();
+			var sec = (document.getElementById('g-client-secret').value || '').trim();
+			err.style.display = 'none';
+			fetch('/google/credentials', {
+				method: 'POST',
+				headers: {'Content-Type': 'application/json'},
+				body: JSON.stringify({client_id: id, client_secret: sec})
+			})
+			.then(function(r) {
+				if (!r.ok) {
+					return r.text().then(function(t) {
+						err.textContent = t.replace(/^[^"]*"error":"|"\}.*$/g, '');
+						err.style.display = 'block';
+						throw new Error('save failed');
+					});
+				}
+				location.href = '/google/oauth/start';
+			})
+			.catch(function() {});
+		});
+		formWrap.appendChild(btn);
+		c.appendChild(formWrap);
 	}
 
 	// === WhatsApp pairing flow ===
