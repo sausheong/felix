@@ -17,15 +17,15 @@ import (
 // GoogleHandlers wires the Google integration HTTP endpoints to the OAuth
 // manager and the live Config (so saving credentials persists them).
 type GoogleHandlers struct {
-	Manager   *google.Manager
-	Config    *config.Config
-	OnUpdate  func(*config.Config)
-	BaseURL   string // e.g. http://127.0.0.1:18789, used to build the OAuth redirect
+	Manager  *google.Manager
+	Config   *config.Config
+	OnUpdate func(*config.Config)
 }
 
-// NewGoogleHandlers wires the dependencies.
-func NewGoogleHandlers(mgr *google.Manager, cfg *config.Config, onUpdate func(*config.Config), baseURL string) *GoogleHandlers {
-	return &GoogleHandlers{Manager: mgr, Config: cfg, OnUpdate: onUpdate, BaseURL: baseURL}
+// NewGoogleHandlers wires the dependencies. The OAuth redirect URL is
+// derived per-request from the browser's Host header (see callbackURL).
+func NewGoogleHandlers(mgr *google.Manager, cfg *config.Config, onUpdate func(*config.Config)) *GoogleHandlers {
+	return &GoogleHandlers{Manager: mgr, Config: cfg, OnUpdate: onUpdate}
 }
 
 // Status returns whether Google is configured and connected, plus the
@@ -85,7 +85,7 @@ func (h *GoogleHandlers) SaveCredentials(w http.ResponseWriter, r *http.Request)
 		http.Error(w, `{"error":"save failed"}`, http.StatusInternalServerError)
 		return
 	}
-	h.Manager.SetCredentials(in.ClientID, in.ClientSecret, h.BaseURL+google.CallbackPath)
+	h.Manager.SetCredentials(in.ClientID, in.ClientSecret)
 	if h.OnUpdate != nil {
 		h.OnUpdate(h.Config)
 	}
@@ -95,7 +95,10 @@ func (h *GoogleHandlers) SaveCredentials(w http.ResponseWriter, r *http.Request)
 }
 
 // OAuthStart begins the authorization-code flow. Generates a CSRF state
-// token, stores it in a cookie, and redirects to Google.
+// token, stores it in a cookie, and redirects to Google. The redirect URL
+// returned to Google is derived from the request's Host header so the user
+// gets sent back to the same host they're currently on (matching the cookie
+// domain — localhost and 127.0.0.1 are different origins to the browser).
 func (h *GoogleHandlers) OAuthStart(w http.ResponseWriter, r *http.Request) {
 	if h.Manager == nil || !h.Manager.HasCredentials() {
 		http.Error(w, "Google credentials not configured", http.StatusBadRequest)
@@ -110,7 +113,8 @@ func (h *GoogleHandlers) OAuthStart(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   600,
 	})
-	url, err := h.Manager.AuthCodeURL(state)
+	redirect := callbackURL(r)
+	url, err := h.Manager.AuthCodeURL(redirect, state)
 	if err != nil {
 		http.Error(w, "build auth url: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -143,7 +147,7 @@ func (h *GoogleHandlers) OAuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing code", http.StatusBadRequest)
 		return
 	}
-	if err := h.Manager.ExchangeAndStore(r.Context(), code); err != nil {
+	if err := h.Manager.ExchangeAndStore(r.Context(), callbackURL(r), code); err != nil {
 		slog.Error("google oauth exchange", "error", err)
 		http.Redirect(w, r, "/settings?google_error="+err.Error(), http.StatusSeeOther)
 		return
@@ -164,6 +168,14 @@ func (h *GoogleHandlers) Disconnect(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true}`))
+}
+
+// callbackURL returns the absolute URL of the OAuth callback as the browser
+// sees it. The scheme is forced to http: Felix runs on loopback (127.0.0.1
+// or localhost) and Google's "Desktop app" client type only accepts http
+// for those hosts.
+func callbackURL(r *http.Request) string {
+	return "http://" + r.Host + google.CallbackPath
 }
 
 func randomHex(nBytes int) string {

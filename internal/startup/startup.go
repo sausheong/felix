@@ -236,8 +236,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	if gerr != nil {
 		slog.Warn("failed to init google manager", "error", gerr)
 	} else {
-		baseURL := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
-		googleMgr.SetCredentials(cfg.Google.ClientID, cfg.Google.ClientSecret, baseURL+google.CallbackPath)
+		googleMgr.SetCredentials(cfg.Google.ClientID, cfg.Google.ClientSecret)
 		if googleMgr.IsConnected() {
 			toolReg.Register(&google.GmailListRecentTool{Manager: googleMgr})
 			slog.Info("google integration connected", "email", googleMgr.ConnectedEmail())
@@ -477,7 +476,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		Google: gateway.NewGoogleHandlers(googleMgr, cfg, func(newCfg *config.Config) {
 			wsHandler.UpdateConfig(newCfg)
 			slog.Info("config updated via google settings")
-		}, fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)),
+		}),
 		LogBuffer: logBuf,
 	})
 

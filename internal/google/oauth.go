@@ -48,10 +48,9 @@ type Manager struct {
 	tokenPath string // ~/.felix/google_token.enc
 	infoPath  string // ~/.felix/google_user.json (display name + email, not sensitive)
 
-	mu       sync.RWMutex
-	clientID string
+	mu           sync.RWMutex
+	clientID     string
 	clientSecret string
-	redirectURL  string
 
 	// In-memory cached identity for status display
 	cachedEmail string
@@ -86,14 +85,15 @@ func NewManager(dataDir string) (*Manager, error) {
 	return m, nil
 }
 
-// SetCredentials updates the OAuth client credentials and the redirect URL
-// used by the local callback handler. Empty values disable Google integration.
-func (m *Manager) SetCredentials(clientID, clientSecret, redirectURL string) {
+// SetCredentials updates the OAuth client credentials. Empty values disable
+// Google integration. The redirect URL is derived per-request from the
+// browser's Host header (see oauthConfigFor) so localhost vs 127.0.0.1
+// cookie-domain mismatches don't break the flow.
+func (m *Manager) SetCredentials(clientID, clientSecret string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.clientID = clientID
 	m.clientSecret = clientSecret
-	m.redirectURL = redirectURL
 }
 
 // HasCredentials reports whether OAuth client credentials are configured.
@@ -119,7 +119,11 @@ func (m *Manager) ConnectedEmail() string {
 	return m.cachedEmail
 }
 
-func (m *Manager) oauthConfig() (*oauth2.Config, error) {
+// oauthConfigFor builds an oauth2.Config with the given redirect URL.
+// The redirect URL is per-request rather than per-installation so the
+// browser's actual host (localhost vs 127.0.0.1) matches the cookie domain.
+// Google's Desktop app type accepts both http://127.0.0.1:* and http://localhost:*.
+func (m *Manager) oauthConfigFor(redirectURL string) (*oauth2.Config, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.clientID == "" || m.clientSecret == "" {
@@ -128,7 +132,7 @@ func (m *Manager) oauthConfig() (*oauth2.Config, error) {
 	return &oauth2.Config{
 		ClientID:     m.clientID,
 		ClientSecret: m.clientSecret,
-		RedirectURL:  m.redirectURL,
+		RedirectURL:  redirectURL,
 		Scopes:       Scopes,
 		Endpoint:     googleOAuth.Endpoint,
 	}, nil
@@ -136,11 +140,13 @@ func (m *Manager) oauthConfig() (*oauth2.Config, error) {
 
 // AuthCodeURL returns the URL the user should visit to grant access.
 // state is an opaque value the caller verifies in the callback to prevent CSRF.
+// redirectURL must point back to this server's CallbackPath, on the same host
+// the user is currently visiting (so the state cookie domain matches).
 // AccessTypeOffline + prompt=consent forces Google to issue a refresh token,
 // which is required for long-lived access. Without prompt=consent, returning
 // users sometimes get an access token only.
-func (m *Manager) AuthCodeURL(state string) (string, error) {
-	cfg, err := m.oauthConfig()
+func (m *Manager) AuthCodeURL(redirectURL, state string) (string, error) {
+	cfg, err := m.oauthConfigFor(redirectURL)
 	if err != nil {
 		return "", err
 	}
@@ -152,8 +158,9 @@ func (m *Manager) AuthCodeURL(state string) (string, error) {
 
 // ExchangeAndStore exchanges the authorization code for tokens, writes the
 // encrypted refresh token to disk, looks up the user's email, and caches it.
-func (m *Manager) ExchangeAndStore(ctx context.Context, code string) error {
-	cfg, err := m.oauthConfig()
+// redirectURL must match the value passed to AuthCodeURL; Google validates this.
+func (m *Manager) ExchangeAndStore(ctx context.Context, redirectURL, code string) error {
+	cfg, err := m.oauthConfigFor(redirectURL)
 	if err != nil {
 		return err
 	}
@@ -181,9 +188,10 @@ func (m *Manager) ExchangeAndStore(ctx context.Context, code string) error {
 }
 
 // HTTPClient returns an HTTP client with bearer-token auth for the connected
-// user. Tokens auto-refresh as needed.
+// user. Tokens auto-refresh as needed. Refresh requests don't use the
+// redirect URL, so any non-empty placeholder is fine here.
 func (m *Manager) HTTPClient(ctx context.Context) (*http.Client, error) {
-	cfg, err := m.oauthConfig()
+	cfg, err := m.oauthConfigFor("http://localhost/unused")
 	if err != nil {
 		return nil, err
 	}
