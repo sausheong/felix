@@ -23,17 +23,26 @@ import (
 
 const whatsappMaxMessageLength = 65536
 
+// WhatsAppQREvent is delivered to a registered QR callback during pairing.
+// Type is one of: "code" (Code holds the QR string), "login", "timeout", "error".
+type WhatsAppQREvent struct {
+	Type string
+	Code string
+	Err  string
+}
+
 // WhatsAppChannel implements the Channel interface using the WhatsApp Web
 // multidevice protocol via whatsmeow.
 type WhatsAppChannel struct {
 	dbPath         string
 	allowedSenders []string
 
-	client  *whatsmeow.Client
-	inbound chan InboundMessage
-	status  ChannelStatus
-	cancel  context.CancelFunc
-	mu      sync.Mutex
+	client     *whatsmeow.Client
+	inbound    chan InboundMessage
+	status     ChannelStatus
+	cancel     context.CancelFunc
+	qrCallback func(WhatsAppQREvent)
+	mu         sync.Mutex
 }
 
 // NewWhatsAppChannel creates a new WhatsApp channel adapter.
@@ -97,6 +106,20 @@ func (w *WhatsAppChannel) Connect(ctx context.Context) error {
 
 	// Connect: if not logged in, show QR code; otherwise reconnect
 	if client.Store.ID == nil {
+		// Not paired. If there's no QR callback (e.g. background startup),
+		// fail fast so the gateway can move on. The user can pair later
+		// via the settings UI.
+		w.mu.Lock()
+		hasCallback := w.qrCallback != nil
+		w.mu.Unlock()
+		if !hasCallback {
+			cancel()
+			w.mu.Lock()
+			w.status = StatusDisconnected
+			w.mu.Unlock()
+			return fmt.Errorf("whatsapp not paired (use settings UI to pair)")
+		}
+
 		// First-time login: QR code flow
 		qrChan, _ := client.GetQRChannel(ctx)
 		if err := client.Connect(); err != nil {
@@ -107,27 +130,43 @@ func (w *WhatsAppChannel) Connect(ctx context.Context) error {
 			return fmt.Errorf("whatsapp connect: %w", err)
 		}
 
-		fmt.Println()
-		fmt.Println("WhatsApp QR Code Authentication")
-		fmt.Println("================================")
-		fmt.Println("Scan the QR code below with WhatsApp on your phone:")
-		fmt.Println("  1. Open WhatsApp on your phone")
-		fmt.Println("  2. Go to Settings > Linked Devices")
-		fmt.Println("  3. Tap 'Link a Device'")
-		fmt.Println("  4. Scan the QR code displayed below")
-		fmt.Println()
+		w.mu.Lock()
+		cb := w.qrCallback
+		w.mu.Unlock()
+
+		if cb == nil {
+			fmt.Println()
+			fmt.Println("WhatsApp QR Code Authentication")
+			fmt.Println("================================")
+			fmt.Println("Scan the QR code below with WhatsApp on your phone:")
+			fmt.Println("  1. Open WhatsApp on your phone")
+			fmt.Println("  2. Go to Settings > Linked Devices")
+			fmt.Println("  3. Tap 'Link a Device'")
+			fmt.Println("  4. Scan the QR code displayed below")
+			fmt.Println()
+		}
 
 		for evt := range qrChan {
 			switch evt.Event {
 			case "code":
-				printQRCode(evt.Code)
+				if cb != nil {
+					cb(WhatsAppQREvent{Type: "code", Code: evt.Code})
+				} else {
+					printQRCode(evt.Code)
+				}
 			case "login":
 				slog.Info("whatsapp login successful")
+				if cb != nil {
+					cb(WhatsAppQREvent{Type: "login"})
+				}
 			case "timeout":
 				cancel()
 				w.mu.Lock()
 				w.status = StatusError
 				w.mu.Unlock()
+				if cb != nil {
+					cb(WhatsAppQREvent{Type: "timeout", Err: "QR code scan timed out"})
+				}
 				return fmt.Errorf("whatsapp QR code scan timed out — restart to try again")
 			}
 		}
@@ -166,6 +205,60 @@ func (w *WhatsAppChannel) Disconnect() error {
 	if w.cancel != nil {
 		w.cancel()
 	}
+	return nil
+}
+
+// SetQRCallback registers a callback that receives QR pairing events
+// during the next Connect() call. Pass nil to clear and fall back to
+// terminal output. Must be called before Connect().
+func (w *WhatsAppChannel) SetQRCallback(cb func(WhatsAppQREvent)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.qrCallback = cb
+}
+
+// IsPaired returns true if a WhatsApp device is paired (the SQLite store
+// holds a logged-in device).
+func (w *WhatsAppChannel) IsPaired() bool {
+	if _, err := os.Stat(w.dbPath); err != nil {
+		return false
+	}
+	logger := waLog.Stdout("whatsmeow", "WARN", true)
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", w.dbPath)
+	container, err := sqlstore.New(context.Background(), "sqlite", dsn, logger)
+	if err != nil {
+		return false
+	}
+	dev, err := container.GetFirstDevice(context.Background())
+	if err != nil {
+		return false
+	}
+	return dev.ID != nil
+}
+
+// Unpair logs out the current WhatsApp device and removes stored
+// credentials so the next Connect() will require a fresh QR scan.
+func (w *WhatsAppChannel) Unpair(ctx context.Context) error {
+	w.mu.Lock()
+	client := w.client
+	w.mu.Unlock()
+
+	if client != nil && client.Store != nil && client.Store.ID != nil {
+		if err := client.Logout(ctx); err != nil {
+			slog.Warn("whatsapp logout failed, removing local store", "error", err)
+		}
+		client.Disconnect()
+	}
+
+	// Remove the SQLite store so the next pair starts fresh.
+	if err := os.Remove(w.dbPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove whatsapp store: %w", err)
+	}
+
+	w.mu.Lock()
+	w.client = nil
+	w.status = StatusDisconnected
+	w.mu.Unlock()
 	return nil
 }
 

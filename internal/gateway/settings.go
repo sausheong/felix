@@ -368,6 +368,23 @@ html.dark .form-group textarea { background: #0f172a; }
 }
 .add-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
 
+/* === WhatsApp QR Modal === */
+#wa-qr-modal { display: none; position: fixed; inset: 0; z-index: 1000; }
+.wa-qr-overlay {
+	position: absolute; inset: 0;
+	background: rgba(0,0,0,0.55);
+	display: flex; align-items: center; justify-content: center;
+}
+.wa-qr-card {
+	background: var(--color-surface);
+	border-radius: var(--radius);
+	padding: 2rem;
+	max-width: 360px;
+	text-align: center;
+	box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+}
+#wa-qr-modal[style*="flex"] { display: flex !important; }
+
 /* === Loading / Error === */
 .loading-state {
 	text-align: center;
@@ -786,6 +803,139 @@ html.dark .error-state { background: #450a0a; }
 				cfg.security.groupPolicy.requireMention = v;
 			}
 		);
+
+		// WhatsApp
+		var wa = ch.whatsapp || {};
+		var waSec = makeSection(p, 'WhatsApp');
+
+		// Status indicator + connect/disconnect controls
+		var statusBar = document.createElement('div');
+		statusBar.id = 'wa-status-bar';
+		statusBar.style.cssText = 'display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;';
+		statusBar.innerHTML = '<span style="color:var(--color-text-muted);font-size:0.85rem;">Loading status&#8230;</span>';
+		waSec.appendChild(statusBar);
+
+		makeField(waSec, 'Phone Number (display only)', 'text', wa.phone_number || '', function(v) {
+			if (!cfg.channels) cfg.channels = {};
+			if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
+			cfg.channels.whatsapp.phone_number = v;
+		});
+		makeField(waSec, 'DB Path', 'text', wa.db_path || '', function(v) {
+			if (!cfg.channels) cfg.channels = {};
+			if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
+			cfg.channels.whatsapp.db_path = v;
+		});
+		makeField(waSec, 'Allowed Senders (comma-separated phone numbers or JIDs; empty = allow all)', 'textarea',
+			(wa.allowed_senders || []).join(', '),
+			function(v) {
+				if (!cfg.channels) cfg.channels = {};
+				if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
+				cfg.channels.whatsapp.allowed_senders = v.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+			}
+		);
+
+		// Hidden modal markup (single instance per render).
+		if (!document.getElementById('wa-qr-modal')) {
+			var modal = document.createElement('div');
+			modal.id = 'wa-qr-modal';
+			modal.innerHTML = '<div class="wa-qr-overlay">' +
+				'<div class="wa-qr-card">' +
+				'<h3 style="margin-bottom:0.5rem;">Scan QR with WhatsApp</h3>' +
+				'<p style="color:var(--color-text-muted);font-size:0.85rem;margin-bottom:1rem;">Open WhatsApp &rarr; Settings &rarr; Linked Devices &rarr; Link a Device.</p>' +
+				'<div id="wa-qr-img" style="margin:0 auto 1rem;min-height:256px;display:flex;align-items:center;justify-content:center;color:var(--color-text-muted);">Waiting for QR&#8230;</div>' +
+				'<div id="wa-qr-error" style="color:var(--color-error);margin-bottom:0.75rem;display:none;font-size:0.85rem;"></div>' +
+				'<button id="wa-qr-cancel" class="btn-primary" style="background:var(--color-text-muted);">Cancel</button>' +
+				'</div></div>';
+			document.body.appendChild(modal);
+		}
+
+		refreshWhatsAppStatus();
+	}
+
+	// === WhatsApp pairing flow ===
+	var waEvtSource = null;
+	function refreshWhatsAppStatus() {
+		var bar = document.getElementById('wa-status-bar');
+		if (!bar) return;
+		fetch('/whatsapp/status').then(function(r) { return r.json(); }).then(function(d) {
+			renderWhatsAppStatusBar(d.status || 'not_configured');
+		}).catch(function() {
+			renderWhatsAppStatusBar('not_configured');
+		});
+	}
+	function renderWhatsAppStatusBar(status) {
+		var bar = document.getElementById('wa-status-bar');
+		if (!bar) return;
+		var badgeColor = status === 'connected' ? 'var(--color-success)'
+			: status === 'pairing' ? 'var(--color-primary)'
+			: status === 'disconnected' ? 'var(--color-text-muted)'
+			: 'var(--color-error)';
+		var label = {
+			'connected': 'Connected',
+			'pairing': 'Pairing&#8230;',
+			'disconnected': 'Disconnected',
+			'not_paired': 'Not paired',
+			'not_configured': 'Not configured'
+		}[status] || status;
+		var actions = '';
+		if (status === 'connected') {
+			actions = '<button id="wa-disconnect" class="btn-primary" style="background:var(--color-error);">Unpair</button>';
+		} else if (status === 'disconnected') {
+			actions = '<button id="wa-pair" class="btn-primary">Reconnect</button>' +
+				' <button id="wa-disconnect" class="btn-primary" style="background:var(--color-error);">Unpair</button>';
+		} else if (status === 'not_paired') {
+			actions = '<button id="wa-pair" class="btn-primary">Pair Device</button>';
+		}
+		bar.innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + badgeColor + ';"></span>' +
+			'<span style="font-size:0.875rem;">' + label + '</span>' +
+			'<span style="margin-left:auto;">' + actions + '</span>';
+
+		var pair = document.getElementById('wa-pair');
+		if (pair) pair.addEventListener('click', startWhatsAppPairing);
+		var disc = document.getElementById('wa-disconnect');
+		if (disc) disc.addEventListener('click', disconnectWhatsApp);
+	}
+	function startWhatsAppPairing() {
+		var modal = document.getElementById('wa-qr-modal');
+		var img = document.getElementById('wa-qr-img');
+		var err = document.getElementById('wa-qr-error');
+		var cancel = document.getElementById('wa-qr-cancel');
+		modal.style.display = 'flex';
+		err.style.display = 'none';
+		img.innerHTML = 'Waiting for QR&#8230;';
+
+		if (waEvtSource) { waEvtSource.close(); }
+		waEvtSource = new EventSource('/whatsapp/pair');
+		waEvtSource.addEventListener('qr', function(e) {
+			var data = JSON.parse(e.data);
+			img.innerHTML = '<img src="data:image/png;base64,' + data.png_b64 + '" alt="QR" style="width:256px;height:256px;display:block;" />';
+		});
+		waEvtSource.addEventListener('connected', function() {
+			img.innerHTML = '<div style="color:var(--color-success);font-weight:600;">Connected!</div>';
+			setTimeout(function() {
+				modal.style.display = 'none';
+				if (waEvtSource) { waEvtSource.close(); waEvtSource = null; }
+				refreshWhatsAppStatus();
+			}, 800);
+		});
+		waEvtSource.addEventListener('error', function(e) {
+			if (e.data) {
+				var data = JSON.parse(e.data);
+				err.textContent = data.message || 'Pairing failed';
+				err.style.display = 'block';
+			}
+			if (waEvtSource) { waEvtSource.close(); waEvtSource = null; }
+		});
+		cancel.onclick = function() {
+			if (waEvtSource) { waEvtSource.close(); waEvtSource = null; }
+			modal.style.display = 'none';
+		};
+	}
+	function disconnectWhatsApp() {
+		if (!confirm('Unpair WhatsApp? You will need to scan the QR again to reconnect.')) return;
+		fetch('/whatsapp/disconnect', {method: 'POST'}).then(function() {
+			refreshWhatsAppStatus();
+		});
 	}
 
 	// === Intelligence Panel (Memory + Cortex + Heartbeat) ===

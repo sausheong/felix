@@ -16,12 +16,13 @@ import (
 type ServerOptions struct {
 	AuthToken      string   // bearer token for API auth (empty = no auth)
 	AllowedOrigins []string // WebSocket allowed origins (empty = localhost only)
-	MetricsHandler http.HandlerFunc // optional /metrics handler
-	UIHandler      http.Handler     // optional /ui handler
-	ChatHandler    http.HandlerFunc // optional /chat handler
-	JobsHandler    http.HandlerFunc // optional /jobs handler
+	MetricsHandler http.HandlerFunc  // optional /metrics handler
+	UIHandler      http.Handler      // optional /ui handler
+	ChatHandler    http.HandlerFunc  // optional /chat handler
+	JobsHandler    http.HandlerFunc  // optional /jobs handler
 	Settings       *SettingsHandlers // optional /settings handlers
-	LogBuffer      *LogBuffer       // optional log buffer for /logs
+	WhatsApp       *WhatsAppHandlers // optional /whatsapp/* handlers
+	LogBuffer      *LogBuffer        // optional log buffer for /logs
 }
 
 // Server is the Felix gateway HTTP + WebSocket server.
@@ -93,6 +94,12 @@ func (s *Server) routes() {
 		s.router.Get("/settings/", s.opts.Settings.Page)
 		s.router.Get("/settings/api/config", s.opts.Settings.GetConfig)
 		s.router.Post("/settings/api/config", s.opts.Settings.SaveConfig)
+	}
+
+	if s.opts.WhatsApp != nil {
+		s.router.Get("/whatsapp/status", s.opts.WhatsApp.Status)
+		s.router.Get("/whatsapp/pair", s.opts.WhatsApp.Pair)
+		s.router.Post("/whatsapp/disconnect", s.opts.WhatsApp.Disconnect)
 	}
 
 	if s.opts.LogBuffer != nil {

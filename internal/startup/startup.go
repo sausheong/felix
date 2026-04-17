@@ -260,15 +260,14 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		slog.Info("telegram channel registered")
 	}
 
-	// Register WhatsApp channel if configured
+	// Always register the WhatsApp channel so it can be paired via the
+	// settings UI even on first run (no DB yet). The store will be created
+	// on first Connect() if needed.
 	waDBPath := cfg.Channels.WhatsApp.DBPath
 	if waDBPath == "" {
-		defaultDB := filepath.Join(dataDir, "whatsapp.db")
-		if _, err := os.Stat(defaultDB); err == nil {
-			waDBPath = defaultDB
-		}
+		waDBPath = filepath.Join(dataDir, "whatsapp.db")
 	}
-	if waDBPath != "" {
+	{
 		waChan := channel.NewWhatsAppChannel(waDBPath, cfg.Channels.WhatsApp.AllowedSenders)
 		chanMgr.Register(waChan)
 		slog.Info("whatsapp channel registered")
@@ -458,7 +457,8 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			wsHandler.UpdateConfig(newCfg)
 			slog.Info("config updated via settings page")
 		}),
-		LogBuffer:      logBuf,
+		WhatsApp:  gateway.NewWhatsAppHandlers(chanMgr),
+		LogBuffer: logBuf,
 	})
 
 	cleanup := func() {
