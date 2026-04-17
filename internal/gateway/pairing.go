@@ -11,6 +11,8 @@ import (
 type PairingBridge interface {
 	StartWhatsAppPairing(ctx context.Context, cb func(channel.WhatsAppQREvent)) error
 	WhatsAppStatus() string
+	WhatsAppJID() string
+	WhatsAppDBPath() string
 	DisconnectWhatsApp(ctx context.Context) error
 }
 
@@ -77,6 +79,34 @@ func (cm *ChannelManager) WhatsAppStatus() string {
 		}
 		return "not_paired"
 	}
+}
+
+// WhatsAppJID returns the connected device's JID, or empty if not paired.
+func (cm *ChannelManager) WhatsAppJID() string {
+	cm.mu.RLock()
+	ch, ok := cm.channels["whatsapp"]
+	cm.mu.RUnlock()
+	if !ok {
+		return ""
+	}
+	if waChan, ok := ch.(*channel.WhatsAppChannel); ok {
+		return waChan.JID()
+	}
+	return ""
+}
+
+// WhatsAppDBPath returns the SQLite store path used by the WhatsApp channel.
+func (cm *ChannelManager) WhatsAppDBPath() string {
+	cm.mu.RLock()
+	ch, ok := cm.channels["whatsapp"]
+	cm.mu.RUnlock()
+	if !ok {
+		return ""
+	}
+	if waChan, ok := ch.(*channel.WhatsAppChannel); ok {
+		return waChan.DBPath()
+	}
+	return ""
 }
 
 // DisconnectWhatsApp unpairs the WhatsApp device.

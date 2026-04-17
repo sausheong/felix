@@ -236,6 +236,39 @@ func (w *WhatsAppChannel) IsPaired() bool {
 	return dev.ID != nil
 }
 
+// JID returns the JID string of the connected device (e.g. "6512345678@s.whatsapp.net"),
+// or empty if not connected. Reads from the live client when connected, otherwise
+// probes the SQLite store. The returned form is the user JID without the device
+// suffix (suitable for display).
+func (w *WhatsAppChannel) JID() string {
+	w.mu.Lock()
+	client := w.client
+	w.mu.Unlock()
+
+	if client != nil && client.Store != nil && client.Store.ID != nil {
+		return client.Store.ID.ToNonAD().String()
+	}
+
+	// Fallback: probe the on-disk store.
+	if _, err := os.Stat(w.dbPath); err != nil {
+		return ""
+	}
+	logger := waLog.Stdout("whatsmeow", "WARN", true)
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", w.dbPath)
+	container, err := sqlstore.New(context.Background(), "sqlite", dsn, logger)
+	if err != nil {
+		return ""
+	}
+	dev, err := container.GetFirstDevice(context.Background())
+	if err != nil || dev.ID == nil {
+		return ""
+	}
+	return dev.ID.ToNonAD().String()
+}
+
+// DBPath returns the SQLite database path used for device state.
+func (w *WhatsAppChannel) DBPath() string { return w.dbPath }
+
 // Unpair logs out the current WhatsApp device and removes stored
 // credentials so the next Connect() will require a fresh QR scan.
 func (w *WhatsAppChannel) Unpair(ctx context.Context) error {
@@ -284,9 +317,11 @@ func (w *WhatsAppChannel) Send(ctx context.Context, msg OutboundMessage) error {
 		}
 		_, err := client.SendMessage(ctx, jid, waMsg)
 		if err != nil {
+			slog.Error("whatsapp send failed", "to", jid.String(), "error", err)
 			return fmt.Errorf("whatsapp send: %w", err)
 		}
 	}
+	slog.Info("whatsapp message sent", "to", jid.String(), "chunks", len(chunks))
 
 	return nil
 }
@@ -323,16 +358,23 @@ func (w *WhatsAppChannel) eventHandler(evt interface{}) {
 
 // handleMessage converts a whatsmeow message event to an InboundMessage.
 func (w *WhatsAppChannel) handleMessage(evt *events.Message) {
-	// Skip messages sent by us
+	sender := evt.Info.Sender.ToNonAD().String()
+	chat := evt.Info.Chat.ToNonAD().String()
+
+	// Skip messages sent by us (Felix's own paired phone). When testing by
+	// messaging the linked number from itself, the event arrives as IsFromMe
+	// and is dropped here.
 	if evt.Info.IsFromMe {
+		slog.Info("whatsapp message ignored (sent from this account)",
+			"sender", sender, "chat", chat, "is_group", evt.Info.IsGroup)
 		return
 	}
 
 	// Check allowed senders list
 	if len(w.allowedSenders) > 0 {
-		senderJID := evt.Info.Sender.ToNonAD().String()
-		if !w.isSenderAllowed(senderJID) {
-			slog.Debug("whatsapp message from non-allowed sender, ignoring", "sender", senderJID)
+		if !w.isSenderAllowed(sender) {
+			slog.Info("whatsapp message ignored (not in allowed_senders)",
+				"sender", sender, "allowed_count", len(w.allowedSenders))
 			return
 		}
 	}
@@ -340,18 +382,23 @@ func (w *WhatsAppChannel) handleMessage(evt *events.Message) {
 	// Extract text content
 	text := extractWhatsAppText(evt.Message)
 	if text == "" {
+		slog.Debug("whatsapp message ignored (no text content)",
+			"sender", sender, "chat", chat)
 		return
 	}
 
+	slog.Info("whatsapp message received",
+		"sender", sender, "chat", chat, "is_group", evt.Info.IsGroup,
+		"len", len(text))
+
 	// Determine chat type and IDs
 	chatType := ChatTypeDirect
-	senderID := evt.Info.Sender.ToNonAD().String()
 	senderName := evt.Info.PushName
-	accountID := senderID // for direct messages, reply to sender
+	accountID := sender // for direct messages, reply to sender
 
 	if evt.Info.IsGroup {
 		chatType = ChatTypeGroup
-		accountID = evt.Info.Chat.ToNonAD().String() // reply to group
+		accountID = chat // reply to group
 	}
 
 	// Extract media attachments
@@ -402,7 +449,7 @@ func (w *WhatsAppChannel) handleMessage(evt *events.Message) {
 		Channel:    "whatsapp",
 		AccountID:  accountID,
 		ChatType:   chatType,
-		SenderID:   senderID,
+		SenderID:   sender,
 		SenderName: senderName,
 		Text:       text,
 		Media:      media,

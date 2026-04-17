@@ -23,14 +23,20 @@ func NewWhatsAppHandlers(b PairingBridge) *WhatsAppHandlers {
 	return &WhatsAppHandlers{Bridge: b}
 }
 
-// Status returns the current WhatsApp connection status as JSON.
+// Status returns the current WhatsApp connection status as JSON, along with
+// the device JID and database path when known.
 func (h *WhatsAppHandlers) Status(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.Bridge == nil {
 		json.NewEncoder(w).Encode(map[string]string{"status": "not_configured"})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]string{"status": h.Bridge.WhatsAppStatus()})
+	resp := map[string]string{
+		"status":  h.Bridge.WhatsAppStatus(),
+		"jid":     h.Bridge.WhatsAppJID(),
+		"db_path": h.Bridge.WhatsAppDBPath(),
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // Disconnect unpairs the WhatsApp device.

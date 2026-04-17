@@ -102,14 +102,18 @@ type ChannelsConfig struct {
 }
 
 type WhatsAppConfig struct {
-	PhoneNumber    string   `json:"phone_number"`    // for display/identification only
-	DBPath         string   `json:"db_path"`          // SQLite path for device state (default: ~/.felix/whatsapp.db)
-	AllowedSenders []string `json:"allowed_senders"`  // phone numbers or JIDs allowed to send messages (empty = allow all)
+	PhoneNumber      string   `json:"phone_number"`      // for display/identification only
+	DBPath           string   `json:"db_path"`           // SQLite path for device state (default: ~/.felix/whatsapp.db)
+	AllowedSenders   []string `json:"allowed_senders"`   // phone numbers or JIDs allowed to send messages (empty = allow all)
+	DMPolicy         string   `json:"dm_policy"`         // "ignore", "respond", "process", "notify" (overrides global; default: "")
+	ProcessingPrompt string   `json:"processing_prompt"` // prepended to system prompt for WhatsApp messages
 }
 
 type TelegramConfig struct {
-	Token string `json:"token"`
-	Mode  string `json:"mode"` // "polling" or "webhook"
+	Token            string `json:"token"`
+	Mode             string `json:"mode"` // "polling" or "webhook"
+	DMPolicy         string `json:"dm_policy"`         // "ignore", "respond", "process", "notify" (overrides global; default: "")
+	ProcessingPrompt string `json:"processing_prompt"` // prepended to system prompt for Telegram messages
 }
 
 type CLIConfig struct {

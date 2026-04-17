@@ -25,16 +25,16 @@ import (
 // It listens on each registered channel, routes inbound messages to the
 // appropriate agent, runs the agent loop, and sends the response back.
 type ChannelManager struct {
-	channels     map[string]channel.Channel
-	router       *router.Router
-	providers    map[string]llm.LLMProvider
-	tools        *tools.Registry
-	sessionStore *session.Store
-	config       *config.Config
-	skills       *skill.Loader
-	memory       *memory.Manager
-	cortex       *cortex.Cortex
-	dmPolicy     string // "ignore", "respond", "notify"
+	channels       map[string]channel.Channel
+	router         *router.Router
+	providers      map[string]llm.LLMProvider
+	tools          *tools.Registry
+	sessionStore   *session.Store
+	config         *config.Config
+	skills         *skill.Loader
+	memory         *memory.Manager
+	cortex         *cortex.Cortex
+	defaultDMPolicy string // fallback when channel-specific dm_policy is empty
 
 	connectTimeout time.Duration // 0 means no timeout (blocks until connected)
 	cancel         context.CancelFunc
@@ -43,29 +43,60 @@ type ChannelManager struct {
 }
 
 // NewChannelManager creates a new ChannelManager.
-// dmPolicy controls how unknown senders (those without a peer.id binding) are
-// handled: "ignore" (default) drops their messages, "respond" processes all
-// messages, and "notify" logs but drops.
+// fallbackDMPolicy is used when a channel has no per-channel dm_policy set;
+// per-channel policies live in cfg.Channels.{Telegram,WhatsApp}.DMPolicy.
+// Values: "ignore" drops, "respond" replies, "process" processes silently,
+// "notify" logs and drops.
 func NewChannelManager(
 	r *router.Router,
 	providers map[string]llm.LLMProvider,
 	toolReg *tools.Registry,
 	sessionStore *session.Store,
 	cfg *config.Config,
-	dmPolicy string,
+	fallbackDMPolicy string,
 ) *ChannelManager {
-	if dmPolicy == "" {
-		dmPolicy = "ignore"
+	if fallbackDMPolicy == "" {
+		fallbackDMPolicy = "ignore"
 	}
 	return &ChannelManager{
-		channels:     make(map[string]channel.Channel),
-		router:       r,
-		providers:    providers,
-		tools:        toolReg,
-		sessionStore: sessionStore,
-		config:       cfg,
-		dmPolicy:     dmPolicy,
+		channels:        make(map[string]channel.Channel),
+		router:          r,
+		providers:       providers,
+		tools:           toolReg,
+		sessionStore:    sessionStore,
+		config:          cfg,
+		defaultDMPolicy: fallbackDMPolicy,
 	}
+}
+
+// dmPolicyFor returns the effective DM policy for the given channel name.
+func (cm *ChannelManager) dmPolicyFor(channelName string) string {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	var p string
+	switch channelName {
+	case "telegram":
+		p = cm.config.Channels.Telegram.DMPolicy
+	case "whatsapp":
+		p = cm.config.Channels.WhatsApp.DMPolicy
+	}
+	if p == "" {
+		p = cm.defaultDMPolicy
+	}
+	return p
+}
+
+// channelProcessingPrompt returns the processing prompt for a channel.
+func (cm *ChannelManager) channelProcessingPrompt(channelName string) string {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	switch channelName {
+	case "telegram":
+		return cm.config.Channels.Telegram.ProcessingPrompt
+	case "whatsapp":
+		return cm.config.Channels.WhatsApp.ProcessingPrompt
+	}
+	return ""
 }
 
 // SetSkills sets the skill loader for the channel manager.
@@ -230,19 +261,33 @@ func (cm *ChannelManager) processChannel(ctx context.Context, ch channel.Channel
 
 // handleMessage routes a message to an agent and sends the response back.
 func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel, msg channel.InboundMessage) {
-	// Enforce DM policy for direct messages from unknown senders
-	if msg.ChatType == channel.ChatTypeDirect && cm.dmPolicy != "respond" {
-		if !cm.router.IsKnownPeer(msg.SenderID) {
-			if cm.dmPolicy == "notify" {
+	// Enforce per-channel DM policy for direct messages from unknown senders
+	policy := cm.dmPolicyFor(ch.Name())
+	known := cm.router.IsKnownPeer(msg.SenderID)
+	suppressReply := false
+	if msg.ChatType == channel.ChatTypeDirect && policy != "respond" && policy != "process" {
+		if !known {
+			if policy == "notify" {
 				slog.Info("message from unknown sender (dm policy: notify)",
 					"channel", ch.Name(), "sender", msg.SenderID)
 			} else {
-				slog.Debug("message from unknown sender ignored (dm policy: ignore)",
-					"channel", ch.Name(), "sender", msg.SenderID)
+				slog.Info("message from unknown sender dropped (dm policy: ignore)",
+					"channel", ch.Name(), "sender", msg.SenderID,
+					"hint", "set dm_policy to 'respond' or add sender as Peer ID")
 			}
 			return
 		}
 	}
+	if policy == "process" && msg.ChatType == channel.ChatTypeDirect && !known {
+		suppressReply = true
+		slog.Info("processing message from unknown sender without reply (dm policy: process)",
+			"channel", ch.Name(), "sender", msg.SenderID)
+	}
+
+	// Channel processing prompt — when set, prepend to the agent's system prompt
+	// and use a fresh session so the per-message instructions aren't polluted
+	// by prior conversation context.
+	channelPrompt := cm.channelProcessingPrompt(ch.Name())
 
 	// Route to agent
 	agentID := cm.router.Route(msg)
@@ -267,10 +312,17 @@ func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel,
 	// Session key: {channel}_{senderID}
 	sessionKey := fmt.Sprintf("%s_%s", ch.Name(), msg.SenderID)
 
-	sess, err := cm.sessionStore.Load(agentID, sessionKey)
-	if err != nil {
-		slog.Error("load session", "error", err, "agent", agentID, "key", sessionKey)
-		return
+	var sess *session.Session
+	if channelPrompt != "" {
+		// With a per-channel processing prompt, treat each message as standalone
+		sess = session.NewSession(agentID, sessionKey)
+	} else {
+		var err error
+		sess, err = cm.sessionStore.Load(agentID, sessionKey)
+		if err != nil {
+			slog.Error("load session", "error", err, "agent", agentID, "key", sessionKey)
+			return
+		}
 	}
 
 	// Ensure workspace exists
@@ -296,6 +348,15 @@ func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel,
 		})
 	}
 
+	systemPrompt := agentCfg.SystemPrompt
+	if channelPrompt != "" {
+		if systemPrompt != "" {
+			systemPrompt = channelPrompt + "\n\n" + systemPrompt
+		} else {
+			systemPrompt = channelPrompt
+		}
+	}
+
 	rt := &agent.Runtime{
 		LLM:          provider,
 		Tools:        executor,
@@ -305,7 +366,7 @@ func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel,
 		Model:        modelName,
 		Workspace:    agentCfg.Workspace,
 		MaxTurns:     agentCfg.MaxTurns,
-		SystemPrompt: agentCfg.SystemPrompt,
+		SystemPrompt: systemPrompt,
 		Skills:       cm.skills,
 		Memory:       cm.memory,
 		Cortex:       cm.cortex,
@@ -357,6 +418,10 @@ func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel,
 	}
 
 	if response.Len() == 0 {
+		return
+	}
+
+	if suppressReply {
 		return
 	}
 

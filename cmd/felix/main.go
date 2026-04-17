@@ -1299,13 +1299,9 @@ func runOnboard() error {
 		fmt.Println("Scan it with WhatsApp on your phone to link this device.")
 		fmt.Println()
 
-		waDBPath := prompt("WhatsApp database path", filepath.Join(config.DefaultDataDir(), "whatsapp.db"))
-		cfg.Channels.WhatsApp.DBPath = waDBPath
-
-		phoneNumber := prompt("Phone number (for display only, optional)", "")
-		if phoneNumber != "" {
-			cfg.Channels.WhatsApp.PhoneNumber = phoneNumber
-		}
+		// DB path defaults to ~/.felix/whatsapp.db; advanced users can edit
+		// the config later if they need a custom location.
+		cfg.Channels.WhatsApp.DBPath = filepath.Join(config.DefaultDataDir(), "whatsapp.db")
 
 		// Add default whatsapp binding
 		cfg.Bindings = append(cfg.Bindings, config.Binding{
@@ -1313,7 +1309,7 @@ func runOnboard() error {
 			Match:   config.BindingMatch{Channel: "whatsapp"},
 		})
 
-		fmt.Println("WhatsApp configured. QR code will appear on first 'felix start'.")
+		fmt.Println("WhatsApp configured. Pair the device from the settings page after `felix start`.")
 	}
 
 	// Step 6: Write config

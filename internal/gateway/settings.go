@@ -571,9 +571,15 @@ html.dark .error-state { background: #450a0a; }
 			var cur = (value && value.value != null) ? value.value : '';
 			for (var i = 0; i < opts.length; i++) {
 				var opt = document.createElement('option');
-				opt.value = opts[i];
-				opt.textContent = opts[i];
-				if (opts[i] === cur) opt.selected = true;
+				var ov, ol;
+				if (opts[i] && typeof opts[i] === 'object') {
+					ov = opts[i].value; ol = opts[i].label || opts[i].value;
+				} else {
+					ov = opts[i]; ol = opts[i];
+				}
+				opt.value = ov;
+				opt.textContent = ol;
+				if (ov === cur) opt.selected = true;
 				sel.appendChild(opt);
 			}
 			sel.addEventListener('change', function() { onChange(sel.value); });
@@ -598,12 +604,73 @@ html.dark .error-state { background: #450a0a; }
 		return g;
 	}
 
+	// === Helper: read-only display field (no input — shows a value with id) ===
+	function makeReadOnlyField(parent, label, valueElemId, placeholder) {
+		var g = document.createElement('div');
+		g.className = 'form-group';
+		var l = document.createElement('label');
+		l.textContent = label;
+		g.appendChild(l);
+		var v = document.createElement('div');
+		v.id = valueElemId;
+		v.style.cssText = 'padding:0.5rem 0.75rem; border:1px solid var(--color-border); border-radius:var(--radius); background:var(--color-bg); font-size:0.9rem; font-family:inherit; color:var(--color-text-muted); user-select:text; min-height:1.2em; word-break:break-all;';
+		v.textContent = placeholder || '';
+		g.appendChild(v);
+		parent.appendChild(g);
+		return g;
+	}
+
 	// === Helper: 2-column row ===
 	function makeRow(parent) {
 		var row = document.createElement('div');
 		row.className = 'form-row';
 		parent.appendChild(row);
 		return row;
+	}
+
+	// === Helper: DM policy options (label/value) ===
+	function dmPolicyOptions() {
+		return [
+			{value: 'ignore', label: 'Ignore'},
+			{value: 'respond', label: 'Respond'},
+			{value: 'process', label: 'Process (no reply)'},
+			{value: 'notify', label: 'Notify'}
+		];
+	}
+
+	// === Helper: read peer IDs from bindings for a channel ===
+	function peerIDsFromBindings(channelName) {
+		var ids = [];
+		var bindings = cfg.bindings || [];
+		for (var i = 0; i < bindings.length; i++) {
+			var m = bindings[i].match || {};
+			if (m.channel === channelName && m.peer && m.peer.id) {
+				ids.push(m.peer.id);
+			}
+		}
+		return ids.join(', ');
+	}
+
+	// === Helper: replace peer-specific bindings for a channel ===
+	function setPeerIDsInBindings(channelName, csv) {
+		if (!cfg.bindings) cfg.bindings = [];
+		// Remove existing bindings whose match has channel + peer.id for this channel
+		cfg.bindings = cfg.bindings.filter(function(b) {
+			var m = b.match || {};
+			return !(m.channel === channelName && m.peer && m.peer.id);
+		});
+		// Pick a default agentId (first agent, or 'default')
+		var defaultAgent = 'default';
+		var agents = (cfg.agents || {}).list || [];
+		if (agents.length > 0 && agents[0].id) defaultAgent = agents[0].id;
+		// Add a binding per peer ID
+		var ids = csv.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+		for (var i = 0; i < ids.length; i++) {
+			cfg.bindings.push({
+				agentId: defaultAgent,
+				match: {channel: channelName, peer: {id: ids[i]}}
+			});
+		}
 	}
 
 	// === Helper: panel section with optional heading ===
@@ -803,6 +870,27 @@ html.dark .error-state { background: #450a0a; }
 				cfg.security.groupPolicy.requireMention = v;
 			}
 		);
+		var tgRow2 = makeRow(tgSec);
+		makeField(tgRow2, 'Peer IDs (comma-separated — known senders for DM policy)', 'text',
+			peerIDsFromBindings('telegram'),
+			function(v) { setPeerIDsInBindings('telegram', v); }
+		);
+		makeField(tgRow2, 'DM Policy: Unknown Senders', 'select', {
+			value: tg.dm_policy || 'ignore',
+			options: dmPolicyOptions()
+		}, function(v) {
+			if (!cfg.channels) cfg.channels = {};
+			if (!cfg.channels.telegram) cfg.channels.telegram = {};
+			cfg.channels.telegram.dm_policy = v;
+		});
+		makeField(tgSec, 'Processing Prompt (prepended to system prompt for Telegram messages)', 'textarea',
+			tg.processing_prompt || '',
+			function(v) {
+				if (!cfg.channels) cfg.channels = {};
+				if (!cfg.channels.telegram) cfg.channels.telegram = {};
+				cfg.channels.telegram.processing_prompt = v;
+			}
+		);
 
 		// WhatsApp
 		var wa = ch.whatsapp || {};
@@ -815,22 +903,36 @@ html.dark .error-state { background: #450a0a; }
 		statusBar.innerHTML = '<span style="color:var(--color-text-muted);font-size:0.85rem;">Loading status&#8230;</span>';
 		waSec.appendChild(statusBar);
 
-		makeField(waSec, 'Phone Number (display only)', 'text', wa.phone_number || '', function(v) {
-			if (!cfg.channels) cfg.channels = {};
-			if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
-			cfg.channels.whatsapp.phone_number = v;
-		});
-		makeField(waSec, 'DB Path', 'text', wa.db_path || '', function(v) {
-			if (!cfg.channels) cfg.channels = {};
-			if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
-			cfg.channels.whatsapp.db_path = v;
-		});
-		makeField(waSec, 'Allowed Senders (comma-separated phone numbers or JIDs; empty = allow all)', 'textarea',
+		var waRow1 = makeRow(waSec);
+		makeReadOnlyField(waRow1, 'Phone Number', 'wa-phone-display', '—');
+		makeReadOnlyField(waRow1, 'DB Path', 'wa-dbpath-display', '—');
+		makeField(waSec, 'Allowed Senders (comma-separated phone numbers/JIDs, empty = allow all)', 'textarea',
 			(wa.allowed_senders || []).join(', '),
 			function(v) {
 				if (!cfg.channels) cfg.channels = {};
 				if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
 				cfg.channels.whatsapp.allowed_senders = v.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+			}
+		);
+		var waRow2 = makeRow(waSec);
+		makeField(waRow2, 'Peer IDs (comma-separated — known senders for DM policy)', 'text',
+			peerIDsFromBindings('whatsapp'),
+			function(v) { setPeerIDsInBindings('whatsapp', v); }
+		);
+		makeField(waRow2, 'DM Policy: Unknown Senders', 'select', {
+			value: wa.dm_policy || 'ignore',
+			options: dmPolicyOptions()
+		}, function(v) {
+			if (!cfg.channels) cfg.channels = {};
+			if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
+			cfg.channels.whatsapp.dm_policy = v;
+		});
+		makeField(waSec, 'Processing Prompt (prepended to system prompt for WhatsApp messages)', 'textarea',
+			wa.processing_prompt || '',
+			function(v) {
+				if (!cfg.channels) cfg.channels = {};
+				if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
+				cfg.channels.whatsapp.processing_prompt = v;
 			}
 		);
 
@@ -859,6 +961,17 @@ html.dark .error-state { background: #450a0a; }
 		if (!bar) return;
 		fetch('/whatsapp/status').then(function(r) { return r.json(); }).then(function(d) {
 			renderWhatsAppStatusBar(d.status || 'not_configured');
+			var phoneEl = document.getElementById('wa-phone-display');
+			if (phoneEl) {
+				if (d.jid) {
+					var num = d.jid.split('@')[0];
+					phoneEl.textContent = '+' + num;
+				} else {
+					phoneEl.textContent = '—';
+				}
+			}
+			var dbEl = document.getElementById('wa-dbpath-display');
+			if (dbEl) dbEl.textContent = d.db_path || '—';
 		}).catch(function() {
 			renderWhatsAppStatusBar('not_configured');
 		});
