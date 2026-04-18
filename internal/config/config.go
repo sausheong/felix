@@ -241,7 +241,7 @@ func DefaultConfig() *Config {
 					ID:        "default",
 					Name:      "Assistant",
 					Workspace: filepath.Join(DefaultDataDir(), "workspace-default"),
-					Model:     "anthropic/claude-sonnet-4-5-20250514",
+					Model:     "openai/gpt-5.4",
 					Sandbox:   "none",
 					Tools: ToolPolicy{
 						Allow: []string{"read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "send_message", "cron"},
@@ -258,6 +258,10 @@ func DefaultConfig() *Config {
 		Heartbeat: HeartbeatConfig{
 			Interval: "30m",
 			Enabled:  false,
+		},
+		Cortex: CortexConfig{
+			Enabled:  true,
+			LLMModel: "gpt-5-mini",
 		},
 		Security: SecurityConfig{
 			ExecApprovals: ExecApprovalsConfig{

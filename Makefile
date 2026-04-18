@@ -4,7 +4,13 @@ VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 LDFLAGS   := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
-.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release
+APPLE_ID         := sausheong@sausheong.com
+TEAM_ID          := 83N864XA6Z
+APP_SIGN_ID      := Developer ID Application: Sau Sheong Chang (83N864XA6Z)
+PKG_SIGN_ID      := Developer ID Installer: Sau Sheong Chang (83N864XA6Z)
+KEYCHAIN_PROFILE := felix-notary
+
+.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release installer sign
 
 ## build: compile the binary
 build:
@@ -176,6 +182,60 @@ build-release:
 	@echo ""
 	@echo "Release artifacts in $(RELEASE_DIR)/:"
 	@ls -1 $(RELEASE_DIR)/*.zip
+
+## installer: build a macOS PKG installer with bundled skills and provider setup
+installer: build-app
+	mkdir -p installer/payload/Applications
+	mkdir -p installer/payload/usr/local/share/felix/skills
+	cp -r Felix.app installer/payload/Applications/Felix.app
+	cp skills/*.md installer/payload/usr/local/share/felix/skills/
+	pkgbuild \
+		--root installer/payload \
+		--scripts installer/scripts \
+		--identifier com.felix.app \
+		--version $(VERSION) \
+		--install-location / \
+		Felix-component.pkg
+	productbuild \
+		--package Felix-component.pkg \
+		--identifier com.felix.app \
+		Felix-$(VERSION).pkg
+	rm -rf Felix-component.pkg installer/payload
+	@echo "Installer: Felix-$(VERSION).pkg"
+
+## sign: sign, notarize, and staple the macOS PKG installer
+sign: build-app
+	# Sign the app bundle
+	codesign --deep --force --options runtime \
+		--sign "$(APP_SIGN_ID)" \
+		Felix.app
+	# Assemble payload with signed app
+	mkdir -p installer/payload/Applications
+	mkdir -p installer/payload/usr/local/share/felix/skills
+	cp -r Felix.app installer/payload/Applications/Felix.app
+	cp skills/*.md installer/payload/usr/local/share/felix/skills/
+	pkgbuild \
+		--root installer/payload \
+		--scripts installer/scripts \
+		--identifier com.felix.app \
+		--version $(VERSION) \
+		--install-location / \
+		Felix-component.pkg
+	# Sign the PKG
+	productsign \
+		--sign "$(PKG_SIGN_ID)" \
+		Felix-component.pkg \
+		Felix-$(VERSION)-signed.pkg
+	rm -rf Felix-component.pkg installer/payload
+	# Notarize
+	xcrun notarytool submit Felix-$(VERSION)-signed.pkg \
+		--apple-id "$(APPLE_ID)" \
+		--team-id "$(TEAM_ID)" \
+		--keychain-profile "$(KEYCHAIN_PROFILE)" \
+		--wait
+	# Staple
+	xcrun stapler staple Felix-$(VERSION)-signed.pkg
+	@echo "Signed installer: Felix-$(VERSION)-signed.pkg"
 
 ## clean: remove build artifacts
 clean:
