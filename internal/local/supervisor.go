@@ -18,13 +18,14 @@ import (
 
 // Supervisor manages the lifecycle of a child llamafile process.
 type Supervisor struct {
-	mu        sync.Mutex
-	opts      SupervisorOptions
-	cmd       *exec.Cmd
-	running   bool
-	healthy   bool
-	cancelFn  context.CancelFunc
-	restarts  int
+	mu       sync.Mutex
+	opts     SupervisorOptions
+	cmd      *exec.Cmd
+	running  bool
+	healthy  bool
+	cancelFn context.CancelFunc
+	doneCh   chan struct{} // closed when process exits
+	restarts int
 	lastCrash time.Time
 }
 
@@ -75,7 +76,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	s.opts.Port = port
 
-	args := []string{
+		args := []string{
 		"--server", "--nobrowser",
 		"--host", "127.0.0.1",
 		"--port", fmt.Sprintf("%d", port),
@@ -86,10 +87,16 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		"--log-disable",
 	}
 
+	stdoutPr, stdoutPw := io.Pipe()
+	stderrPr, stderrPw := io.Pipe()
+
 	ctx, s.cancelFn = context.WithCancel(ctx)
 	s.cmd = exec.CommandContext(ctx, s.opts.EnginePath, args...)
-	s.cmd.Stdout = s.logWriter("llamafile", "info")
-	s.cmd.Stderr = s.logWriter("llamafile", "debug")
+	s.cmd.Stdout = stdoutPw
+	s.cmd.Stderr = stderrPw
+
+	go s.logReader("llamafile", "info", stdoutPr)
+	go s.logReader("llamafile", "debug", stderrPr)
 
 	slog.Info("starting llamafile supervisor",
 		"engine", s.opts.EnginePath,
@@ -99,10 +106,14 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	)
 
 	if err := s.cmd.Start(); err != nil {
+		stdoutPw.Close()
+		stderrPw.Close()
+		s.cancelFn()
 		return fmt.Errorf("start llamafile: %w", err)
 	}
 
 	s.running = true
+	s.doneCh = make(chan struct{})
 
 	go s.healthCheck(ctx)
 	go s.monitorCrashes(ctx)
@@ -113,9 +124,8 @@ func (s *Supervisor) Start(ctx context.Context) error {
 // Stop gracefully terminates the child process.
 func (s *Supervisor) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.running {
+		s.mu.Unlock()
 		return
 	}
 
@@ -123,27 +133,27 @@ func (s *Supervisor) Stop() {
 		s.cancelFn()
 	}
 
-	if s.cmd != nil && s.cmd.Process != nil {
-		slog.Info("stopping llamafile")
-		s.cmd.Process.Signal(syscall.SIGTERM)
+	doneCh := s.doneCh
+	cmd := s.cmd
+	s.mu.Unlock()
 
-		done := make(chan struct{})
-		go func() {
-			s.cmd.Wait()
-			close(done)
-		}()
+	if cmd != nil && cmd.Process != nil {
+		slog.Info("stopping llamafile")
+		cmd.Process.Signal(syscall.SIGTERM)
 
 		select {
-		case <-done:
+		case <-doneCh:
 		case <-time.After(5 * time.Second):
 			slog.Warn("llamafile did not stop, sending SIGKILL")
-			s.cmd.Process.Signal(syscall.SIGKILL)
-			s.cmd.Wait()
+			cmd.Process.Signal(syscall.SIGKILL)
+			<-doneCh
 		}
 	}
 
+	s.mu.Lock()
 	s.running = false
 	s.healthy = false
+	s.mu.Unlock()
 }
 
 // IsRunning returns true if the child process is alive.
@@ -205,9 +215,14 @@ func (s *Supervisor) monitorCrashes(ctx context.Context) {
 		return
 	}
 	err := s.cmd.Wait()
+
 	s.mu.Lock()
 	s.running = false
+	s.healthy = false
+	doneCh := s.doneCh
 	s.mu.Unlock()
+
+	close(doneCh)
 
 	if err != nil && ctx.Err() == nil {
 		slog.Error("llamafile exited with error", "error", err)
@@ -233,23 +248,24 @@ func (s *Supervisor) restartWithBackoff(ctx context.Context) {
 		30 * time.Second,
 	}
 
+	s.mu.Lock()
 	now := time.Now()
 	if now.Sub(s.lastCrash) > window {
 		s.restarts = 0
 	}
 	s.lastCrash = now
 	s.restarts++
-
 	if s.restarts > maxRestarts {
-		slog.Error("llamafile exceeded max restarts, marking unhealthy")
-		s.mu.Lock()
 		s.healthy = false
 		s.running = false
+		attempts := s.restarts
 		s.mu.Unlock()
+		slog.Error("llamafile exceeded max restarts, marking unhealthy", "attempts", attempts)
 		return
 	}
-
 	delay := backoffs[minInt(s.restarts-1, len(backoffs)-1)]
+	s.mu.Unlock()
+
 	slog.Info("restarting llamafile", "attempt", s.restarts, "delay", delay)
 
 	select {
@@ -271,20 +287,17 @@ func (s *Supervisor) restartWithBackoff(ctx context.Context) {
 	}
 }
 
-func (s *Supervisor) logWriter(prefix string, level string) io.Writer {
-	pr, pw := io.Pipe()
-	go func() {
-		scanner := bufio.NewScanner(pr)
-		for scanner.Scan() {
-			switch level {
-			case "info":
-				slog.Info(prefix, "line", scanner.Text())
-			case "debug":
-				slog.Debug(prefix, "line", scanner.Text())
-			}
+func (s *Supervisor) logReader(prefix string, level string, r io.ReadCloser) {
+	defer r.Close()
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		switch level {
+		case "info":
+			slog.Info(prefix, "line", scanner.Text())
+		case "debug":
+			slog.Debug(prefix, "line", scanner.Text())
 		}
-	}()
-	return pw
+	}
 }
 
 func findAvailablePort(startPort int, attempts int) (int, error) {
