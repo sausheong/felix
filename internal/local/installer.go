@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -52,7 +53,48 @@ func (i *Installer) List(ctx context.Context) ([]Model, error) {
 	return body.Models, nil
 }
 
+// Delete removes a model via /api/delete.
+func (i *Installer) Delete(ctx context.Context, name string) error {
+	body, err := json.Marshal(map[string]string{"name": name})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, i.baseURL+"/api/delete", bytesReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := i.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("delete %q: ollama returned %s", name, resp.Status)
+	}
+	return nil
+}
+
 // shortDeadline returns a context cancelled after d for one-shot calls.
 func shortDeadline(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, d)
 }
+
+// bytesReader is a small wrapper to avoid importing bytes alongside io for one call site.
+func bytesReader(b []byte) *bytesReadCloser { return &bytesReadCloser{b: b} }
+
+type bytesReadCloser struct {
+	b   []byte
+	pos int
+}
+
+func (r *bytesReadCloser) Read(p []byte) (int, error) {
+	if r.pos >= len(r.b) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.b[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func (r *bytesReadCloser) Close() error { return nil }

@@ -36,3 +36,28 @@ func TestInstallerList(t *testing.T) {
 	assert.Equal(t, "qwen2.5:0.5b", models[0].Name)
 	assert.Equal(t, int64(394<<20), models[0].SizeBytes)
 }
+
+func TestInstallerDelete(t *testing.T) {
+	var gotBody map[string]string
+	inst, closeFn := newMockOllama(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/delete", r.URL.Path)
+		assert.Equal(t, http.MethodDelete, r.Method)
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	})
+	defer closeFn()
+
+	err := inst.Delete(context.Background(), "qwen2.5:0.5b")
+	require.NoError(t, err)
+	assert.Equal(t, "qwen2.5:0.5b", gotBody["name"])
+}
+
+func TestInstallerDeleteNotFound(t *testing.T) {
+	inst, closeFn := newMockOllama(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	defer closeFn()
+
+	err := inst.Delete(context.Background(), "nope")
+	require.Error(t, err)
+}
