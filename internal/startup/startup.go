@@ -68,7 +68,7 @@ func InitProviders(cfg *config.Config) map[string]llm.LLMProvider {
 	for name := range needed {
 		opts := ResolveProviderOpts(name, cfg)
 
-		if opts.APIKey == "" && opts.Kind != "local" {
+		if opts.APIKey == "" {
 			slog.Warn("no API key for provider, skipping", "provider", name)
 			continue
 		}

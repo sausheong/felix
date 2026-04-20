@@ -23,6 +23,7 @@ type Supervisor struct {
 	cmd       *exec.Cmd
 	running   bool
 	healthy   bool
+	stopCh    chan struct{}
 	cancelFn  context.CancelFunc
 	restarts  int
 	lastCrash time.Time
@@ -49,7 +50,7 @@ func NewSupervisor(opts SupervisorOptions) *Supervisor {
 	if opts.GPULayers == 0 {
 		opts.GPULayers = 999
 	}
-	return &Supervisor{opts: opts}
+	return &Supervisor{opts: opts, stopCh: make(chan struct{})}
 }
 
 // Start launches the llamafile child process.
@@ -119,6 +120,7 @@ func (s *Supervisor) Stop() {
 		return
 	}
 
+	close(s.stopCh)
 	if s.cancelFn != nil {
 		s.cancelFn()
 	}
@@ -209,13 +211,12 @@ func (s *Supervisor) monitorCrashes(ctx context.Context) {
 	s.running = false
 	s.mu.Unlock()
 
-	if err != nil && ctx.Err() == nil {
-		slog.Error("llamafile exited with error", "error", err)
+	if ctx.Err() != nil {
+		return
 	}
 
-	if ctx.Err() != nil {
-		slog.Info("llamafile stopped (intentional shutdown)")
-		return
+	if err != nil {
+		slog.Error("llamafile exited", "error", err)
 	}
 
 	s.restartWithBackoff(ctx)
@@ -255,10 +256,6 @@ func (s *Supervisor) restartWithBackoff(ctx context.Context) {
 	select {
 	case <-time.After(delay):
 	case <-ctx.Done():
-		s.mu.Lock()
-		s.running = false
-		s.healthy = false
-		s.mu.Unlock()
 		return
 	}
 
