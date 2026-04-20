@@ -108,3 +108,28 @@ func TestInstallerPullSurfacesError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "manifest not found")
 }
+
+func TestInstallerShowReturnsSize(t *testing.T) {
+	inst, closeFn := newMockOllama(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/show", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"size": int64(4_700_000_000),
+		})
+	})
+	defer closeFn()
+	sz, err := inst.Show(context.Background(), "llama4.1:8b")
+	require.NoError(t, err)
+	assert.Equal(t, int64(4_700_000_000), sz)
+}
+
+func TestEnsureFreeSpaceErrorsWhenInsufficient(t *testing.T) {
+	dir := t.TempDir()
+	// Ask for an absurdly large amount; should fail unless your tmp has petabytes free.
+	err := EnsureFreeSpace(dir, 1<<60)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "insufficient")
+}
+
+func TestEnsureFreeSpacePassesWhenTrivial(t *testing.T) {
+	require.NoError(t, EnsureFreeSpace(t.TempDir(), 1024))
+}

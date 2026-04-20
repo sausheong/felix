@@ -122,6 +122,34 @@ func (i *Installer) Pull(ctx context.Context, name string, onEvent func(Progress
 	}
 }
 
+// Show returns the size in bytes of a remote (or local) model via /api/show.
+func (i *Installer) Show(ctx context.Context, name string) (int64, error) {
+	body, err := json.Marshal(map[string]string{"name": name})
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, i.baseURL+"/api/show", bytesReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := i.client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("show: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("show %q: ollama returned %s", name, resp.Status)
+	}
+	var out struct {
+		Size int64 `json:"size"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, fmt.Errorf("show %q: decode: %w", name, err)
+	}
+	return out.Size, nil
+}
+
 // shortDeadline returns a context cancelled after d for one-shot calls.
 func shortDeadline(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, d)
