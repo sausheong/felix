@@ -1698,6 +1698,16 @@ func runModelPull() error {
 	}
 
 	fmt.Println("Model downloaded successfully to:", modelDir)
+
+	// Verify SHA256 checksums
+	paths, err := local.ResolveModelPaths("", dataDir)
+	if err != nil {
+		return fmt.Errorf("resolve model paths: %w", err)
+	}
+	if err := paths.VerifySHA256(paths.SearchRoot); err != nil {
+		return fmt.Errorf("SHA256 verification failed: %w", err)
+	}
+	fmt.Println("Model verified successfully.")
 	return nil
 }
 
