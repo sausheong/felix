@@ -1,0 +1,13 @@
+# Gemma 4 E4B bundled model files
+# Source: https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF
+#
+# Format: <sha256>  <filename>
+#
+# To verify after `make models-fetch`:
+#   cd models/gemma-4-e4b && shasum -a 256 -c SHA256SUMS
+#
+# File sizes:
+#   model.gguf  (gemma-4-E4B-it-Q4_K_M.gguf)  — 4.63 GB
+#   mmproj.gguf (mmproj-F16.gguf)             — 0.92 GB
+#
+# SHA256 hashes will be populated by `make models-fetch`.
