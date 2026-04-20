@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -43,8 +44,10 @@ type Supervisor struct {
 	cancelCtx context.CancelFunc
 	boundPort int
 	alive     atomic.Bool
+	exited    chan struct{}
 
 	readyTimeout time.Duration // 0 → 60s
+	stopGrace    time.Duration // 0 → 5s
 }
 
 // New constructs a Supervisor with defaults applied.
@@ -113,10 +116,11 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	s.mu.Unlock()
 	s.alive.Store(true)
 
-	// Watch the process so Healthy() flips on exit.
+	s.exited = make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
 		s.alive.Store(false)
+		close(s.exited)
 		slog.Warn("ollama exited; local provider is now unhealthy. Restart felix to recover.")
 	}()
 
@@ -172,16 +176,35 @@ func forwardLogs(r interface{ Read([]byte) (int, error) }, tag string) {
 	}
 }
 
-// Stop is implemented in the next task.
+// Stop sends SIGTERM, waits stopGrace, then SIGKILL. Idempotent.
 func (s *Supervisor) Stop() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cancelCtx != nil {
-		s.cancelCtx()
+	cmd := s.cmd
+	cancel := s.cancelCtx
+	exited := s.exited
+	s.mu.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
+		return nil
 	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
+
+	grace := s.stopGrace
+	if grace == 0 {
+		grace = 5 * time.Second
 	}
+
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-exited:
+	case <-time.After(grace):
+		_ = cmd.Process.Kill()
+		<-exited
+	}
+
+	if cancel != nil {
+		cancel()
+	}
+	s.alive.Store(false)
 	return nil
 }
 

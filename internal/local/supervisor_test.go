@@ -79,6 +79,7 @@ HOST="${OLLAMA_HOST:-127.0.0.1:0}"
 PORT="${HOST##*:}"
 exec /usr/bin/env python3 - <<PY
 import http.server, socketserver
+socketserver.TCPServer.allow_reuse_address = True
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/version":
@@ -158,4 +159,62 @@ func TestSupervisorStartReadinessTimeout(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNotReady)
 	t.Cleanup(func() { _ = s.Stop() })
+}
+
+func TestSupervisorStopGraceful(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeOllama(t, dir)
+	s := New(Options{BinPath: bin, ModelsDir: dir})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	start := time.Now()
+	require.NoError(t, s.Stop())
+	elapsed := time.Since(start)
+
+	assert.False(t, s.Healthy())
+	assert.Less(t, elapsed, 5*time.Second, "fake binary should exit on SIGTERM well under the 5s grace")
+}
+
+func TestSupervisorStopEscalatesToKill(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("trap-SIGTERM script is POSIX-only")
+	}
+	// A binary that ignores SIGTERM, forcing escalation to SIGKILL.
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "stubborn")
+	body := `#!/bin/sh
+trap '' TERM
+HOST="${OLLAMA_HOST:-127.0.0.1:0}"
+PORT="${HOST##*:}"
+exec /usr/bin/env python3 - <<PY
+import http.server, socketserver, signal
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+socketserver.TCPServer.allow_reuse_address = True
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/api/version":
+            self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
+        else:
+            self.send_response(404); self.end_headers()
+    def log_message(self, *a, **k): pass
+with socketserver.TCPServer(("127.0.0.1", ${PORT}), H) as srv:
+    srv.serve_forever()
+PY
+`
+	require.NoError(t, os.WriteFile(bin, []byte(body), 0o755))
+	s := New(Options{BinPath: bin, ModelsDir: dir})
+	s.stopGrace = 500 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	start := time.Now()
+	require.NoError(t, s.Stop())
+	elapsed := time.Since(start)
+	assert.GreaterOrEqual(t, elapsed, 500*time.Millisecond, "should wait the grace before escalating")
+	assert.Less(t, elapsed, 3*time.Second, "should escalate to SIGKILL promptly")
+	assert.False(t, s.Healthy())
 }
