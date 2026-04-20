@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -29,7 +28,6 @@ import (
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
 	"github.com/sausheong/felix/internal/cron"
 	"github.com/sausheong/felix/internal/gateway"
-	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
@@ -42,61 +40,6 @@ var (
 	version = "dev"
 	commit  = "none"
 )
-
-func modelCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "model",
-		Short: "Manage the bundled local LLM model",
-	}
-	cmd.AddCommand(
-		modelPullCmd(),
-		modelStatusCmd(),
-		modelRmCmd(),
-		modelAssembleCmd(),
-	)
-	return cmd
-}
-
-func modelPullCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "pull",
-		Short: "Download Gemma 4 E4B model files (~5.6 GB)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runModelPull()
-		},
-	}
-}
-
-func modelStatusCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "status",
-		Short: "Show local model status",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runModelStatus()
-		},
-	}
-}
-
-func modelRmCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "rm",
-		Short: "Remove downloaded local model files",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runModelRm()
-		},
-	}
-}
-
-func modelAssembleCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "assemble <prefix>",
-		Short: "Reassemble split model parts into a single archive",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runModelAssemble(args[0])
-		},
-	}
-}
 
 func main() {
 	rootCmd := &cobra.Command{
@@ -114,7 +57,6 @@ func main() {
 		versionCmd(),
 		onboardCmd(),
 		doctorCmd(),
-		modelCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -1625,207 +1567,3 @@ func (s *chatSender) AvailableChannels() []string {
 	return names
 }
 
-const (
-	modelRepoURL   = "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/"
-	modelFilename  = "gemma-4-E4B-it-Q4_K_M.gguf"
-	mmprojFilename = "mmproj-F16.gguf"
-)
-
-func runModelPull() error {
-	dataDir := config.DefaultDataDir()
-	modelDir := filepath.Join(dataDir, "models", "gemma-4-e4b")
-	os.MkdirAll(modelDir, 0o755)
-
-	files := []struct {
-		url      string
-		filename string
-		sizeGB   string
-	}{
-		{modelRepoURL + modelFilename, "model.gguf", "4.63"},
-		{modelRepoURL + mmprojFilename, "mmproj.gguf", "0.92"},
-	}
-
-	for _, f := range files {
-		dest := filepath.Join(modelDir, f.filename)
-		if _, err := os.Stat(dest); err == nil {
-			fmt.Printf("%s already exists, skipping\n", f.filename)
-			continue
-		}
-		fmt.Printf("Downloading %s (%s GB)...\n", f.filename, f.sizeGB)
-		if err := downloadWithProgress(f.url, dest); err != nil {
-			os.Remove(dest)
-			return fmt.Errorf("download %s: %w", f.filename, err)
-		}
-	}
-
-	fmt.Println("Model downloaded successfully to:", modelDir)
-	return nil
-}
-
-func downloadWithProgress(url, dest string) error {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err
-	}
-
-	if info, err := os.Stat(dest); err == nil {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", info.Size()))
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	total := resp.ContentLength
-	var written int64
-	buf := make([]byte, 32*1024)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	done := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				if total > 0 {
-					pct := float64(written) / float64(total) * 100
-					fmt.Printf("\r%.1f%% (%.1f MB / %.1f MB)", pct,
-						float64(written)/1e6, float64(total)/1e6)
-				} else {
-					fmt.Printf("\r%.1f MB downloaded", float64(written)/1e6)
-				}
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			w, err := out.Write(buf[:n])
-			written += int64(w)
-			if err != nil {
-				close(done)
-				return err
-			}
-		}
-		if err == io.EOF {
-			close(done)
-			break
-		}
-		if err != nil {
-			close(done)
-			return err
-		}
-	}
-
-	fmt.Printf("\r100.0%% (%.1f MB) — done\n", float64(written)/1e6)
-	return nil
-}
-
-func runModelStatus() error {
-	dataDir := config.DefaultDataDir()
-	cfg, err := config.Load("")
-	localEnabled := false
-	if err == nil {
-		localEnabled = cfg.Local.Enabled
-	}
-
-	modelDir := filepath.Join(dataDir, "models", "gemma-4-e4b")
-	fmt.Println("Local model status:")
-	fmt.Printf("  Enabled in config: %v\n", localEnabled)
-	fmt.Printf("  Model directory:   %s\n", modelDir)
-
-	if _, err := os.Stat(modelDir); os.IsNotExist(err) {
-		fmt.Println("  Status: not installed")
-		return nil
-	}
-
-	paths, err := local.ResolveModelPaths("", dataDir)
-	if err != nil {
-		fmt.Printf("  Status: incomplete (%v)\n", err)
-		return nil
-	}
-
-	for _, p := range []string{paths.ModelPath, paths.MMProjPath} {
-		info, err := os.Stat(p)
-		if err != nil {
-			fmt.Printf("  %s: missing\n", filepath.Base(p))
-		} else {
-			fmt.Printf("  %s: %.2f GB\n", filepath.Base(p), float64(info.Size())/1e9)
-		}
-	}
-
-	if err := paths.VerifySHA256(paths.SearchRoot); err != nil {
-		fmt.Printf("  SHA256: FAILED (%v)\n", err)
-	} else {
-		fmt.Println("  SHA256: OK")
-	}
-
-	fmt.Println("  Status: ready")
-	return nil
-}
-
-func runModelRm() error {
-	dataDir := config.DefaultDataDir()
-	modelDir := filepath.Join(dataDir, "models", "gemma-4-e4b")
-
-	if _, err := os.Stat(modelDir); os.IsNotExist(err) {
-		fmt.Println("No local model files found.")
-		return nil
-	}
-
-	fmt.Printf("Removing %s...\n", modelDir)
-	if err := os.RemoveAll(modelDir); err != nil {
-		return fmt.Errorf("remove: %w", err)
-	}
-	fmt.Println("Done. Freed ~5.6 GB.")
-	return nil
-}
-
-func runModelAssemble(prefix string) error {
-	pattern := prefix + ".part-*"
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return err
-	}
-	if len(matches) == 0 {
-		return fmt.Errorf("no part files matching %s found", pattern)
-	}
-
-	output := prefix
-	out, err := os.Create(output)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	for _, m := range matches {
-		f, err := os.Open(m)
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(out, f); err != nil {
-			f.Close()
-			return err
-		}
-		f.Close()
-		fmt.Printf("Appended %s\n", m)
-	}
-
-	fmt.Printf("Assembled: %s\n", output)
-	return nil
-}
