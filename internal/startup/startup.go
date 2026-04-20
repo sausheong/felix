@@ -19,7 +19,6 @@ import (
 	"github.com/sausheong/felix/internal/gateway"
 	"github.com/sausheong/felix/internal/google"
 	"github.com/sausheong/felix/internal/heartbeat"
-	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/router"
@@ -30,10 +29,9 @@ import (
 
 // Result holds the running gateway components.
 type Result struct {
-	Server     *gateway.Server
-	Config     *config.Config
-	Supervisor *local.Supervisor // may be nil if local model not available
-	Cleanup    func() // call to gracefully shut down everything
+	Server    *gateway.Server
+	Config    *config.Config
+	Cleanup   func() // call to gracefully shut down everything
 }
 
 // ResolveProviderOpts builds ProviderOptions for a given provider name
@@ -322,34 +320,6 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		return nil, fmt.Errorf("start channel manager: %w", err)
 	}
 
-	// Start local LLM supervisor if enabled and model files available
-	var supervisor *local.Supervisor
-	if cfg.Local.Enabled {
-		paths, err := local.ResolveModelPaths(cfg.Local.ModelDir, dataDir)
-		if err != nil {
-			slog.Info("local model not found, skipping", "error", err)
-		} else if err := paths.VerifySHA256(paths.SearchRoot); err != nil {
-			slog.Warn("local model SHA256 verification failed", "error", err)
-		} else {
-			supervisor = local.NewSupervisor(local.SupervisorOptions{
-				EnginePath:  paths.EnginePath,
-				ModelPath:   paths.ModelPath,
-				MMProjPath:  paths.MMProjPath,
-				Port:        cfg.Local.Port,
-				ContextSize: cfg.Local.ContextSize,
-				GPULayers:   cfg.Local.GPULayers,
-			})
-			if err := supervisor.Start(ctx); err != nil {
-				slog.Warn("failed to start local supervisor", "error", err)
-				supervisor = nil
-			} else {
-				slog.Info("local LLM supervisor started",
-					"model", paths.ModelPath,
-					"port", supervisor.Port())
-			}
-		}
-	}
-
 	// Start heartbeat daemon for each agent if enabled
 	var heartbeats []*heartbeat.Daemon
 	if cfg.Heartbeat.Enabled {
@@ -511,9 +481,6 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	})
 
 	cleanup := func() {
-		if supervisor != nil {
-			supervisor.Stop()
-		}
 		cronScheduler.Stop()
 		for _, hb := range heartbeats {
 			hb.Stop()
@@ -532,9 +499,8 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	}
 
 	return &Result{
-		Server:     srv,
-		Config:     cfg,
-		Supervisor: supervisor,
-		Cleanup:    cleanup,
+		Server:  srv,
+		Config:  cfg,
+		Cleanup: cleanup,
 	}, nil
 }
