@@ -218,3 +218,22 @@ PY
 	assert.Less(t, elapsed, 3*time.Second, "should escalate to SIGKILL promptly")
 	assert.False(t, s.Healthy())
 }
+
+func TestSupervisorCrashLeavesUnhealthy(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeOllama(t, dir)
+	s := New(Options{BinPath: bin, ModelsDir: dir})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+	require.True(t, s.Healthy())
+
+	// Kill the child outside the supervisor.
+	require.NoError(t, s.cmd.Process.Kill())
+
+	// Wait for the supervisor goroutine to observe the exit.
+	require.Eventually(t, func() bool { return !s.Healthy() }, 3*time.Second, 50*time.Millisecond)
+
+	// Confirm BoundPort is still reported (the supervisor doesn't clear it on crash).
+	assert.NotZero(t, s.BoundPort())
+}
