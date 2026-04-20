@@ -57,6 +57,7 @@ func main() {
 		versionCmd(),
 		onboardCmd(),
 		doctorCmd(),
+		modelCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
