@@ -1210,12 +1210,13 @@ func runOnboard() error {
 	providerIdx := choose(
 		"Which LLM provider do you want to use?",
 		[]string{
+			"Local — Gemma 4 E4B (~5.6 GB, runs offline) (recommended)",
 			"Anthropic (Claude)",
 			"OpenAI (GPT)",
 			"Ollama (local models)",
 			"Custom/LiteLLM (OpenAI-compatible endpoint)",
 		},
-		0,
+		0, // default to Local
 	)
 
 	providerName := ""
@@ -1223,17 +1224,53 @@ func runOnboard() error {
 	var baseURL string
 
 	switch providerIdx {
-	case 0:
+	case 0: // Local
+		providerName = "local"
+		providerKind = "local"
+		dataDir := config.DefaultDataDir()
+		modelDir := filepath.Join(dataDir, "models", "gemma-4-e4b")
+		if _, err := os.Stat(filepath.Join(modelDir, "model.gguf")); os.IsNotExist(err) {
+			fmt.Println("\nLocal model not found. Downloading Gemma 4 E4B (~5.6 GB)...")
+			fmt.Println("This may take a while depending on your internet connection.")
+			fmt.Println("You can abort and resume later.")
+			fmt.Println()
+			confirm := prompt("Start download? (y/n)", "y")
+			if strings.ToLower(confirm) != "y" && strings.ToLower(confirm) != "yes" {
+				fmt.Println("Skipping local model. You can download it later with: felix model pull")
+				providerIdx = 1 // redirect to Anthropic
+				break
+			}
+			if err := runModelPull(); err != nil {
+				fmt.Printf("Download failed: %v\n", err)
+				fmt.Println("You can retry later with: felix model pull")
+				providerIdx = 1
+				break
+			}
+		}
+		paths, err := local.ResolveModelPaths("", dataDir)
+		if err != nil {
+			fmt.Printf("Model download completed but verification failed: %v\n", err)
+			providerIdx = 1
+			break
+		}
+		if err := paths.VerifySHA256(paths.SearchRoot); err != nil {
+			fmt.Printf("SHA256 verification failed: %v\n", err)
+			providerIdx = 1
+			break
+		}
+		fmt.Println("Model downloaded and verified successfully!")
+		baseURL = fmt.Sprintf("http://127.0.0.1:%d/v1", 18790)
+	case 1: // Anthropic
 		providerName = "anthropic"
 		providerKind = "anthropic"
-	case 1:
+	case 2: // OpenAI
 		providerName = "openai"
 		providerKind = "openai"
-	case 2:
+	case 3: // Ollama
 		providerName = "ollama"
 		providerKind = "openai-compatible"
 		baseURL = prompt("Ollama base URL", "http://localhost:11434/v1")
-	case 3:
+	case 4: // Custom
 		providerName = prompt("Provider name", "litellm")
 		providerKind = "openai-compatible"
 		baseURL = prompt("Base URL", "http://localhost:4000/v1")
@@ -1241,15 +1278,15 @@ func runOnboard() error {
 
 	// Step 2: API Key
 	apiKey := ""
-	if providerIdx != 2 { // Ollama typically doesn't need an API key
+	if providerIdx != 0 && providerIdx != 3 { // skip for Local and Ollama
 		apiKey = promptSecret(fmt.Sprintf("Enter your %s API key", providerName))
-		if apiKey == "" && providerIdx != 2 {
+		if apiKey == "" && providerIdx != 0 && providerIdx != 3 {
 			fmt.Println("Warning: No API key provided. You can set it later via environment variable or config file.")
 		}
 	}
 
 	// Test connectivity
-	if apiKey != "" || providerIdx == 2 {
+	if apiKey != "" || providerIdx == 0 || providerIdx == 3 { // Local or Ollama
 		fmt.Print("Testing connection... ")
 		testOpts := llm.ProviderOptions{
 			APIKey:  apiKey,
@@ -1273,7 +1310,9 @@ func runOnboard() error {
 	fmt.Println()
 	var modelStr string
 	switch providerIdx {
-	case 0:
+	case 0: // Local
+		modelStr = "local/gemma-4-e4b"
+	case 1: // Anthropic
 		modelIdx := choose("Which Claude model?", []string{
 			"claude-sonnet-4-5-20250514 (recommended)",
 			"claude-opus-4-0-20250514",
@@ -1285,7 +1324,7 @@ func runOnboard() error {
 			"anthropic/claude-haiku-3-5-20241022",
 		}
 		modelStr = models[modelIdx]
-	case 1:
+	case 2: // OpenAI
 		modelIdx := choose("Which GPT model?", []string{
 			"gpt-4o (recommended)",
 			"gpt-4o-mini",
