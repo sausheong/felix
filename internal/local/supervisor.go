@@ -4,14 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/http"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ErrNoFreePort is returned when no port in the configured range is free.
 var ErrNoFreePort = errors.New("no free port in range")
+
+// ErrNotReady is returned when the child fails to respond to /api/version
+// within the readiness window.
+var ErrNotReady = errors.New("ollama did not become ready in time")
 
 // Options configures a Supervisor.
 type Options struct {
@@ -35,6 +43,8 @@ type Supervisor struct {
 	cancelCtx context.CancelFunc
 	boundPort int
 	alive     atomic.Bool
+
+	readyTimeout time.Duration // 0 → 60s
 }
 
 // New constructs a Supervisor with defaults applied.
@@ -67,6 +77,112 @@ func (s *Supervisor) BoundPort() int {
 // Healthy returns true while the child process is alive.
 func (s *Supervisor) Healthy() bool {
 	return s.alive.Load()
+}
+
+// Start spawns ollama serve, waits for it to respond to /api/version, and
+// returns nil once ready. On any failure, the child (if started) is killed
+// and an error is returned.
+func (s *Supervisor) Start(ctx context.Context) error {
+	port, err := probeFreePort(s.portLow, s.portHigh)
+	if err != nil {
+		return err
+	}
+
+	childCtx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(childCtx, s.binPath, "serve")
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("OLLAMA_HOST=127.0.0.1:%d", port),
+		fmt.Sprintf("OLLAMA_MODELS=%s", s.modelsDir),
+		fmt.Sprintf("OLLAMA_KEEP_ALIVE=%s", s.keepAlive),
+	)
+	pipeStderr, _ := cmd.StderrPipe()
+	pipeStdout, _ := cmd.StdoutPipe()
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return fmt.Errorf("ollama: start: %w", err)
+	}
+
+	go forwardLogs(pipeStdout, "ollama-stdout")
+	go forwardLogs(pipeStderr, "ollama-stderr")
+
+	s.mu.Lock()
+	s.cmd = cmd
+	s.cancelCtx = cancel
+	s.boundPort = port
+	s.mu.Unlock()
+	s.alive.Store(true)
+
+	// Watch the process so Healthy() flips on exit.
+	go func() {
+		_ = cmd.Wait()
+		s.alive.Store(false)
+		slog.Warn("ollama exited; local provider is now unhealthy. Restart felix to recover.")
+	}()
+
+	timeout := s.readyTimeout
+	if timeout == 0 {
+		timeout = 60 * time.Second
+	}
+	if err := s.waitReady(ctx, port, timeout); err != nil {
+		_ = s.Stop()
+		return err
+	}
+	slog.Info("ollama supervisor ready", "port", port, "models_dir", s.modelsDir)
+	return nil
+}
+
+func (s *Supervisor) waitReady(ctx context.Context, port int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	url := fmt.Sprintf("http://127.0.0.1:%d/api/version", port)
+	client := &http.Client{Timeout: 1 * time.Second}
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if !s.alive.Load() {
+			return fmt.Errorf("ollama: process exited during startup")
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				return nil
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return ErrNotReady
+}
+
+// forwardLogs pipes a child reader into slog at debug level, line by line.
+func forwardLogs(r interface{ Read([]byte) (int, error) }, tag string) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			slog.Debug(tag, "msg", string(buf[:n]))
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// Stop is implemented in the next task.
+func (s *Supervisor) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancelCtx != nil {
+		s.cancelCtx()
+	}
+	if s.cmd != nil && s.cmd.Process != nil {
+		_ = s.cmd.Process.Kill()
+	}
+	return nil
 }
 
 // probeFreePort tries each port in [low, high] and returns the first free one.

@@ -1,9 +1,16 @@
 package local
 
 import (
+	"context"
+	"fmt"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,4 +61,101 @@ func portFromAddr(t *testing.T, addr net.Addr) int {
 	n, err := strconv.Atoi(p)
 	require.NoError(t, err)
 	return n
+}
+
+// writeFakeOllama writes a shell script that:
+//   - starts an HTTP server on the requested port (passed via OLLAMA_HOST)
+//     responding 200 to /api/version
+//   - blocks until killed
+// Returns the absolute path to the script.
+func writeFakeOllama(t *testing.T, dir string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-binary tests are POSIX-only")
+	}
+	path := filepath.Join(dir, "ollama")
+	body := `#!/bin/sh
+HOST="${OLLAMA_HOST:-127.0.0.1:0}"
+PORT="${HOST##*:}"
+exec /usr/bin/env python3 - <<PY
+import http.server, socketserver
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/api/version":
+            self.send_response(200); self.end_headers(); self.wfile.write(b'{"version":"fake"}')
+        else:
+            self.send_response(404); self.end_headers()
+    def log_message(self, *a, **k): pass
+with socketserver.TCPServer(("127.0.0.1", ${PORT}), H) as srv:
+    srv.serve_forever()
+PY
+`
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o755))
+	return path
+}
+
+func TestSupervisorStartReady(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeOllama(t, dir)
+	s := New(Options{BinPath: bin, ModelsDir: dir})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+	t.Cleanup(func() { _ = s.Stop() })
+
+	port := s.BoundPort()
+	assert.GreaterOrEqual(t, port, 18790)
+	assert.True(t, s.Healthy())
+
+	// Sanity-check the ready endpoint.
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/version", port))
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestSupervisorStartNoFreePort(t *testing.T) {
+	// Open all 10 ports in the range so probing fails.
+	listeners := make([]net.Listener, 0, 10)
+	t.Cleanup(func() {
+		for _, ln := range listeners {
+			ln.Close()
+		}
+	})
+	first, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	listeners = append(listeners, first)
+	low := portFromAddr(t, first.Addr())
+
+	for p := low + 1; p <= low+9; p++ {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			t.Skipf("could not bind probe range: %v", err)
+		}
+		listeners = append(listeners, ln)
+	}
+
+	s := New(Options{BinPath: "/bin/true", ModelsDir: t.TempDir(), PortLow: low, PortHigh: low + 9})
+	err = s.Start(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoFreePort)
+}
+
+func TestSupervisorStartReadinessTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-binary tests are POSIX-only")
+	}
+	// A script that stays alive but never serves /api/version.
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "sleeper")
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nexec /bin/sleep 30\n"), 0o755))
+
+	s := New(Options{BinPath: bin, ModelsDir: t.TempDir()})
+	s.readyTimeout = 500 * time.Millisecond
+
+	err := s.Start(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotReady)
+	t.Cleanup(func() { _ = s.Stop() })
 }
