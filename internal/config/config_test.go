@@ -88,6 +88,31 @@ func TestGetAgent(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestDefaultConfigLocalSection(t *testing.T) {
+	cfg := DefaultConfig()
+	require.NotNil(t, cfg)
+
+	assert.True(t, cfg.Local.Enabled, "local should default to enabled")
+	assert.Equal(t, "5m", cfg.Local.KeepAlive)
+	assert.Equal(t, "", cfg.Local.ModelsDir, "models_dir should default to empty (resolved at runtime)")
+}
+
+func TestLocalConfigParsing(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "felix.json5")
+	contents := `{
+		"agents": { "list": [{"id": "a1", "model": "local/qwen2.5:0.5b"}] },
+		"local": { "enabled": false, "keep_alive": "30m", "models_dir": "/tmp/m" }
+	}`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(contents), 0o600))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.False(t, cfg.Local.Enabled)
+	assert.Equal(t, "30m", cfg.Local.KeepAlive)
+	assert.Equal(t, "/tmp/m", cfg.Local.ModelsDir)
+}
+
 func TestStripJSON5(t *testing.T) {
 	tests := []struct {
 		name  string

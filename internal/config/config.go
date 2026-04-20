@@ -24,6 +24,7 @@ type Config struct {
 	Cortex    CortexConfig             `json:"cortex"`
 	Google    GoogleConfig             `json:"google"`
 	Security  SecurityConfig           `json:"security"`
+	Local     LocalConfig              `json:"local"`
 
 	mu   sync.RWMutex
 	path string
@@ -132,6 +133,13 @@ type MemoryConfig struct {
 	EmbeddingProvider string `json:"embeddingProvider"`
 	EmbeddingModel    string `json:"embeddingModel"`
 	MaxEntries        int    `json:"maxEntries"`
+}
+
+// LocalConfig configures the bundled Ollama supervisor.
+type LocalConfig struct {
+	Enabled   bool   `json:"enabled"`    // master switch
+	ModelsDir string `json:"models_dir"` // override; empty → ~/.felix/ollama/models
+	KeepAlive string `json:"keep_alive"` // OLLAMA_KEEP_ALIVE
 }
 
 type CortexConfig struct {
@@ -270,6 +278,10 @@ func DefaultConfig() *Config {
 			},
 			GroupPolicy: GroupPolicyConfig{RequireMention: true},
 		},
+		Local: LocalConfig{
+			Enabled:   true,
+			KeepAlive: "5m",
+		},
 	}
 }
 
@@ -354,6 +366,7 @@ func (c *Config) UpdateFrom(src *Config) {
 	c.Memory = src.Memory
 	c.Cortex = src.Cortex
 	c.Security = src.Security
+	c.Local = src.Local
 }
 
 // SetPath sets the file path for saving.
