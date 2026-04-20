@@ -24,6 +24,7 @@ type Config struct {
 	Cortex    CortexConfig             `json:"cortex"`
 	Google    GoogleConfig             `json:"google"`
 	Security  SecurityConfig           `json:"security"`
+	Local     LocalConfig              `json:"local"`
 
 	mu   sync.RWMutex
 	path string
@@ -163,6 +164,15 @@ type GroupPolicyConfig struct {
 	RequireMention bool `json:"requireMention"`
 }
 
+// LocalConfig controls the bundled local LLM supervisor.
+type LocalConfig struct {
+	Enabled     bool   `json:"enabled"`       // master switch — disables supervisor if false
+	Port        int    `json:"port"`          // default 18790
+	ContextSize int    `json:"context_size"`  // default 65536
+	GPULayers   int    `json:"gpu_layers"`    // default 999 (use GPU if available)
+	ModelDir    string `json:"model_dir"`     // optional override; empty = use search order
+}
+
 // DefaultDataDir returns the default Felix data directory.
 func DefaultDataDir() string {
 	home, err := os.UserHomeDir()
@@ -269,6 +279,13 @@ func DefaultConfig() *Config {
 				Allowlist: []string{"ls", "cat", "find", "grep", "head", "tail", "wc", "pwd", "date"},
 			},
 			GroupPolicy: GroupPolicyConfig{RequireMention: true},
+		},
+		Local: LocalConfig{
+			Enabled:     false,
+			Port:        18790,
+			ContextSize: 65536,
+			GPULayers:   999,
+			ModelDir:    "",
 		},
 	}
 }
