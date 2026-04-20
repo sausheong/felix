@@ -10,7 +10,7 @@ APP_SIGN_ID      := Developer ID Application: Sau Sheong Chang (83N864XA6Z)
 PKG_SIGN_ID      := Developer ID Installer: Sau Sheong Chang (83N864XA6Z)
 KEYCHAIN_PROFILE := felix-notary
 
-.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release installer sign
+.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release installer sign models-fetch llamafile-fetch release-bundled
 
 ## build: compile the binary
 build:
@@ -76,6 +76,65 @@ tidy:
 
 RELEASE_DIR := dist
 PLATFORMS   := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64
+
+## models-fetch: download Gemma 4 E4B + mmproj into models/ for bundling
+models-fetch:
+	mkdir -p models/gemma-4-e4b
+	curl -L -o models/gemma-4-e4b/model.gguf \
+	     https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf
+	curl -L -o models/gemma-4-e4b/mmproj.gguf \
+	     https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/mmproj-F16.gguf
+	cd models/gemma-4-e4b && shasum -a 256 *.gguf > SHA256SUMS
+
+## llamafile-fetch: download platform-specific llamafile engine
+llamafile-fetch:
+	mkdir -p models/engine
+ifeq ($(shell uname -s),Darwin)
+ifeq ($(shell uname -m),arm64)
+	curl -L -o models/engine/llamafile \
+	     https://github.com/Mozilla-Ocho/llamafile/releases/latest/download/llamafile-darwin-arm64
+else
+	curl -L -o models/engine/llamafile \
+	     https://github.com/Mozilla-Ocho/llamafile/releases/latest/download/llamafile-darwin-amd64
+endif
+else ifeq ($(shell uname -s),Linux)
+ifeq ($(shell uname -m),arm64)
+	curl -L -o models/engine/llamafile \
+	     https://github.com/Mozilla-Ocho/llamafile/releases/latest/download/llamafile-linux-arm64
+else
+	curl -L -o models/engine/llamafile \
+	     https://github.com/Mozilla-Ocho/llamafile/releases/latest/download/llamafile-linux-amd64
+endif
+endif
+	chmod +x models/engine/llamafile
+
+## release-bundled: build felix-bundled flavor (depends on models-fetch + llamafile-fetch)
+release-bundled: models-fetch llamafile-fetch
+	rm -rf $(RELEASE_DIR)
+	@for platform in $(PLATFORMS); do \
+		os=$${platform%%/*}; \
+		arch=$${platform##*/}; \
+		name=felix-bundled-$(VERSION)-$${os}-$${arch}; \
+		ext=""; \
+		if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
+		echo "Building $$name..."; \
+		dir=$(RELEASE_DIR)/$$name; \
+		mkdir -p $$dir/models/gemma-4-e4b; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
+			go build -trimpath -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)" \
+			-o $$dir/felix$(ext) $(CMD) || exit 1; \
+		cp -r models/gemma-4-e4b/* $$dir/models/gemma-4-e4b/; \
+		if [ -f "models/engine/llamafile" ]; then \
+			cp models/engine/llamafile $$dir/models/llamafile; \
+			if [ "$$os" = "windows" ]; then mv $$dir/models/llamafile $$dir/models/llamafile.exe; fi; \
+		fi; \
+		cp skills/*.md $$dir/ 2>/dev/null || true; \
+		echo "Splitting into 1.9 GB parts..."; \
+		(cd $(RELEASE_DIR) && tar czf - $$name | split -b 1900M - "$${name}.tar.gz.part-"); \
+		rm -rf $$dir; \
+	done
+	@echo "Bundled release artifacts in $(RELEASE_DIR)/:"
+	@ls -1 $(RELEASE_DIR)/felix-bundled-*
 
 ## release: commit, push, create GitHub release, and build binaries (usage: make release TAG=v0.1.4)
 release:
