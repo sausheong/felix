@@ -75,6 +75,53 @@ func (i *Installer) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
+// ProgressEvent is one line of pull progress emitted by Ollama.
+type ProgressEvent struct {
+	Status    string `json:"status"`
+	Digest    string `json:"digest,omitempty"`
+	Total     int64  `json:"total,omitempty"`
+	Completed int64  `json:"completed,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// Pull streams model bytes via /api/pull, calling onEvent for each NDJSON line.
+// onEvent may be nil. The function returns when the stream ends or an error occurs.
+func (i *Installer) Pull(ctx context.Context, name string, onEvent func(ProgressEvent)) error {
+	body, err := json.Marshal(map[string]any{"name": name, "stream": true})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, i.baseURL+"/api/pull", bytesReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := i.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("pull: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("pull %q: ollama returned %s", name, resp.Status)
+	}
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var ev ProgressEvent
+		if err := dec.Decode(&ev); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("pull %q: decode: %w", name, err)
+		}
+		if ev.Error != "" {
+			return fmt.Errorf("pull %q: %s", name, ev.Error)
+		}
+		if onEvent != nil {
+			onEvent(ev)
+		}
+	}
+}
+
 // shortDeadline returns a context cancelled after d for one-shot calls.
 func shortDeadline(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, d)

@@ -61,3 +61,50 @@ func TestInstallerDeleteNotFound(t *testing.T) {
 	err := inst.Delete(context.Background(), "nope")
 	require.Error(t, err)
 }
+
+func TestInstallerPullStreamsProgress(t *testing.T) {
+	inst, closeFn := newMockOllama(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/pull", r.URL.Path)
+		assert.Equal(t, http.MethodPost, r.Method)
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		assert.Equal(t, "qwen2.5:0.5b", req["name"])
+
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+		for _, line := range []string{
+			`{"status":"pulling manifest"}`,
+			`{"status":"downloading","digest":"sha256:abc","total":1000,"completed":250}`,
+			`{"status":"downloading","digest":"sha256:abc","total":1000,"completed":1000}`,
+			`{"status":"success"}`,
+		} {
+			_, _ = w.Write([]byte(line + "\n"))
+			flusher.Flush()
+		}
+	})
+	defer closeFn()
+
+	var events []ProgressEvent
+	err := inst.Pull(context.Background(), "qwen2.5:0.5b", func(ev ProgressEvent) {
+		events = append(events, ev)
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, events)
+	last := events[len(events)-1]
+	assert.Equal(t, "success", last.Status)
+}
+
+func TestInstallerPullSurfacesError(t *testing.T) {
+	inst, closeFn := newMockOllama(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte(`{"error":"manifest not found"}` + "\n"))
+		flusher.Flush()
+	})
+	defer closeFn()
+
+	err := inst.Pull(context.Background(), "ghost", func(ProgressEvent) {})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "manifest not found")
+}
