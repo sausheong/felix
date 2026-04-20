@@ -138,3 +138,12 @@ func TestGeminiProviderModels(t *testing.T) {
 		assert.Equal(t, "gemini", m.Provider)
 	}
 }
+
+func TestNewProviderLocal(t *testing.T) {
+	p, err := NewProvider("local", ProviderOptions{
+		Kind:    "local",
+		BaseURL: "http://127.0.0.1:18790/v1",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, p)
+}
