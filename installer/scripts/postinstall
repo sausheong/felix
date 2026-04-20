@@ -30,6 +30,21 @@ if [ -d "$BUNDLED_SKILLS" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Detect bundled models (felix-bundled flavor)
+# ---------------------------------------------------------------------------
+BUNDLED_MODELS="/usr/local/share/felix/models/gemma-4-e4b"
+MODELS_PRESENT=false
+
+if [ -f "$BUNDLED_MODELS/model.gguf" ] && [ -f "$BUNDLED_MODELS/mmproj.gguf" ]; then
+  MODELS_PRESENT=true
+  echo "Bundled local model detected."
+
+  # Create symlink in Felix data dir
+  mkdir -p "$FELIX_DIR/models"
+  ln -sf "$BUNDLED_MODELS" "$FELIX_DIR/models/gemma-4-e4b" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
 # Remove quarantine from the app
 # ---------------------------------------------------------------------------
 xattr -dr com.apple.quarantine /Applications/Felix.app 2>/dev/null || true
@@ -39,8 +54,15 @@ xattr -dr com.apple.quarantine /Applications/Felix.app 2>/dev/null || true
 # ---------------------------------------------------------------------------
 if [ ! -f "$CONFIG" ]; then
 
-  # Ask which provider
-  PROVIDER=$(sudo -u "$LOGGED_IN_USER" osascript <<'OSASCRIPT'
+  if [ "$MODELS_PRESENT" = "true" ]; then
+    # Bundled flavor — default to local model
+    PROVIDER_KEY="local"
+    MODEL="local/gemma-4-e4b-it"
+    BASE_URL="http://127.0.0.1:18790/v1"
+    PROVIDER_JSON="\"local\": { \"kind\": \"local\", \"base_url\": \"http://127.0.0.1:18790/v1\" }"
+  else
+    # Small flavor — show provider selection wizard
+    PROVIDER=$(sudo -u "$LOGGED_IN_USER" osascript <<'OSASCRIPT'
 set providers to {"OpenAI (GPT)"}
 set chosen to choose from list providers ¬
   with prompt "Choose your default AI provider for Felix:" ¬
@@ -49,79 +71,82 @@ set chosen to choose from list providers ¬
 if chosen is false then return "skip"
 return item 1 of chosen
 OSASCRIPT
-  )
+    )
 
-  API_KEY=""
-  BASE_URL=""
-  MODEL=""
-  PROVIDER_KEY=""
+    API_KEY=""
+    BASE_URL=""
+    MODEL=""
+    PROVIDER_KEY=""
 
-  case "$PROVIDER" in
-    "Anthropic (Claude)")
-      PROVIDER_KEY="anthropic"
-      MODEL="anthropic/claude-sonnet-4-5"
-      DEFAULT_URL="https://api.anthropic.com"
-      ;;
-    "OpenAI (GPT)")
-      PROVIDER_KEY="openai"
-      MODEL="openai/gpt-5.4"
-      DEFAULT_URL="https://api.openai.com/v1"
-      ;;
-    "Google Gemini")
-      PROVIDER_KEY="gemini"
-      MODEL="gemini/gemini-2.0-flash"
-      DEFAULT_URL="https://generativelanguage.googleapis.com"
-      ;;
-    "DeepSeek")
-      PROVIDER_KEY="deepseek"
-      MODEL="deepseek/deepseek-chat"
-      DEFAULT_URL="https://api.deepseek.com"
-      ;;
-    "Ollama (local — no key needed)")
-      PROVIDER_KEY="ollama"
-      MODEL="ollama/llama3.2"
-      DEFAULT_URL="http://localhost:11434"
-      ;;
-    *)
-      PROVIDER_KEY=""
-      MODEL=""
-      DEFAULT_URL=""
-      ;;
-  esac
+    case "$PROVIDER" in
+      "Anthropic (Claude)")
+        PROVIDER_KEY="anthropic"
+        MODEL="anthropic/claude-sonnet-4-5"
+        DEFAULT_URL="https://api.anthropic.com"
+        ;;
+      "OpenAI (GPT)")
+        PROVIDER_KEY="openai"
+        MODEL="openai/gpt-5.4"
+        DEFAULT_URL="https://api.openai.com/v1"
+        ;;
+      "Google Gemini")
+        PROVIDER_KEY="gemini"
+        MODEL="gemini/gemini-2.0-flash"
+        DEFAULT_URL="https://generativelanguage.googleapis.com"
+        ;;
+      "DeepSeek")
+        PROVIDER_KEY="deepseek"
+        MODEL="deepseek/deepseek-chat"
+        DEFAULT_URL="https://api.deepseek.com"
+        ;;
+      "Ollama (local — no key needed)")
+        PROVIDER_KEY="ollama"
+        MODEL="ollama/llama3.2"
+        DEFAULT_URL="http://localhost:11434"
+        ;;
+      *)
+        PROVIDER_KEY=""
+        MODEL=""
+        DEFAULT_URL=""
+        ;;
+    esac
 
-  if [ -n "$PROVIDER_KEY" ]; then
+    if [ -n "$PROVIDER_KEY" ]; then
 
-    # Ask for API key (skip for Ollama)
-    if [ "$PROVIDER_KEY" != "ollama" ]; then
-      API_KEY=$(sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT
+      # Ask for API key (skip for Ollama)
+      if [ "$PROVIDER_KEY" != "ollama" ]; then
+        API_KEY=$(sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT
 set r to display dialog "Enter your $PROVIDER API key:" default answer "" with title "Felix Setup" buttons {"Skip", "OK"} default button "OK" with hidden answer
 if button returned of r is "Skip" then return ""
 return text returned of r
 OSASCRIPT
-      ) || API_KEY=""
-    fi
+        ) || API_KEY=""
+      fi
 
-    # Ask for base URL (pre-filled with the provider default)
-    BASE_URL=$(sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT
+      # Ask for base URL (pre-filled with the provider default)
+      BASE_URL=$(sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT
 set r to display dialog "Base URL for $PROVIDER:" default answer "$DEFAULT_URL" with title "Felix Setup" buttons {"Use Default", "OK"} default button "OK"
 if button returned of r is "Use Default" then return "$DEFAULT_URL"
 set entered to text returned of r
 if entered is "" then return "$DEFAULT_URL"
 return entered
 OSASCRIPT
-    ) || BASE_URL="$DEFAULT_URL"
+      ) || BASE_URL="$DEFAULT_URL"
 
-    # Build provider JSON block
-    if [ "$PROVIDER_KEY" = "ollama" ]; then
-      PROVIDER_JSON="\"$PROVIDER_KEY\": { \"base_url\": \"$BASE_URL\" }"
-    elif [ -n "$API_KEY" ] && [ -n "$BASE_URL" ]; then
-      PROVIDER_JSON="\"$PROVIDER_KEY\": { \"api_key\": \"$API_KEY\", \"base_url\": \"$BASE_URL\" }"
-    elif [ -n "$API_KEY" ]; then
-      PROVIDER_JSON="\"$PROVIDER_KEY\": { \"api_key\": \"$API_KEY\" }"
-    else
-      PROVIDER_JSON="\"$PROVIDER_KEY\": { \"base_url\": \"$BASE_URL\" }"
+      # Build provider JSON block with kind field
+      if [ "$PROVIDER_KEY" = "ollama" ]; then
+        PROVIDER_JSON="\"$PROVIDER_KEY\": { \"kind\": \"openai-compatible\", \"base_url\": \"$BASE_URL\" }"
+      elif [ "$PROVIDER_KEY" = "local" ]; then
+        PROVIDER_JSON="\"$PROVIDER_KEY\": { \"kind\": \"local\", \"base_url\": \"$BASE_URL\" }"
+      elif [ -n "$API_KEY" ] && [ -n "$BASE_URL" ]; then
+        PROVIDER_JSON="\"$PROVIDER_KEY\": { \"kind\": \"$PROVIDER_KEY\", \"api_key\": \"$API_KEY\", \"base_url\": \"$BASE_URL\" }"
+      elif [ -n "$API_KEY" ]; then
+        PROVIDER_JSON="\"$PROVIDER_KEY\": { \"kind\": \"$PROVIDER_KEY\", \"api_key\": \"$API_KEY\" }"
+      else
+        PROVIDER_JSON="\"$PROVIDER_KEY\": { \"kind\": \"$PROVIDER_KEY\", \"base_url\": \"$BASE_URL\" }"
+      fi
+
     fi
-
   fi
 
   # Write felix.json5
@@ -131,6 +156,12 @@ OSASCRIPT
     "host": "127.0.0.1",
     "port": 18789,
     "auth": { "token": "" }
+  },
+  "local": {
+    "enabled": $([ "$MODELS_PRESENT" = "true" ] && echo "true" || echo "false"),
+    "port": 18790,
+    "context_size": 65536,
+    "gpu_layers": 999
   },
   "providers": {
     $PROVIDER_JSON
