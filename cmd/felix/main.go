@@ -1160,13 +1160,13 @@ func runOnboard() error {
 		fmt.Println()
 		localChoice := choose("", []string{
 			"Qwen 3.5 9B                ~5.0 GB   (recommended — good general agent)",
-			"Gemma 4 E4B (multimodal)   ~5.5 GB   (vision-capable)",
+			"Gemma 4 (multimodal)       ~9.6 GB   (vision-capable)",
 			"Skip — I'll configure a cloud key later",
 		}, 0)
 		if localChoice != 2 {
 			models := []string{
 				"qwen3.5:9b",
-				"gemma4:e4b",
+				"gemma4:latest",
 			}
 			modelTag := models[localChoice]
 			if err := pullLocalModel(modelTag); err != nil {

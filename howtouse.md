@@ -1714,7 +1714,7 @@ models:
 | Choice | Size | Best for |
 |---|---|---|
 | Qwen 3.5 9B | ~5.0 GB | General agent tasks (recommended default) |
-| Gemma 4 E4B (multimodal) | ~5.5 GB | Tasks involving images |
+| Gemma 4 (multimodal) | ~9.6 GB | Tasks involving images |
 
 After picking a model, Felix downloads it via the bundled Ollama. The
 download runs once; subsequent starts reuse the cached weights in
@@ -1746,7 +1746,7 @@ runtime:
 felix model pull qwen2.5:7b-instruct     # add another model
 felix model list                         # see what's installed
 felix model status                       # check the supervisor
-felix model rm gemma4:e4b                # free disk space
+felix model rm gemma4:latest             # free disk space
 ```
 
 ### Coexistence with system Ollama
