@@ -309,30 +309,42 @@ OLLAMA_BASE_URL := https://github.com/ollama/ollama/releases/download/v$(OLLAMA_
 ##
 ## The macOS darwin binary is universal2 (amd64+arm64); we materialize it under
 ## both names so per-platform release zips can pick it up uniformly.
+## Skip fetch when bin/.ollama-version matches OLLAMA_VERSION and all five
+## per-platform binaries are present. To force a re-fetch, delete bin/ or
+## bin/.ollama-version (e.g. after bumping OLLAMA_VERSION).
 ollama-fetch:
-	mkdir -p bin
-	@tmp=$$(mktemp -d) && trap "rm -rf $$tmp" EXIT; \
-	echo "Fetching ollama-darwin.tgz..."; \
-	curl -fL -o $$tmp/ollama-darwin.tgz "$(OLLAMA_BASE_URL)/ollama-darwin.tgz" || exit 1; \
-	tar -xzf $$tmp/ollama-darwin.tgz -C $$tmp ollama; \
-	cp $$tmp/ollama bin/ollama-darwin-amd64; \
-	cp $$tmp/ollama bin/ollama-darwin-arm64; \
-	chmod +x bin/ollama-darwin-amd64 bin/ollama-darwin-arm64; \
-	rm -f $$tmp/ollama; \
+	@if [ -f bin/.ollama-version ] \
+	    && [ "$$(cat bin/.ollama-version)" = "$(OLLAMA_VERSION)" ] \
+	    && [ -x bin/ollama-darwin-amd64 ] && [ -x bin/ollama-darwin-arm64 ] \
+	    && [ -x bin/ollama-linux-amd64 ] && [ -x bin/ollama-linux-arm64 ] \
+	    && [ -f bin/ollama-windows-amd64.exe ]; then \
+	  echo "ollama $(OLLAMA_VERSION) already pinned in bin/, skipping fetch"; \
+	  exit 0; \
+	fi; \
+	mkdir -p bin && \
+	tmp=$$(mktemp -d) && trap "rm -rf $$tmp" EXIT && \
+	echo "Fetching ollama-darwin.tgz..." && \
+	curl -fL -o $$tmp/ollama-darwin.tgz "$(OLLAMA_BASE_URL)/ollama-darwin.tgz" && \
+	tar -xzf $$tmp/ollama-darwin.tgz -C $$tmp ollama && \
+	cp $$tmp/ollama bin/ollama-darwin-amd64 && \
+	cp $$tmp/ollama bin/ollama-darwin-arm64 && \
+	chmod +x bin/ollama-darwin-amd64 bin/ollama-darwin-arm64 && \
+	rm -f $$tmp/ollama && \
 	for arch in amd64 arm64; do \
 	  echo "Fetching ollama-linux-$$arch.tar.zst..."; \
 	  curl -fL -o $$tmp/ollama-linux-$$arch.tar.zst "$(OLLAMA_BASE_URL)/ollama-linux-$$arch.tar.zst" || exit 1; \
 	  if ! command -v zstd >/dev/null 2>&1; then \
 	    echo "ERROR: zstd not found. Install with: brew install zstd"; exit 1; \
 	  fi; \
-	  zstd -d -c $$tmp/ollama-linux-$$arch.tar.zst | tar -x -C $$tmp bin/ollama; \
-	  cp $$tmp/bin/ollama bin/ollama-linux-$$arch; \
+	  zstd -d -c $$tmp/ollama-linux-$$arch.tar.zst | tar -x -C $$tmp bin/ollama || exit 1; \
+	  cp $$tmp/bin/ollama bin/ollama-linux-$$arch || exit 1; \
 	  chmod +x bin/ollama-linux-$$arch; \
 	  rm -rf $$tmp/bin; \
-	done; \
-	echo "Fetching ollama-windows-amd64.zip..."; \
-	curl -fL -o $$tmp/ollama-windows-amd64.zip "$(OLLAMA_BASE_URL)/ollama-windows-amd64.zip" || exit 1; \
-	unzip -o -j -d $$tmp $$tmp/ollama-windows-amd64.zip ollama.exe >/dev/null; \
-	cp $$tmp/ollama.exe bin/ollama-windows-amd64.exe
-	cd bin && shasum -a 256 ollama-* > ../OLLAMA-SHA256SUMS
-	@echo "Pinned Ollama binaries in bin/, checksums in OLLAMA-SHA256SUMS"
+	done && \
+	echo "Fetching ollama-windows-amd64.zip..." && \
+	curl -fL -o $$tmp/ollama-windows-amd64.zip "$(OLLAMA_BASE_URL)/ollama-windows-amd64.zip" && \
+	unzip -o -j -d $$tmp $$tmp/ollama-windows-amd64.zip ollama.exe >/dev/null && \
+	cp $$tmp/ollama.exe bin/ollama-windows-amd64.exe && \
+	(cd bin && shasum -a 256 ollama-* > ../OLLAMA-SHA256SUMS) && \
+	echo "$(OLLAMA_VERSION)" > bin/.ollama-version && \
+	echo "Pinned Ollama binaries in bin/, checksums in OLLAMA-SHA256SUMS"
