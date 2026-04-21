@@ -93,17 +93,11 @@ EOF
     chown -R "$LOGGED_IN_USER":staff "$FELIX_DIR"
 
     # Multi-GB downloads don't belong in an installer — remind the user to
-    # pull the model themselves after Felix is open and the supervisor is
-    # listening. The command uses the bundled ollama binary with the env
-    # vars Felix's supervisor sets at runtime.
+    # pull the model from Felix's Settings UI once it's open.
     sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT >/dev/null 2>&1 || true
 display dialog "Felix is configured to use $LOCAL_MODEL but the model isn't downloaded yet.
 
-Open Felix first (so the local model server is running), then open Terminal and run:
-
-OLLAMA_HOST=127.0.0.1:18790 OLLAMA_MODELS=~/.felix/ollama/models /Applications/Felix.app/Contents/Resources/bin/ollama pull $LOCAL_MODEL
-
-Felix will use the model as soon as the download completes." buttons {"OK"} default button "OK" with title "Felix Setup"
+After Felix opens, go to Settings → Models and click Download next to $LOCAL_MODEL. The download runs in the background and Felix will use the model as soon as it's ready." buttons {"OK"} default button "OK" with title "Felix Setup"
 OSASCRIPT
 
     exit 0

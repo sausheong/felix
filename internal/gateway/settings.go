@@ -423,6 +423,7 @@ html.dark .error-state { background: #450a0a; }
 			<div class="finger-tabs" id="tabs">
 				<button class="finger-tab active" data-tab="gateway">Gateway</button>
 				<button class="finger-tab" data-tab="providers">Providers</button>
+				<button class="finger-tab" data-tab="models">Models</button>
 				<button class="finger-tab" data-tab="agents">Agents</button>
 				<button class="finger-tab" data-tab="channels">Channels</button>
 				<button class="finger-tab" data-tab="intelligence">Intelligence</button>
@@ -430,6 +431,7 @@ html.dark .error-state { background: #450a0a; }
 			</div>
 			<div class="finger-panel active" id="panel-gateway"></div>
 			<div class="finger-panel" id="panel-providers"></div>
+			<div class="finger-panel" id="panel-models"></div>
 			<div class="finger-panel" id="panel-agents"></div>
 			<div class="finger-panel" id="panel-channels"></div>
 			<div class="finger-panel" id="panel-intelligence"></div>
@@ -525,10 +527,227 @@ html.dark .error-state { background: #450a0a; }
 	function render() {
 		renderGateway();
 		renderProviders();
+		renderModels();
 		renderAgents();
 		renderChannels();
 		renderIntelligence();
 		renderSecurity();
+	}
+
+	// === Models tab — talks directly to bundled Ollama via providers.local.base_url ===
+	var CURATED_MODELS = [
+		{name: 'gemma4:latest', label: 'Gemma 4 (multimodal)', size: '~9.6 GB', note: 'recommended — vision + general agent'},
+		{name: 'qwen3.5:9b',    label: 'Qwen 3.5 9B',          size: '~5.0 GB', note: 'lighter, text-only'}
+	];
+	var pullState = {}; // name -> {pct, status, err}
+	var pollTimer = null;
+
+	function ollamaBase() {
+		var base = (cfg.providers && cfg.providers.local && cfg.providers.local.base_url) || 'http://127.0.0.1:18790';
+		return base.replace(/\/v1\/?$/, '').replace(/\/$/, '');
+	}
+
+	function fmtBytes(n) {
+		if (!n || n < 0) return '';
+		if (n < 1024) return n + ' B';
+		var u = ['KB','MB','GB','TB'];
+		var i = -1;
+		do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+		return n.toFixed(1) + ' ' + u[i];
+	}
+
+	function renderModels() {
+		var panel = document.getElementById('panel-models');
+		panel.innerHTML = '';
+
+		var section = document.createElement('div');
+		section.className = 'panel-section';
+		var h = document.createElement('h3');
+		h.textContent = 'Local models (via bundled Ollama)';
+		section.appendChild(h);
+
+		var p = document.createElement('p');
+		p.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; margin:0.25rem 0 1rem 0;';
+		p.textContent = 'Endpoint: ' + ollamaBase();
+		section.appendChild(p);
+
+		// Installed list
+		var installedHdr = document.createElement('div');
+		installedHdr.style.cssText = 'font-weight:600; font-size:0.9rem; margin-bottom:0.5rem;';
+		installedHdr.textContent = 'Installed';
+		section.appendChild(installedHdr);
+
+		var installedBox = document.createElement('div');
+		installedBox.id = 'models-installed';
+		installedBox.style.cssText = 'border:1px solid var(--color-border); border-radius:var(--radius); padding:0.5rem; margin-bottom:1.5rem; min-height:2.5rem;';
+		installedBox.textContent = 'Loading…';
+		section.appendChild(installedBox);
+
+		// Curated download list
+		var availHdr = document.createElement('div');
+		availHdr.style.cssText = 'font-weight:600; font-size:0.9rem; margin-bottom:0.5rem;';
+		availHdr.textContent = 'Available to download';
+		section.appendChild(availHdr);
+
+		var grid = document.createElement('div');
+		grid.style.cssText = 'display:grid; grid-template-columns:1fr; gap:0.75rem;';
+		CURATED_MODELS.forEach(function(m) {
+			var card = document.createElement('div');
+			card.style.cssText = 'border:1px solid var(--color-border); border-radius:var(--radius); padding:0.75rem;';
+
+			var top = document.createElement('div');
+			top.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:0.5rem;';
+			var info = document.createElement('div');
+			var nameLine = document.createElement('div');
+			nameLine.style.cssText = 'font-weight:600;';
+			nameLine.textContent = m.label + ' (' + m.name + ')';
+			var sub = document.createElement('div');
+			sub.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem;';
+			sub.textContent = m.size + ' • ' + m.note;
+			info.appendChild(nameLine);
+			info.appendChild(sub);
+
+			var btn = document.createElement('button');
+			btn.className = 'btn';
+			btn.dataset.model = m.name;
+			btn.textContent = 'Download';
+			btn.addEventListener('click', function() { startPull(m.name); });
+
+			top.appendChild(info);
+			top.appendChild(btn);
+			card.appendChild(top);
+
+			var prog = document.createElement('div');
+			prog.id = 'pull-progress-' + m.name;
+			prog.style.cssText = 'margin-top:0.5rem; display:none;';
+			prog.innerHTML = '<div style="font-size:0.8rem; color:var(--color-text-muted); margin-bottom:0.25rem;" class="progress-text">Starting…</div>' +
+				'<div style="height:6px; background:var(--color-border); border-radius:3px; overflow:hidden;"><div class="progress-bar" style="height:100%; width:0%; background:var(--color-accent, #3b82f6); transition:width 0.3s;"></div></div>';
+			card.appendChild(prog);
+
+			grid.appendChild(card);
+		});
+		section.appendChild(grid);
+
+		panel.appendChild(section);
+
+		refreshInstalled();
+		// Apply any in-flight pull state in case the user switched tabs and back.
+		Object.keys(pullState).forEach(function(name) { applyPullState(name); });
+	}
+
+	function refreshInstalled() {
+		var box = document.getElementById('models-installed');
+		if (!box) return;
+		fetch(ollamaBase() + '/api/tags')
+			.then(function(r) { return r.json(); })
+			.then(function(data) {
+				var models = (data && data.models) || [];
+				if (models.length === 0) {
+					box.textContent = 'No models installed yet.';
+					return;
+				}
+				box.innerHTML = '';
+				models.forEach(function(m) {
+					var row = document.createElement('div');
+					row.style.cssText = 'display:flex; justify-content:space-between; padding:0.4rem 0.25rem; border-bottom:1px solid var(--color-border);';
+					var nm = document.createElement('div');
+					nm.textContent = m.name;
+					var sz = document.createElement('div');
+					sz.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem;';
+					sz.textContent = fmtBytes(m.size);
+					row.appendChild(nm);
+					row.appendChild(sz);
+					box.appendChild(row);
+				});
+				box.lastChild.style.borderBottom = 'none';
+			})
+			.catch(function(err) {
+				box.textContent = 'Error: ' + err.message + ' — is the bundled Ollama running?';
+			});
+	}
+
+	function applyPullState(name) {
+		var st = pullState[name];
+		var prog = document.getElementById('pull-progress-' + name);
+		var btn = document.querySelector('button[data-model="' + name + '"]');
+		if (!prog || !btn) return;
+		if (!st) {
+			prog.style.display = 'none';
+			btn.disabled = false;
+			btn.textContent = 'Download';
+			return;
+		}
+		prog.style.display = 'block';
+		btn.disabled = true;
+		btn.textContent = 'Downloading…';
+		var bar = prog.querySelector('.progress-bar');
+		var txt = prog.querySelector('.progress-text');
+		if (bar) bar.style.width = (st.pct || 0) + '%';
+		if (txt) {
+			var label = st.status || 'pulling';
+			if (st.completed && st.total) {
+				label += ' — ' + fmtBytes(st.completed) + ' / ' + fmtBytes(st.total) + ' (' + (st.pct || 0).toFixed(1) + '%)';
+			} else if (st.pct != null) {
+				label += ' — ' + st.pct.toFixed(1) + '%';
+			}
+			if (st.err) label = 'Error: ' + st.err;
+			txt.textContent = label;
+		}
+	}
+
+	function startPull(name) {
+		if (pullState[name] && !pullState[name].err && !pullState[name].done) return;
+		pullState[name] = {pct: 0, status: 'starting'};
+		applyPullState(name);
+
+		fetch(ollamaBase() + '/api/pull', {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify({name: name, stream: true})
+		}).then(function(resp) {
+			if (!resp.ok || !resp.body) {
+				pullState[name].err = 'HTTP ' + resp.status;
+				applyPullState(name);
+				return;
+			}
+			var reader = resp.body.getReader();
+			var decoder = new TextDecoder();
+			var buf = '';
+			function read() {
+				return reader.read().then(function(chunk) {
+					if (chunk.done) {
+						pullState[name].done = true;
+						pullState[name].pct = 100;
+						pullState[name].status = 'done';
+						applyPullState(name);
+						refreshInstalled();
+						setTimeout(function() { delete pullState[name]; applyPullState(name); }, 3000);
+						return;
+					}
+					buf += decoder.decode(chunk.value, {stream: true});
+					var lines = buf.split('\n');
+					buf = lines.pop();
+					lines.forEach(function(line) {
+						if (!line.trim()) return;
+						try {
+							var ev = JSON.parse(line);
+							var st = pullState[name];
+							st.status = ev.status || st.status;
+							if (typeof ev.total === 'number') st.total = ev.total;
+							if (typeof ev.completed === 'number') st.completed = ev.completed;
+							if (st.total > 0) st.pct = (st.completed || 0) * 100 / st.total;
+							if (ev.error) st.err = ev.error;
+							applyPullState(name);
+						} catch (e) { /* ignore unparsable line */ }
+					});
+					return read();
+				});
+			}
+			return read();
+		}).catch(function(err) {
+			pullState[name].err = err.message;
+			applyPullState(name);
+		});
 	}
 
 	// === Helper: toggle-group ===
