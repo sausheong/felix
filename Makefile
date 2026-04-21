@@ -144,7 +144,7 @@ endif
 	@ls -1 $(RELEASE_DIR)/*.zip
 
 ## build-release: cross-compile CLI for all platforms without creating a GitHub release
-build-release:
+build-release: ollama-fetch
 	rm -rf $(RELEASE_DIR)
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%%/*}; \
@@ -156,6 +156,18 @@ build-release:
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
 			go build -trimpath -ldflags "$(LDFLAGS)" \
 			-o $(RELEASE_DIR)/$$name/$(BINARY)$$ext $(CMD) || exit 1; \
+		case "$$os/$$arch" in \
+		  darwin/amd64)  oll="ollama-darwin-amd64";; \
+		  darwin/arm64)  oll="ollama-darwin-arm64";; \
+		  linux/amd64)   oll="ollama-linux-amd64";; \
+		  linux/arm64)   oll="ollama-linux-arm64";; \
+		  windows/amd64) oll="ollama-windows-amd64.exe";; \
+		esac; \
+		if [ -f "bin/$$oll" ]; then \
+		  mkdir -p $(RELEASE_DIR)/$$name/bin; \
+		  ext2=""; if [ "$$os" = "windows" ]; then ext2=".exe"; fi; \
+		  cp bin/$$oll $(RELEASE_DIR)/$$name/bin/ollama$$ext2; \
+		fi; \
 		(cd $(RELEASE_DIR) && zip -rq $$name.zip $$name); \
 		rm -rf $(RELEASE_DIR)/$$name; \
 	done
