@@ -49,7 +49,7 @@ if [ ! -f "$CONFIG" ]; then
       "id": "default",
       "name": "Assistant",
       "workspace": "$FELIX_DIR/workspace-default",
-      "model": "local/llama4.1:8b-instruct-q4_K_M",
+      "model": "local/qwen3.5:9b",
       "sandbox": "none",
       "tools": { "allow": ["read_file","write_file","edit_file","bash","web_fetch","web_search","browser","send_message","cron"] }
     }]

@@ -1159,15 +1159,13 @@ func runOnboard() error {
 		fmt.Println("Pick a local model to download (you can change this later):")
 		fmt.Println()
 		localChoice := choose("", []string{
-			"Llama 4.1 8B Instruct      ~4.7 GB   (recommended — good general agent)",
-			"Qwen 3.5 Coder 7B          ~4.0 GB   (best for code-heavy tasks)",
+			"Qwen 3.5 9B                ~5.0 GB   (recommended — good general agent)",
 			"Gemma 4 E4B (multimodal)   ~5.5 GB   (vision-capable)",
 			"Skip — I'll configure a cloud key later",
 		}, 0)
-		if localChoice != 3 {
+		if localChoice != 2 {
 			models := []string{
-				"llama4.1:8b-instruct-q4_K_M",
-				"qwen3.5-coder:7b",
+				"qwen3.5:9b",
 				"gemma4:e4b",
 			}
 			modelTag := models[localChoice]

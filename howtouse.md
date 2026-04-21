@@ -1708,13 +1708,12 @@ No external database is required. Everything is files on disk.
 
 Felix ships with a bundled Ollama runtime so you can run agents fully
 offline. If you launch Felix with no `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-or `GEMINI_API_KEY` set, the onboarding wizard offers three curated local
+or `GEMINI_API_KEY` set, the onboarding wizard offers two curated local
 models:
 
 | Choice | Size | Best for |
 |---|---|---|
-| Llama 4.1 8B Instruct | ~4.7 GB | General agent tasks (recommended default) |
-| Qwen 3.5 Coder 7B | ~4.0 GB | Code-heavy tool use |
+| Qwen 3.5 9B | ~5.0 GB | General agent tasks (recommended default) |
 | Gemma 4 E4B (multimodal) | ~5.5 GB | Tasks involving images |
 
 After picking a model, Felix downloads it via the bundled Ollama. The
@@ -1731,7 +1730,7 @@ or any of the cloud prefixes:
 {
   "agents": {
     "list": [
-      { "id": "default", "model": "local/llama4.1:8b-instruct-q4_K_M" },
+      { "id": "default", "model": "local/qwen3.5:9b" },
       { "id": "online",  "model": "openai/gpt-5.4" }
     ]
   }

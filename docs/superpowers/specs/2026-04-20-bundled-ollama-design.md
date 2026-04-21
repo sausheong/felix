@@ -323,7 +323,7 @@ Ollama is MIT-licensed; bundle a `LICENSE-OLLAMA` file alongside Felix's own lic
 ## Open questions for implementation plan
 
 1. Exact Ollama version pin — pick latest stable at implementation time; record in `Makefile` as `OLLAMA_VERSION` and in `OLLAMA-SHA256SUMS`.
-2. Final curated wizard list — Llama 4.1 8B / Qwen 3.5 Coder 7B / Gemma 4 E4B is a placeholder; confirm exact Ollama tags + sizes at implementation time.
+2. Final curated wizard list — Qwen 3.5 9B / Gemma 4 E4B is a placeholder; confirm exact Ollama tags + sizes at implementation time.
 3. Default quant per model (e.g., `llama4.1:8b-instruct-q4_K_M` vs. `llama4.1:8b`). Pick after a quick local sanity check.
 4. Postinstall vs. first-`felix start` wizard placement — keep the previous design's split (postinstall for packaged, first-start for zip) or unify on first-start? Implementation choice.
 5. Whether `felix model` should pass-through arbitrary `ollama` commands (e.g., `felix model show`, `felix model cp`). Start with the four documented subcommands; add more if user demand emerges.
