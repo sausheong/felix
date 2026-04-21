@@ -10,7 +10,7 @@ APP_SIGN_ID      := Developer ID Application: Sau Sheong Chang (83N864XA6Z)
 PKG_SIGN_ID      := Developer ID Installer: Sau Sheong Chang (83N864XA6Z)
 KEYCHAIN_PROFILE := felix-notary
 
-.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release installer sign
+.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release installer sign ollama-fetch
 
 ## build: compile the binary
 build:
@@ -254,3 +254,24 @@ install:
 ## help: show this help
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
+
+OLLAMA_VERSION ?= 0.5.7
+
+## ollama-fetch: download platform Ollama binaries into bin/
+ollama-fetch:
+	mkdir -p bin
+	@for plat in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do \
+		os=$${plat%%/*}; arch=$${plat##*/}; \
+		case "$$os/$$arch" in \
+		  darwin/amd64)  url="https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)/ollama-darwin"; out="ollama-darwin-amd64";; \
+		  darwin/arm64)  url="https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)/ollama-darwin"; out="ollama-darwin-arm64";; \
+		  linux/amd64)   url="https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)/ollama-linux-amd64"; out="ollama-linux-amd64";; \
+		  linux/arm64)   url="https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)/ollama-linux-arm64"; out="ollama-linux-arm64";; \
+		  windows/amd64) url="https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)/ollama-windows-amd64.exe"; out="ollama-windows-amd64.exe";; \
+		esac; \
+		echo "Fetching $$out from $$url..."; \
+		curl -L -o bin/$$out "$$url" || exit 1; \
+		chmod +x bin/$$out 2>/dev/null || true; \
+	done
+	cd bin && shasum -a 256 ollama-* > ../OLLAMA-SHA256SUMS
+	@echo "Pinned Ollama binaries in bin/, checksums in OLLAMA-SHA256SUMS"
