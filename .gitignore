@@ -39,3 +39,6 @@ security-audit.md
 # others
 claw-machine.png
 Felix.app
+
+# Bundled Ollama binaries fetched by 'make ollama-fetch'
+/bin/
