@@ -39,6 +39,34 @@ xattr -dr com.apple.quarantine /Applications/Felix.app 2>/dev/null || true
 # ---------------------------------------------------------------------------
 if [ ! -f "$CONFIG" ]; then
 
+  # Bundled-Ollama path — skip the API-key prompt entirely.
+  BUNDLED_OLLAMA="/Applications/Felix.app/Contents/Resources/bin/ollama"
+  if [ -x "$BUNDLED_OLLAMA" ]; then
+    cat > "$CONFIG" <<EOF
+{
+  "agents": {
+    "list": [{
+      "id": "default",
+      "name": "Assistant",
+      "workspace": "$FELIX_DIR/workspace-default",
+      "model": "local/llama4.1:8b-instruct-q4_K_M",
+      "sandbox": "none",
+      "tools": { "allow": ["read_file","write_file","edit_file","bash","web_fetch","web_search","browser","send_message","cron"] }
+    }]
+  },
+  "bindings": [{ "agentId": "default", "match": { "channel": "cli" } }],
+  "channels": { "cli": { "enabled": true, "interactive": true } },
+  "local": { "enabled": true, "keep_alive": "5m" },
+  "providers": {
+    "local": { "kind": "local", "base_url": "http://127.0.0.1:18790/v1" }
+  }
+}
+EOF
+    chown "$LOGGED_IN_USER":staff "$CONFIG"
+    chmod 600 "$CONFIG"
+    exit 0
+  fi
+
   # Ask which provider
   PROVIDER=$(sudo -u "$LOGGED_IN_USER" osascript <<'OSASCRIPT'
 set providers to {"OpenAI (GPT)"}
