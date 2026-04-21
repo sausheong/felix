@@ -87,16 +87,68 @@ EOF
     # and they all need to be writable by the installing user.
     chown -R "$LOGGED_IN_USER":staff "$FELIX_DIR"
 
-    # Tell the user how to download the model. Multi-GB pull doesn't belong
-    # in the installer, so we just hand them the one-liner.
+    # Drop a helper script that starts a temporary ollama server, pulls the
+    # chosen model, and stops the server. We open it in Terminal so the user
+    # sees ollama's progress bar and can interrupt with Ctrl-C if needed. The
+    # installer itself doesn't block on the multi-GB download.
+    HELPER="/tmp/felix-pull-model-$$.sh"
+    cat > "$HELPER" <<HELPER_EOF
+#!/bin/bash
+set -u
+MODEL="$LOCAL_MODEL"
+OLLAMA_BIN="/Applications/Felix.app/Contents/Resources/bin/ollama"
+export OLLAMA_HOST="127.0.0.1:18790"
+export OLLAMA_MODELS="\$HOME/.felix/ollama/models"
+mkdir -p "\$OLLAMA_MODELS"
+
+echo "Felix is downloading \$MODEL into \$OLLAMA_MODELS."
+echo
+
+# Reuse a running supervisor if Felix is already open; otherwise start a
+# temporary ollama serve just for the pull and stop it when done.
+SERVE_PID=""
+if ! curl -fsS "http://\$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
+  echo "Starting Felix's local model server..."
+  "\$OLLAMA_BIN" serve >/tmp/felix-pull-serve-\$\$.log 2>&1 &
+  SERVE_PID=\$!
+  for _ in \$(seq 1 60); do
+    sleep 0.5
+    if curl -fsS "http://\$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
+      break
+    fi
+  done
+  if ! curl -fsS "http://\$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
+    echo "ERROR: ollama server did not start. See /tmp/felix-pull-serve-\$\$.log"
+    [ -n "\$SERVE_PID" ] && kill "\$SERVE_PID" 2>/dev/null
+    exit 1
+  fi
+fi
+
+"\$OLLAMA_BIN" pull "\$MODEL"
+PULL_RC=\$?
+
+if [ -n "\$SERVE_PID" ]; then
+  kill "\$SERVE_PID" 2>/dev/null
+  wait "\$SERVE_PID" 2>/dev/null
+fi
+
+echo
+if [ "\$PULL_RC" -eq 0 ]; then
+  echo "Done. \$MODEL is ready — Felix will use it on next launch."
+else
+  echo "Pull failed (exit \$PULL_RC). You can retry by re-running this script or by"
+  echo "launching Felix and running: felix model pull \$MODEL"
+fi
+echo "(You can close this window.)"
+HELPER_EOF
+    chmod +x "$HELPER"
+    chown "$LOGGED_IN_USER" "$HELPER"
+
     sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT >/dev/null 2>&1 || true
-display dialog "Felix is set to use $LOCAL_MODEL.
-
-To download it (one-time, runs in the background), open Terminal and run:
-
-OLLAMA_HOST=127.0.0.1:18790 OLLAMA_MODELS=~/.felix/ollama/models /Applications/Felix.app/Contents/Resources/bin/ollama pull $LOCAL_MODEL
-
-Felix will use the model as soon as the download completes." buttons {"OK"} default button "OK" with title "Felix Setup"
+tell application "Terminal"
+  activate
+  do script "bash $HELPER; rm -f $HELPER"
+end tell
 OSASCRIPT
 
     exit 0
