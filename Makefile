@@ -17,13 +17,18 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)
 
 ## build-app: compile the menu bar app as a macOS .app bundle
-build-app:
+build-app: ollama-fetch
 	go build -ldflags "$(LDFLAGS)" -o felix-app ./cmd/felix-app
 	rm -rf Felix.app
 	mkdir -p Felix.app/Contents/MacOS Felix.app/Contents/Resources
 	cp felix-app Felix.app/Contents/MacOS/felix-app
 	cp cmd/felix-app/Info.plist Felix.app/Contents/Info.plist
 	cp cmd/felix-app/icon.icns Felix.app/Contents/Resources/icon.icns
+	mkdir -p Felix.app/Contents/Resources/bin
+	@if [ -f bin/ollama-darwin-arm64 ]; then \
+	  cp bin/ollama-darwin-arm64 Felix.app/Contents/Resources/bin/ollama; \
+	  chmod +x Felix.app/Contents/Resources/bin/ollama; \
+	fi
 	rm -f felix-app
 	@echo "Built Felix.app"
 
@@ -200,6 +205,10 @@ installer: build-app
 	mkdir -p installer/payload/Applications
 	mkdir -p installer/payload/usr/local/share/felix/skills
 	cp -r Felix.app installer/payload/Applications/Felix.app
+	@if [ -f bin/ollama-darwin-arm64 ]; then \
+	  mkdir -p installer/payload/Applications/Felix.app/Contents/Resources/bin; \
+	  cp bin/ollama-darwin-arm64 installer/payload/Applications/Felix.app/Contents/Resources/bin/ollama; \
+	fi
 	cp skills/*.md installer/payload/usr/local/share/felix/skills/
 	pkgbuild \
 		--root installer/payload \
@@ -225,6 +234,10 @@ sign: build-app
 	mkdir -p installer/payload/Applications
 	mkdir -p installer/payload/usr/local/share/felix/skills
 	cp -r Felix.app installer/payload/Applications/Felix.app
+	@if [ -f bin/ollama-darwin-arm64 ]; then \
+	  mkdir -p installer/payload/Applications/Felix.app/Contents/Resources/bin; \
+	  cp bin/ollama-darwin-arm64 installer/payload/Applications/Felix.app/Contents/Resources/bin/ollama; \
+	fi
 	cp skills/*.md installer/payload/usr/local/share/felix/skills/
 	pkgbuild \
 		--root installer/payload \
