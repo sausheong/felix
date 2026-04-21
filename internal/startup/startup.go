@@ -67,7 +67,9 @@ func InitProviders(cfg *config.Config) map[string]llm.LLMProvider {
 	for name := range needed {
 		opts := ResolveProviderOpts(name, cfg)
 
-		if opts.APIKey == "" {
+		// "local" is a no-key provider routed at the bundled Ollama supervisor;
+		// don't gate it on APIKey like the cloud providers.
+		if opts.APIKey == "" && name != "local" {
 			slog.Warn("no API key for provider, skipping", "provider", name)
 			continue
 		}
