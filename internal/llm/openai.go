@@ -50,8 +50,21 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		switch m.Role {
 		case "user":
 			if m.ToolCallID != "" {
+				// Tool results: always send text-only as the tool message.
+				// OpenAI vision (and ollama's vision-capable models) only
+				// look at images on user-role messages — image content on a
+				// tool message is silently ignored. So when the tool
+				// returned images, we emit them as a follow-up user message.
+				toolText := m.Content
+				if toolText == "" && len(m.Images) > 0 {
+					toolText = "(image attached in following message)"
+				}
+				msgs = append(msgs, openai.ChatCompletionMessage{
+					Role:       openai.ChatMessageRoleTool,
+					Content:    toolText,
+					ToolCallID: m.ToolCallID,
+				})
 				if len(m.Images) > 0 {
-					// Tool result with images: use multi-content parts
 					var parts []openai.ChatMessagePart
 					for _, img := range m.Images {
 						encoded := base64.StdEncoding.EncodeToString(img.Data)
@@ -64,22 +77,13 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 							},
 						})
 					}
-					if m.Content != "" {
-						parts = append(parts, openai.ChatMessagePart{
-							Type: openai.ChatMessagePartTypeText,
-							Text: m.Content,
-						})
-					}
-					msgs = append(msgs, openai.ChatCompletionMessage{
-						Role:         openai.ChatMessageRoleTool,
-						MultiContent: parts,
-						ToolCallID:   m.ToolCallID,
+					parts = append(parts, openai.ChatMessagePart{
+						Type: openai.ChatMessagePartTypeText,
+						Text: "(Image returned by the previous tool call.)",
 					})
-				} else {
 					msgs = append(msgs, openai.ChatCompletionMessage{
-						Role:       openai.ChatMessageRoleTool,
-						Content:    m.Content,
-						ToolCallID: m.ToolCallID,
+						Role:         openai.ChatMessageRoleUser,
+						MultiContent: parts,
 					})
 				}
 			} else if len(m.Images) > 0 {
