@@ -87,89 +87,24 @@ EOF
     # and they all need to be writable by the installing user.
     chown -R "$LOGGED_IN_USER":staff "$FELIX_DIR"
 
-    # Pull the chosen model. The macOS installer's UI cannot be driven from a
-    # pkgbuild postinstall script (the `installer:` stdout protocol only works
-    # for distribution-XML JS scripts), so we open Terminal where ollama's own
-    # progress bar is visible to the user, and block this script on a sentinel
-    # the helper writes when it's done. Net effect: installer waits, user sees
-    # actual progress.
-    SENTINEL="/tmp/felix-pull-done-$$"
-    HELPER="/tmp/felix-pull-model-$$.sh"
-    cat > "$HELPER" <<HELPER_EOF
-#!/bin/bash
-set -u
-MODEL="$LOCAL_MODEL"
-SENTINEL="$SENTINEL"
-OLLAMA_BIN="/Applications/Felix.app/Contents/Resources/bin/ollama"
-export OLLAMA_HOST="127.0.0.1:18790"
-export OLLAMA_MODELS="\$HOME/.felix/ollama/models"
-mkdir -p "\$OLLAMA_MODELS"
-
-echo "Felix is downloading \$MODEL into \$OLLAMA_MODELS."
-echo "(Installer is waiting — please don't close this window until it finishes.)"
-echo
-
-SERVE_PID=""
-if ! curl -fsS "http://\$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
-  echo "Starting Felix's local model server..."
-  "\$OLLAMA_BIN" serve >/tmp/felix-pull-serve-\$\$.log 2>&1 &
-  SERVE_PID=\$!
-  for _ in \$(seq 1 60); do
-    sleep 0.5
-    if curl -fsS "http://\$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
-      break
-    fi
-  done
-  if ! curl -fsS "http://\$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
-    echo "ERROR: ollama server did not start. See /tmp/felix-pull-serve-\$\$.log"
-    [ -n "\$SERVE_PID" ] && kill "\$SERVE_PID" 2>/dev/null
-    echo failed > "\$SENTINEL"
-    exit 1
-  fi
-fi
-
-"\$OLLAMA_BIN" pull "\$MODEL"
-PULL_RC=\$?
-
-if [ -n "\$SERVE_PID" ]; then
-  kill "\$SERVE_PID" 2>/dev/null
-  wait "\$SERVE_PID" 2>/dev/null
-fi
-
-echo
-if [ "\$PULL_RC" -eq 0 ]; then
-  echo "Done. \$MODEL is ready — Felix will use it on next launch."
-  echo ok > "\$SENTINEL"
-else
-  echo "Pull failed (exit \$PULL_RC). Felix is installed; you can retry later with:"
-  echo "  OLLAMA_HOST=127.0.0.1:18790 OLLAMA_MODELS=~/.felix/ollama/models \\\\"
-  echo "    /Applications/Felix.app/Contents/Resources/bin/ollama pull \$MODEL"
-  echo failed > "\$SENTINEL"
-fi
-echo "(You can close this window.)"
-HELPER_EOF
-    chmod +x "$HELPER"
-    chown "$LOGGED_IN_USER" "$HELPER"
-
-    # Pre-chown so ollama can write under ~/.felix as the user.
+    # Pre-create the models dir with the right ownership so Felix can write
+    # there once the user kicks off the download from Settings later.
     mkdir -p "$FELIX_DIR/ollama/models"
     chown -R "$LOGGED_IN_USER":staff "$FELIX_DIR"
 
+    # Multi-GB downloads don't belong in an installer — remind the user to
+    # pull the model themselves after Felix is open and the supervisor is
+    # listening. The command uses the bundled ollama binary with the env
+    # vars Felix's supervisor sets at runtime.
     sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT >/dev/null 2>&1 || true
-tell application "Terminal"
-  activate
-  do script "bash $HELPER"
-end tell
+display dialog "Felix is configured to use $LOCAL_MODEL but the model isn't downloaded yet.
+
+Open Felix first (so the local model server is running), then open Terminal and run:
+
+OLLAMA_HOST=127.0.0.1:18790 OLLAMA_MODELS=~/.felix/ollama/models /Applications/Felix.app/Contents/Resources/bin/ollama pull $LOCAL_MODEL
+
+Felix will use the model as soon as the download completes." buttons {"OK"} default button "OK" with title "Felix Setup"
 OSASCRIPT
-
-    # Block the postinstall (and therefore the macOS installer UI) until the
-    # helper writes the sentinel. The installer shows "Running scripts" the
-    # whole time; the visible progress is in the Terminal window.
-    while [ ! -f "$SENTINEL" ]; do sleep 2; done
-    rm -f "$SENTINEL" "$HELPER"
-
-    # Make sure everything ollama wrote is owned by the user.
-    chown -R "$LOGGED_IN_USER":staff "$FELIX_DIR"
 
     exit 0
   fi
