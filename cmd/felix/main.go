@@ -29,6 +29,7 @@ import (
 	"github.com/sausheong/felix/internal/cron"
 	"github.com/sausheong/felix/internal/gateway"
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
@@ -1149,6 +1150,41 @@ func runOnboard() error {
 
 	cfg := config.DefaultConfig()
 
+	hasCloudKey := os.Getenv("OPENAI_API_KEY") != "" ||
+		os.Getenv("ANTHROPIC_API_KEY") != "" ||
+		os.Getenv("GEMINI_API_KEY") != ""
+
+	if !hasCloudKey {
+		fmt.Println("No cloud API key found in your environment.")
+		fmt.Println("Pick a local model to download (you can change this later):")
+		fmt.Println()
+		localChoice := choose("", []string{
+			"Llama 4.1 8B Instruct      ~4.7 GB   (recommended — good general agent)",
+			"Qwen 3.5 Coder 7B          ~4.0 GB   (best for code-heavy tasks)",
+			"Gemma 4 E4B (multimodal)   ~5.5 GB   (vision-capable)",
+			"Skip — I'll configure a cloud key later",
+		}, 0)
+		if localChoice != 3 {
+			models := []string{
+				"llama4.1:8b-instruct-q4_K_M",
+				"qwen3.5-coder:7b",
+				"gemma4:e4b",
+			}
+			modelTag := models[localChoice]
+			if err := pullLocalModel(modelTag); err != nil {
+				fmt.Printf("Pull failed: %v\n", err)
+				fmt.Println("Falling back to cloud setup.")
+			} else {
+				cfg.Agents.List[0].Model = "local/" + modelTag
+				cfg.Providers["local"] = config.ProviderConfig{
+					Kind:    "local",
+					BaseURL: "http://127.0.0.1:18790/v1",
+				}
+				return finishOnboard(cfg)
+			}
+		}
+	}
+
 	// Step 1: LLM Provider
 	providerIdx := choose(
 		"Which LLM provider do you want to use?",
@@ -1313,7 +1349,29 @@ func runOnboard() error {
 		fmt.Println("WhatsApp configured. Pair the device from the settings page after `felix start`.")
 	}
 
-	// Step 6: Write config
+	return finishOnboard(cfg)
+}
+
+// finishOnboard writes the assembled config to disk, creates the agent
+// workspace, and prints next-steps guidance. It is shared between the
+// cloud-key and local-first branches of runOnboard.
+func finishOnboard(cfg *config.Config) error {
+	reader := bufio.NewReader(os.Stdin)
+	prompt := func(question, defaultVal string) string {
+		if defaultVal != "" {
+			fmt.Printf("%s [%s]: ", question, defaultVal)
+		} else {
+			fmt.Printf("%s: ", question)
+		}
+		answer, _ := reader.ReadString('\n')
+		answer = strings.TrimSpace(answer)
+		if answer == "" {
+			return defaultVal
+		}
+		return answer
+	}
+
+	// Write config
 	fmt.Println()
 	dataDir := config.DefaultDataDir()
 	configPath := config.DefaultConfigPath()
@@ -1340,7 +1398,7 @@ func runOnboard() error {
 	}
 	fmt.Printf("Config written to %s\n", configPath)
 
-	// Step 6: Create workspace
+	// Create workspace
 	workspace := cfg.Agents.List[0].Workspace
 	os.MkdirAll(workspace, 0o755)
 
@@ -1368,6 +1426,24 @@ func runOnboard() error {
 	}
 
 	return nil
+}
+
+func pullLocalModel(name string) error {
+	inst := local.NewInstaller("http://127.0.0.1:18790")
+	fmt.Printf("Pulling %s...\n", name)
+	var lastDigest string
+	return inst.Pull(context.Background(), name, func(ev local.ProgressEvent) {
+		if ev.Total > 0 && ev.Digest != lastDigest {
+			fmt.Printf("\n%s %s\n", ev.Status, ev.Digest)
+			lastDigest = ev.Digest
+		}
+		if ev.Total > 0 {
+			pct := float64(ev.Completed) / float64(ev.Total) * 100
+			fmt.Printf("\r  %.1f%% (%d / %d MB)", pct, ev.Completed>>20, ev.Total>>20)
+		} else if ev.Status != "" {
+			fmt.Printf("\n%s\n", ev.Status)
+		}
+	})
 }
 
 func doctorCmd() *cobra.Command {
