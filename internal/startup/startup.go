@@ -20,6 +20,7 @@ import (
 	"github.com/sausheong/felix/internal/google"
 	"github.com/sausheong/felix/internal/heartbeat"
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/router"
 	"github.com/sausheong/felix/internal/session"
@@ -176,6 +177,44 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	// Bundled-Ollama supervisor — start before InitProviders so the local
+	// provider's BaseURL reflects the bound port.
+	var localSup *local.Supervisor
+	if cfg.Local.Enabled {
+		exeDir, _ := os.Executable()
+		exeDir = filepath.Dir(exeDir)
+		bin, derr := local.Discover(exeDir)
+		switch {
+		case derr != nil:
+			slog.Warn("bundled ollama not found; local provider disabled", "error", derr)
+		default:
+			modelsDir := cfg.Local.ModelsDir
+			if modelsDir == "" {
+				modelsDir = local.DefaultModelsDir()
+			}
+			_ = os.MkdirAll(modelsDir, 0o755)
+			localSup = local.New(local.Options{
+				BinPath:   bin,
+				ModelsDir: modelsDir,
+				KeepAlive: cfg.Local.KeepAlive,
+			})
+			startCtx, startCancel := context.WithTimeout(context.Background(), 70*time.Second)
+			if err := localSup.Start(startCtx); err != nil {
+				slog.Warn("failed to start bundled ollama; local provider disabled", "error", err)
+				localSup = nil
+			} else {
+				if ierr := local.InjectLocalProvider(configPath, localSup.BoundPort()); ierr != nil {
+					slog.Warn("failed to inject local provider config", "error", ierr)
+				}
+				// Re-load so InitProviders sees the local block.
+				if reloaded, rerr := config.Load(configPath); rerr == nil {
+					cfg.UpdateFrom(reloaded)
+				}
+			}
+			startCancel()
+		}
 	}
 
 	// Ensure data directories exist
@@ -484,6 +523,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		cronScheduler.Stop()
 		for _, hb := range heartbeats {
 			hb.Stop()
+		}
+		if localSup != nil {
+			_ = localSup.Stop()
 		}
 		chanMgr.Stop()
 		if configWatcher != nil {
