@@ -83,7 +83,7 @@ RELEASE_DIR := dist
 PLATFORMS   := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64
 
 ## release: commit, push, create GitHub release, and build binaries (usage: make release TAG=v0.1.4)
-release:
+release: ollama-fetch
 ifndef TAG
 	$(error TAG is required. Usage: make release TAG=v0.1.4)
 endif
@@ -121,6 +121,18 @@ endif
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
 			go build -trimpath -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)" \
 			-o $(RELEASE_DIR)/$$name/$(BINARY)$$ext $(CMD) || exit 1; \
+		case "$$os/$$arch" in \
+		  darwin/amd64)  oll="ollama-darwin-amd64";; \
+		  darwin/arm64)  oll="ollama-darwin-arm64";; \
+		  linux/amd64)   oll="ollama-linux-amd64";; \
+		  linux/arm64)   oll="ollama-linux-arm64";; \
+		  windows/amd64) oll="ollama-windows-amd64.exe";; \
+		esac; \
+		if [ -f "bin/$$oll" ]; then \
+		  mkdir -p $(RELEASE_DIR)/$$name/bin; \
+		  ext2=""; if [ "$$os" = "windows" ]; then ext2=".exe"; fi; \
+		  cp bin/$$oll $(RELEASE_DIR)/$$name/bin/ollama$$ext2; \
+		fi; \
 		(cd $(RELEASE_DIR) && zip -rq $$name.zip $$name); \
 		rm -rf $(RELEASE_DIR)/$$name; \
 	done
@@ -280,23 +292,47 @@ install:
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
 
-OLLAMA_VERSION ?= 0.5.7
+OLLAMA_VERSION ?= 0.21.0
+OLLAMA_BASE_URL := https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)
 
-## ollama-fetch: download platform Ollama binaries into bin/
+## ollama-fetch: download and extract platform Ollama binaries into bin/
+##
+## Ollama v0.6+ ships archives (not raw binaries). Layouts differ per platform:
+##   darwin (universal):  ollama-darwin.tgz      → ollama (FLAT)
+##   linux/amd64,arm64:   ollama-linux-*.tar.zst → bin/ollama (NESTED, requires zstd)
+##   windows/amd64:       ollama-windows-amd64.zip → ollama.exe (FLAT)
+##
+## NOTE: We extract only the bare binary. The Linux and Windows archives also
+## ship lib/ollama/ runtime libraries (CUDA, ROCm, etc.) used for GPU support;
+## the bundled ollama in Felix releases will fall back to CPU-only inference.
+## For full GPU support, users should install ollama system-wide.
+##
+## The macOS darwin binary is universal2 (amd64+arm64); we materialize it under
+## both names so per-platform release zips can pick it up uniformly.
 ollama-fetch:
 	mkdir -p bin
-	@for plat in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do \
-		os=$${plat%%/*}; arch=$${plat##*/}; \
-		case "$$os/$$arch" in \
-		  darwin/amd64)  url="https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)/ollama-darwin"; out="ollama-darwin-amd64";; \
-		  darwin/arm64)  url="https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)/ollama-darwin"; out="ollama-darwin-arm64";; \
-		  linux/amd64)   url="https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)/ollama-linux-amd64"; out="ollama-linux-amd64";; \
-		  linux/arm64)   url="https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)/ollama-linux-arm64"; out="ollama-linux-arm64";; \
-		  windows/amd64) url="https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)/ollama-windows-amd64.exe"; out="ollama-windows-amd64.exe";; \
-		esac; \
-		echo "Fetching $$out from $$url..."; \
-		curl -L -o bin/$$out "$$url" || exit 1; \
-		chmod +x bin/$$out 2>/dev/null || true; \
-	done
+	@tmp=$$(mktemp -d) && trap "rm -rf $$tmp" EXIT; \
+	echo "Fetching ollama-darwin.tgz..."; \
+	curl -fL -o $$tmp/ollama-darwin.tgz "$(OLLAMA_BASE_URL)/ollama-darwin.tgz" || exit 1; \
+	tar -xzf $$tmp/ollama-darwin.tgz -C $$tmp ollama; \
+	cp $$tmp/ollama bin/ollama-darwin-amd64; \
+	cp $$tmp/ollama bin/ollama-darwin-arm64; \
+	chmod +x bin/ollama-darwin-amd64 bin/ollama-darwin-arm64; \
+	rm -f $$tmp/ollama; \
+	for arch in amd64 arm64; do \
+	  echo "Fetching ollama-linux-$$arch.tar.zst..."; \
+	  curl -fL -o $$tmp/ollama-linux-$$arch.tar.zst "$(OLLAMA_BASE_URL)/ollama-linux-$$arch.tar.zst" || exit 1; \
+	  if ! command -v zstd >/dev/null 2>&1; then \
+	    echo "ERROR: zstd not found. Install with: brew install zstd"; exit 1; \
+	  fi; \
+	  zstd -d -c $$tmp/ollama-linux-$$arch.tar.zst | tar -x -C $$tmp bin/ollama; \
+	  cp $$tmp/bin/ollama bin/ollama-linux-$$arch; \
+	  chmod +x bin/ollama-linux-$$arch; \
+	  rm -rf $$tmp/bin; \
+	done; \
+	echo "Fetching ollama-windows-amd64.zip..."; \
+	curl -fL -o $$tmp/ollama-windows-amd64.zip "$(OLLAMA_BASE_URL)/ollama-windows-amd64.zip" || exit 1; \
+	unzip -o -j -d $$tmp $$tmp/ollama-windows-amd64.zip ollama.exe >/dev/null; \
+	cp $$tmp/ollama.exe bin/ollama-windows-amd64.exe
 	cd bin && shasum -a 256 ollama-* > ../OLLAMA-SHA256SUMS
 	@echo "Pinned Ollama binaries in bin/, checksums in OLLAMA-SHA256SUMS"
