@@ -42,6 +42,25 @@ if [ ! -f "$CONFIG" ]; then
   # Bundled-Ollama path — skip the API-key prompt entirely.
   BUNDLED_OLLAMA="/Applications/Felix.app/Contents/Resources/bin/ollama"
   if [ -x "$BUNDLED_OLLAMA" ]; then
+
+    # Ask which local model to configure (Felix downloads it later).
+    LOCAL_PICK=$(sudo -u "$LOGGED_IN_USER" osascript <<'OSASCRIPT'
+set choices to {"gemma4:latest (~9.6 GB, recommended)", "qwen3.5:9b (~5 GB)"}
+set picked to choose from list choices ¬
+  with prompt "Pick a local model for Felix to use." ¬
+  default items {"gemma4:latest (~9.6 GB, recommended)"} ¬
+  without multiple selections allowed and empty selection allowed
+if picked is false then return "gemma4:latest"
+set choice to item 1 of picked
+if choice starts with "qwen" then
+  return "qwen3.5:9b"
+else
+  return "gemma4:latest"
+end if
+OSASCRIPT
+    )
+    LOCAL_MODEL="${LOCAL_PICK:-gemma4:latest}"
+
     cat > "$CONFIG" <<EOF
 {
   "agents": {
@@ -49,7 +68,7 @@ if [ ! -f "$CONFIG" ]; then
       "id": "default",
       "name": "Assistant",
       "workspace": "$FELIX_DIR/workspace-default",
-      "model": "local/qwen3.5:9b",
+      "model": "local/$LOCAL_MODEL",
       "sandbox": "none",
       "tools": { "allow": ["read_file","write_file","edit_file","bash","web_fetch","web_search","browser","send_message","cron"] }
     }]
@@ -62,8 +81,24 @@ if [ ! -f "$CONFIG" ]; then
   }
 }
 EOF
-    chown "$LOGGED_IN_USER":staff "$CONFIG"
     chmod 600 "$CONFIG"
+    # Recursively own the whole Felix data dir, not just the config — Felix
+    # creates more files at runtime (encryption key, ollama models, sessions)
+    # and they all need to be writable by the installing user.
+    chown -R "$LOGGED_IN_USER":staff "$FELIX_DIR"
+
+    # Tell the user how to download the model. Multi-GB pull doesn't belong
+    # in the installer, so we just hand them the one-liner.
+    sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT >/dev/null 2>&1 || true
+display dialog "Felix is set to use $LOCAL_MODEL.
+
+To download it (one-time, runs in the background), open Terminal and run:
+
+OLLAMA_HOST=127.0.0.1:18790 OLLAMA_MODELS=~/.felix/ollama/models /Applications/Felix.app/Contents/Resources/bin/ollama pull $LOCAL_MODEL
+
+Felix will use the model as soon as the download completes." buttons {"OK"} default button "OK" with title "Felix Setup"
+OSASCRIPT
+
     exit 0
   fi
 
