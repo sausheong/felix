@@ -7,10 +7,76 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 )
+
+// bashAbsPathRE matches absolute-path tokens in a shell command:
+//   - inside single quotes: '/...'
+//   - inside double quotes: "/..."
+//   - bare with optional backslash-escaped chars: /... up to unescaped whitespace
+//
+// The three alternatives intentionally use distinct capture groups so the
+// caller can tell which form matched and re-quote correctly.
+var bashAbsPathRE = regexp.MustCompile(`'(/[^']*)'|"(/[^"]*)"|(/(?:[^\s\\]|\\.)+)`)
+
+// resolveBashCommandPaths scans cmd for absolute-path tokens and substitutes
+// any that don't exist on disk with their Unicode-whitespace-normalized
+// counterparts. Returns the rewritten command and a list of [original, resolved]
+// substitution pairs that were made (empty if none).
+//
+// Substitution uses resolveExistingPathStrict, which only touches an entry
+// when it actually contains Unicode whitespace — preventing wrong substitutions
+// on create-style commands like `mkdir /tmp/newdir`.
+func resolveBashCommandPaths(cmd string) (string, [][2]string) {
+	var subs [][2]string
+	out := bashAbsPathRE.ReplaceAllStringFunc(cmd, func(match string) string {
+		groups := bashAbsPathRE.FindStringSubmatch(match)
+		var raw string
+		switch {
+		case groups[1] != "":
+			raw = groups[1]
+		case groups[2] != "":
+			raw = groups[2]
+		case groups[3] != "":
+			raw = unescapeBashToken(groups[3])
+		}
+		if raw == "" {
+			return match
+		}
+		resolved := resolveExistingPathStrict(raw)
+		if resolved == raw {
+			return match
+		}
+		subs = append(subs, [2]string{raw, resolved})
+		return shellSingleQuote(resolved)
+	})
+	return out, subs
+}
+
+// shellSingleQuote wraps s in single quotes, escaping any embedded single
+// quotes via the standard '\'' dance.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// unescapeBashToken removes single-character backslash escapes so the
+// resulting string can be stat()'d against the filesystem.
+func unescapeBashToken(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			b.WriteByte(s[i+1])
+			i++
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
 
 const defaultBashTimeout = 120 * time.Second
 
@@ -108,6 +174,13 @@ func (t *BashTool) Execute(ctx context.Context, input json.RawMessage) (ToolResu
 		return ToolResult{Error: "command is required"}, nil
 	}
 
+	// Recover from Unicode-whitespace path mismatches the LLM may emit
+	// (e.g. ASCII spaces in a filename that on disk uses NBSP). Substitution
+	// only fires when the on-disk entry actually contains Unicode whitespace,
+	// so create-style commands like `mkdir /tmp/newdir` are unaffected.
+	resolvedCmd, pathSubs := resolveBashCommandPaths(in.Command)
+	in.Command = resolvedCmd
+
 	// Enforce exec policy
 	if t.ExecPolicy != nil {
 		switch t.ExecPolicy.Level {
@@ -162,6 +235,8 @@ func (t *BashTool) Execute(ctx context.Context, input json.RawMessage) (ToolResu
 	output := stdout.String()
 	errOutput := stderr.String()
 
+	notice := pathSubsNotice(pathSubs)
+
 	if err != nil {
 		msg := err.Error()
 		if ctx.Err() == context.DeadlineExceeded {
@@ -171,7 +246,7 @@ func (t *BashTool) Execute(ctx context.Context, input json.RawMessage) (ToolResu
 			msg = errOutput
 		}
 		return ToolResult{
-			Output: output,
+			Output: notice + output,
 			Error:  msg,
 		}, nil
 	}
@@ -180,5 +255,20 @@ func (t *BashTool) Execute(ctx context.Context, input json.RawMessage) (ToolResu
 		output += "\nSTDERR:\n" + errOutput
 	}
 
-	return ToolResult{Output: output}, nil
+	return ToolResult{Output: notice + output}, nil
+}
+
+// pathSubsNotice formats a one-block notice listing any path substitutions
+// the bash tool made before exec, so the LLM can see what changed and why.
+func pathSubsNotice(subs [][2]string) string {
+	if len(subs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[felix] adjusted paths in command (Unicode-whitespace recovery):\n")
+	for _, s := range subs {
+		b.WriteString(fmt.Sprintf("  %q -> %q\n", s[0], s[1]))
+	}
+	b.WriteString("---\n")
+	return b.String()
 }

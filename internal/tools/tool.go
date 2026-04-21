@@ -56,6 +56,57 @@ func resolveExistingPath(p string) string {
 	return p
 }
 
+// resolveExistingPathStrict is like resolveExistingPath but the dir-scan
+// fallback only fires when the matched on-disk entry actually contains a
+// non-ASCII whitespace character. Used by the bash tool, where freeform
+// commands include both read-paths (which we want to recover) and create-
+// paths like `mkdir /tmp/newdir` (which must NOT be silently substituted
+// with a similarly-named pre-existing entry).
+func resolveExistingPathStrict(p string) string {
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if alt := sanitizeLLMText(p); alt != p {
+		if _, err := os.Stat(alt); err == nil {
+			return alt
+		}
+	}
+	dir, base := filepath.Split(p)
+	if dir == "" {
+		dir = "."
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return p
+	}
+	target := sanitizeLLMText(base)
+	var matches []string
+	for _, e := range entries {
+		if sanitizeLLMText(e.Name()) == target && hasUnicodeWhitespace(e.Name()) {
+			matches = append(matches, e.Name())
+		}
+	}
+	if len(matches) == 1 {
+		return filepath.Join(dir, matches[0])
+	}
+	return p
+}
+
+// hasUnicodeWhitespace reports whether s contains any of the whitespace or
+// invisible characters that sanitizeLLMText normalizes away.
+func hasUnicodeWhitespace(s string) bool {
+	for _, r := range s {
+		switch r {
+		case '\u200B', '\u200C', '\u200D', '\u2060', '\uFEFF', '\u2028', '\u2029':
+			return true
+		}
+		if r != ' ' && r != '\t' && r != '\n' && r != '\r' && unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
+}
+
 // sanitizeLLMText normalizes Unicode whitespace lookalikes that small or
 // quantized LLMs sometimes emit in place of ASCII space and newline, and
 // strips zero-width characters that have no shell or filesystem meaning.
