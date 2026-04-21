@@ -87,91 +87,88 @@ EOF
     # and they all need to be writable by the installing user.
     chown -R "$LOGGED_IN_USER":staff "$FELIX_DIR"
 
-    # Pull the chosen model inline, blocking the installer until it finishes.
-    # Progress is reported to the macOS installer UI via the documented stdout
-    # protocol: lines starting with "installer:" are interpreted as progress
-    # commands, not echoed. We measure progress by the size of the blobs
-    # directory because ollama's pull output is TUI-formatted and awkward to
-    # parse line-by-line.
-    case "$LOCAL_MODEL" in
-      gemma4:latest) TARGET_BYTES=10307921510 ;;  # ~9.6 GB
-      qwen3.5:9b)    TARGET_BYTES=5368709120  ;;  # ~5.0 GB
-      *)             TARGET_BYTES=0           ;;  # unknown — no % updates
-    esac
-    BLOBS_DIR="$FELIX_DIR/ollama/models/blobs"
-    OLLAMA_BIN="/Applications/Felix.app/Contents/Resources/bin/ollama"
-    SERVE_LOG="/tmp/felix-pull-serve-$$.log"
-    PULL_LOG="/tmp/felix-pull-pull-$$.log"
-    export OLLAMA_HOST="127.0.0.1:18790"
-    export OLLAMA_MODELS="$FELIX_DIR/ollama/models"
-    mkdir -p "$OLLAMA_MODELS"
-    chown -R "$LOGGED_IN_USER":staff "$FELIX_DIR/ollama"
+    # Pull the chosen model. The macOS installer's UI cannot be driven from a
+    # pkgbuild postinstall script (the `installer:` stdout protocol only works
+    # for distribution-XML JS scripts), so we open Terminal where ollama's own
+    # progress bar is visible to the user, and block this script on a sentinel
+    # the helper writes when it's done. Net effect: installer waits, user sees
+    # actual progress.
+    SENTINEL="/tmp/felix-pull-done-$$"
+    HELPER="/tmp/felix-pull-model-$$.sh"
+    cat > "$HELPER" <<HELPER_EOF
+#!/bin/bash
+set -u
+MODEL="$LOCAL_MODEL"
+SENTINEL="$SENTINEL"
+OLLAMA_BIN="/Applications/Felix.app/Contents/Resources/bin/ollama"
+export OLLAMA_HOST="127.0.0.1:18790"
+export OLLAMA_MODELS="\$HOME/.felix/ollama/models"
+mkdir -p "\$OLLAMA_MODELS"
 
-    echo "installer:PHASE:Preparing local model server"
+echo "Felix is downloading \$MODEL into \$OLLAMA_MODELS."
+echo "(Installer is waiting — please don't close this window until it finishes.)"
+echo
 
-    SERVE_PID=""
-    if ! curl -fsS "http://$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
-      sudo -u "$LOGGED_IN_USER" -E "$OLLAMA_BIN" serve >"$SERVE_LOG" 2>&1 &
-      SERVE_PID=$!
-      READY=0
-      for _ in $(seq 1 60); do
-        sleep 0.5
-        if curl -fsS "http://$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
-          READY=1; break
-        fi
-      done
-      if [ "$READY" != "1" ]; then
-        echo "installer:STATUS:ollama server failed to start (see $SERVE_LOG)"
-        [ -n "$SERVE_PID" ] && kill "$SERVE_PID" 2>/dev/null || true
-        # Fall through — Felix.app is installed; user can pull later.
-        exit 0
-      fi
+SERVE_PID=""
+if ! curl -fsS "http://\$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
+  echo "Starting Felix's local model server..."
+  "\$OLLAMA_BIN" serve >/tmp/felix-pull-serve-\$\$.log 2>&1 &
+  SERVE_PID=\$!
+  for _ in \$(seq 1 60); do
+    sleep 0.5
+    if curl -fsS "http://\$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
+      break
     fi
+  done
+  if ! curl -fsS "http://\$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
+    echo "ERROR: ollama server did not start. See /tmp/felix-pull-serve-\$\$.log"
+    [ -n "\$SERVE_PID" ] && kill "\$SERVE_PID" 2>/dev/null
+    echo failed > "\$SENTINEL"
+    exit 1
+  fi
+fi
 
-    echo "installer:PHASE:Downloading $LOCAL_MODEL"
-    sudo -u "$LOGGED_IN_USER" -E "$OLLAMA_BIN" pull "$LOCAL_MODEL" >"$PULL_LOG" 2>&1 &
-    PULL_PID=$!
+"\$OLLAMA_BIN" pull "\$MODEL"
+PULL_RC=\$?
 
-    while kill -0 "$PULL_PID" 2>/dev/null; do
-      if [ "$TARGET_BYTES" -gt 0 ] && [ -d "$BLOBS_DIR" ]; then
-        CURRENT_KB=$(du -sk "$BLOBS_DIR" 2>/dev/null | awk '{print $1+0}')
-        CURRENT_BYTES=$((CURRENT_KB * 1024))
-        PCT=$((CURRENT_BYTES * 100 / TARGET_BYTES))
-        [ "$PCT" -gt 99 ] && PCT=99
-        MB=$((CURRENT_BYTES / 1048576))
-        TARGET_MB=$((TARGET_BYTES / 1048576))
-        echo "installer:%${PCT}.0"
-        echo "installer:STATUS:$LOCAL_MODEL — ${MB} MB of ${TARGET_MB} MB"
-      else
-        echo "installer:STATUS:Downloading $LOCAL_MODEL..."
-      fi
-      sleep 2
-    done
+if [ -n "\$SERVE_PID" ]; then
+  kill "\$SERVE_PID" 2>/dev/null
+  wait "\$SERVE_PID" 2>/dev/null
+fi
 
-    wait "$PULL_PID" 2>/dev/null || true
-    PULL_RC=$?
+echo
+if [ "\$PULL_RC" -eq 0 ]; then
+  echo "Done. \$MODEL is ready — Felix will use it on next launch."
+  echo ok > "\$SENTINEL"
+else
+  echo "Pull failed (exit \$PULL_RC). Felix is installed; you can retry later with:"
+  echo "  OLLAMA_HOST=127.0.0.1:18790 OLLAMA_MODELS=~/.felix/ollama/models \\\\"
+  echo "    /Applications/Felix.app/Contents/Resources/bin/ollama pull \$MODEL"
+  echo failed > "\$SENTINEL"
+fi
+echo "(You can close this window.)"
+HELPER_EOF
+    chmod +x "$HELPER"
+    chown "$LOGGED_IN_USER" "$HELPER"
 
-    if [ -n "$SERVE_PID" ]; then
-      kill "$SERVE_PID" 2>/dev/null || true
-      wait "$SERVE_PID" 2>/dev/null || true
-    fi
+    # Pre-chown so ollama can write under ~/.felix as the user.
+    mkdir -p "$FELIX_DIR/ollama/models"
+    chown -R "$LOGGED_IN_USER":staff "$FELIX_DIR"
 
-    if [ "$PULL_RC" -eq 0 ]; then
-      echo "installer:%100.0"
-      echo "installer:STATUS:$LOCAL_MODEL ready"
-      rm -f "$PULL_LOG" "$SERVE_LOG"
-    else
-      echo "installer:STATUS:Pull failed — Felix is installed; retry from the model picker"
-      sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT >/dev/null 2>&1 || true
-display dialog "Felix is installed but the model download failed (exit $PULL_RC).
-
-Check $PULL_LOG and retry by reopening the installer or by running:
-OLLAMA_HOST=127.0.0.1:18790 OLLAMA_MODELS=~/.felix/ollama/models /Applications/Felix.app/Contents/Resources/bin/ollama pull $LOCAL_MODEL" buttons {"OK"} default button "OK" with title "Felix Setup" with icon caution
+    sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT >/dev/null 2>&1 || true
+tell application "Terminal"
+  activate
+  do script "bash $HELPER"
+end tell
 OSASCRIPT
-    fi
 
-    # Re-chown after ollama wrote the blobs (sudo -u should have kept ownership,
-    # but be defensive).
+    # Block the postinstall (and therefore the macOS installer UI) until the
+    # helper writes the sentinel. The installer shows "Running scripts" the
+    # whole time; the visible progress is in the Terminal window.
+    while [ ! -f "$SENTINEL" ]; do sleep 2; done
+    rm -f "$SENTINEL" "$HELPER"
+
+    # Make sure everything ollama wrote is owned by the user.
     chown -R "$LOGGED_IN_USER":staff "$FELIX_DIR"
 
     exit 0
