@@ -1703,3 +1703,56 @@ All Felix state lives in `~/.felix/` (on Windows: `C:\Users\<you>\.felix\`):
 ```
 
 No external database is required. Everything is files on disk.
+
+## Using the bundled local model
+
+Felix ships with a bundled Ollama runtime so you can run agents fully
+offline. If you launch Felix with no `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+or `GEMINI_API_KEY` set, the onboarding wizard offers three curated local
+models:
+
+| Choice | Size | Best for |
+|---|---|---|
+| Llama 4.1 8B Instruct | ~4.7 GB | General agent tasks (recommended default) |
+| Qwen 3.5 Coder 7B | ~4.0 GB | Code-heavy tool use |
+| Gemma 4 E4B (multimodal) | ~5.5 GB | Tasks involving images |
+
+After picking a model, Felix downloads it via the bundled Ollama. The
+download runs once; subsequent starts reuse the cached weights in
+`~/.felix/ollama/models/`.
+
+### Switching between local and cloud
+
+The agent's model is set in `~/.felix/felix.json5` under
+`agents.list[*].model`. Use the `local/` prefix for the bundled runtime,
+or any of the cloud prefixes:
+
+```json5
+{
+  "agents": {
+    "list": [
+      { "id": "default", "model": "local/llama4.1:8b-instruct-q4_K_M" },
+      { "id": "online",  "model": "openai/gpt-5.4" }
+    ]
+  }
+}
+```
+
+### Adding more local models
+
+Any model in the Ollama registry can be pulled into Felix's bundled
+runtime:
+
+```bash
+felix model pull qwen2.5:7b-instruct     # add another model
+felix model list                         # see what's installed
+felix model status                       # check the supervisor
+felix model rm gemma4:e4b                # free disk space
+```
+
+### Coexistence with system Ollama
+
+Felix's bundled Ollama runs on `127.0.0.1:18790` (or the next free port
+in the range `:18790–:18799`) — it does **not** touch a system Ollama on
+the default `:11434`. If you already use Ollama for other tools, both
+keep running side by side.

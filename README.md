@@ -77,6 +77,24 @@ felix-app.exe               # Windows
 ./felix doctor
 ```
 
+### Bundled local LLM (no API key needed)
+
+Felix ships with a bundled Ollama binary so you can run agents offline with
+no API key. On first run, the wizard offers a curated list of local models;
+pick one and Felix will download it (~4–6 GB depending on model).
+
+To pull additional models later:
+
+```bash
+felix model pull qwen2.5:7b-instruct
+felix model list
+felix model status
+```
+
+The bundled Ollama runs as a child of Felix on `127.0.0.1:18790` (next
+free port in `:18790–:18799`) and shuts down when Felix exits. It does
+not interfere with any system Ollama you may have on `:11434`.
+
 ---
 
 ## CLI Commands
