@@ -4,12 +4,83 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/sausheong/felix/internal/llm"
 )
+
+// resolveExistingPath returns a path that actually exists on disk, recovering
+// from Unicode-whitespace mismatches between what the LLM supplies and what
+// the filesystem holds. Resolution order:
+//  1. The path as given.
+//  2. The Unicode-sanitized variant (NBSP / narrow-NBSP / ideographic /
+//     en/em/figure-space → ASCII space; zero-width chars stripped).
+//  3. The parent directory is scanned and an entry whose own sanitized name
+//     equals the sanitized basename of the requested path is used — but only
+//     if the match is unambiguous.
+//
+// If nothing resolves, p is returned so the caller's error message reflects
+// what the LLM actually supplied. Never used for write paths — writing to a
+// "resolved" path could create files in unintended locations.
+func resolveExistingPath(p string) string {
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if alt := sanitizeLLMText(p); alt != p {
+		if _, err := os.Stat(alt); err == nil {
+			return alt
+		}
+	}
+	dir, base := filepath.Split(p)
+	if dir == "" {
+		dir = "."
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return p
+	}
+	target := sanitizeLLMText(base)
+	var matches []string
+	for _, e := range entries {
+		if sanitizeLLMText(e.Name()) == target {
+			matches = append(matches, e.Name())
+		}
+	}
+	if len(matches) == 1 {
+		return filepath.Join(dir, matches[0])
+	}
+	return p
+}
+
+// sanitizeLLMText normalizes Unicode whitespace lookalikes that small or
+// quantized LLMs sometimes emit in place of ASCII space and newline, and
+// strips zero-width characters that have no shell or filesystem meaning.
+// Used as a fallback by resolveExistingPath, not applied eagerly to LLM
+// input (eager sanitization breaks the case where a file genuinely
+// contains NBSP in its name).
+func sanitizeLLMText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\u200B', '\u200C', '\u200D', '\u2060', '\uFEFF':
+			continue // zero-width / BOM: drop
+		case '\u2028', '\u2029':
+			b.WriteByte('\n') // line / paragraph separator → newline
+		default:
+			if r != ' ' && r != '\t' && r != '\n' && r != '\r' && unicode.IsSpace(r) {
+				b.WriteByte(' ') // any other Unicode whitespace → ASCII space
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // Tool is the interface that all Felix tools must implement.
 type Tool interface {

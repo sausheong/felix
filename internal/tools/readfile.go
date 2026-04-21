@@ -77,6 +77,8 @@ func (t *ReadFileTool) Execute(_ context.Context, input json.RawMessage) (ToolRe
 		return ToolResult{Error: "path is required"}, nil
 	}
 
+	in.Path = resolveExistingPath(in.Path)
+
 	if t.WorkDir != "" {
 		if err := validatePathInWorkDir(in.Path, t.WorkDir); err != nil {
 			return ToolResult{Error: err.Error()}, nil
