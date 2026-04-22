@@ -30,7 +30,6 @@ import (
 	"github.com/sausheong/felix/internal/cron"
 	"github.com/sausheong/felix/internal/gateway"
 	"github.com/sausheong/felix/internal/llm"
-	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
@@ -1483,24 +1482,6 @@ func finishOnboard(cfg *config.Config) error {
 	}
 
 	return nil
-}
-
-func pullLocalModel(name string) error {
-	inst := local.NewInstaller("http://127.0.0.1:18790")
-	fmt.Printf("Pulling %s...\n", name)
-	var lastDigest string
-	return inst.Pull(context.Background(), name, func(ev local.ProgressEvent) {
-		if ev.Total > 0 && ev.Digest != lastDigest {
-			fmt.Printf("\n%s %s\n", ev.Status, ev.Digest)
-			lastDigest = ev.Digest
-		}
-		if ev.Total > 0 {
-			pct := float64(ev.Completed) / float64(ev.Total) * 100
-			fmt.Printf("\r  %.1f%% (%d / %d MB)", pct, ev.Completed>>20, ev.Total>>20)
-		} else if ev.Status != "" {
-			fmt.Printf("\n%s\n", ev.Status)
-		}
-	})
 }
 
 func doctorCmd() *cobra.Command {
