@@ -7,6 +7,7 @@ import (
 
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/felix/internal/agent"
+	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
@@ -113,6 +114,7 @@ func (r *AgentRunnerImpl) RunAgent(ctx context.Context, agentID, prompt string) 
 		Skills:       r.skills,
 		Memory:       r.memory,
 		Cortex:       r.cortex,
+		Compaction:   compaction.BuildManager(r.config),
 	}
 
 	slog.Info("delegating to agent", "agent", agentID, "prompt_len", len(prompt))

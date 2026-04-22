@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/felix/internal/agent"
+	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
@@ -304,6 +305,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	cx := h.cortex
 	sk := h.skills
 	mem := h.memory
+	cfg := h.config
 	h.mu.RUnlock()
 
 	rt := &agent.Runtime{
@@ -319,6 +321,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		Skills:       sk,
 		Memory:       mem,
 		Cortex:       cx,
+		Compaction:   compaction.BuildManager(cfg),
 	}
 
 	runCtx, runCancel := context.WithCancel(context.Background())

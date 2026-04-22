@@ -211,46 +211,6 @@ func runStart(configPath string) error {
 	return nil
 }
 
-// buildCompactionManager constructs the compaction Manager from config + the
-// bundled local Ollama. Returns nil when compaction is disabled or no local
-// provider is configured — callers must be safe with a nil manager.
-func buildCompactionManager(cfg *config.Config) *compaction.Manager {
-	c := cfg.Agents.Defaults.Compaction
-	if !c.Enabled {
-		return nil
-	}
-	provider, model := llm.ParseProviderModel(c.Model)
-	if provider == "" {
-		provider = "local"
-	}
-	pcfg, ok := cfg.Providers[provider]
-	if !ok || pcfg.BaseURL == "" {
-		slog.Warn("compaction disabled: provider not configured", "provider", provider)
-		return nil
-	}
-	llmProv, err := llm.NewProvider(provider, llm.ProviderOptions{
-		APIKey:  pcfg.APIKey,
-		BaseURL: pcfg.BaseURL,
-		Kind:    pcfg.Kind,
-	})
-	if err != nil {
-		slog.Warn("compaction disabled: failed to build provider", "error", err)
-		return nil
-	}
-	timeout := time.Duration(c.TimeoutSec) * time.Second
-	if timeout == 0 {
-		timeout = 60 * time.Second
-	}
-	return &compaction.Manager{
-		Summarizer: &compaction.Summarizer{
-			Provider: llmProv,
-			Model:    model,
-			Timeout:  timeout,
-		},
-		PreserveTurns: c.PreserveTurns,
-	}
-}
-
 func runChat(agentID, configPath, modelOverride string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -434,7 +394,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 				Skills:       skillLoader,
 				Memory:       memMgr,
 				Cortex:       cx,
-				Compaction:   buildCompactionManager(cfg),
+				Compaction:   compaction.BuildManager(cfg),
 			}
 			return cronRT.RunSync(ctx, prompt, nil)
 		}
@@ -497,7 +457,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		Skills:       skillLoader,
 		Memory:       memMgr,
 		Cortex:       cx,
-		Compaction:   buildCompactionManager(cfg),
+		Compaction:   compaction.BuildManager(cfg),
 	}
 
 	// Track current session key for switching

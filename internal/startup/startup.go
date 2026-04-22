@@ -13,6 +13,7 @@ import (
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/felix/internal/agent"
 	"github.com/sausheong/felix/internal/channel"
+	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/config"
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
 	"github.com/sausheong/felix/internal/cron"
@@ -401,6 +402,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Skills:       skillLoader,
 					Memory:       memMgr,
 					Cortex:       cx,
+					Compaction:   compaction.BuildManager(cfg),
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -445,6 +447,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Skills:       skillLoader,
 					Memory:       memMgr,
 					Cortex:       cx,
+					Compaction:   compaction.BuildManager(cfg),
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -486,6 +489,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Skills:       skillLoader,
 					Memory:       memMgr,
 					Cortex:       cx,
+					Compaction:   compaction.BuildManager(cfg),
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}

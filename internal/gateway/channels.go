@@ -12,6 +12,7 @@ import (
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/felix/internal/agent"
 	"github.com/sausheong/felix/internal/channel"
+	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
@@ -364,6 +365,7 @@ func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel,
 		Skills:       cm.skills,
 		Memory:       cm.memory,
 		Cortex:       cm.cortex,
+		Compaction:   compaction.BuildManager(cm.config),
 	}
 
 	slog.Info("processing message",
