@@ -619,6 +619,40 @@ func runChat(agentID, configPath, modelOverride string) error {
 			continue
 		}
 
+		// Handle /compact command — manual compaction with optional focus instructions.
+		if strings.HasPrefix(input, "/compact") {
+			if rt.Compaction == nil {
+				fmt.Println("\033[33mCompaction is not enabled in config.\033[0m")
+				continue
+			}
+			instructions := strings.TrimSpace(strings.TrimPrefix(input, "/compact"))
+			fmt.Println("\033[90m🧹 Compacting…\033[0m")
+			res, err := rt.Compaction.MaybeCompact(ctx, sess, compaction.ReasonManual, instructions)
+			if err != nil {
+				fmt.Printf("\033[31mCompaction failed: %v\033[0m\n", err)
+				continue
+			}
+			if !res.Compacted {
+				switch res.Skipped {
+				case "too_short":
+					fmt.Println("\033[90mSession too short to compact.\033[0m")
+				case "ollama_down", "summarizer_error":
+					fmt.Println("\033[33mCompaction skipped: bundled Ollama not reachable. Start it in Settings → Models.\033[0m")
+				case "empty_summary":
+					fmt.Println("\033[33mCompaction skipped: model returned no summary.\033[0m")
+				case "timeout":
+					fmt.Println("\033[33mCompaction skipped: timed out.\033[0m")
+				case "cancelled":
+					fmt.Println("\033[33mCompaction cancelled.\033[0m")
+				default:
+					fmt.Printf("\033[33mCompaction skipped: %s\033[0m\n", res.Skipped)
+				}
+				continue
+			}
+			fmt.Printf("\033[90m🧹 Compacted %d turns in %dms\033[0m\n", res.TurnsCompacted, res.DurationMs)
+			continue
+		}
+
 		// Handle /screenshot command
 		if strings.HasPrefix(input, "/screenshot") {
 			prompt := strings.TrimSpace(strings.TrimPrefix(input, "/screenshot"))
