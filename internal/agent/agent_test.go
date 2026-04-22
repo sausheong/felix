@@ -417,3 +417,43 @@ func (t *mockTool) Parameters() json.RawMessage      { return json.RawMessage(`{
 func (t *mockTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{Output: t.output}, nil
 }
+
+func TestAssembleMessagesEntryTypeCompaction(t *testing.T) {
+	history := []session.SessionEntry{
+		session.CompactionEntry("we discussed feature X and chose option B", "", "", "m", 0, 0, 4),
+		session.UserMessageEntry("now what about feature Y?"),
+	}
+	msgs := assembleMessages(history)
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "user", msgs[0].Role)
+	assert.Contains(t, msgs[0].Content, "[Previous conversation summary]")
+	assert.Contains(t, msgs[0].Content, "we discussed feature X")
+	assert.Equal(t, "user", msgs[1].Role)
+	assert.Equal(t, "now what about feature Y?", msgs[1].Content)
+}
+
+func TestAssembleMessagesLegacyEntryTypeMetaStillWorks(t *testing.T) {
+	// Old sessions written with the legacy Compact() rewrite still produce
+	// EntryTypeMeta entries. Verify backward compatibility.
+	history := []session.SessionEntry{
+		// Build a legacy meta entry by hand.
+		{
+			Type: session.EntryTypeMeta,
+			Role: "system",
+			Data: mustMarshalMessageData(t, "old style summary"),
+		},
+		session.UserMessageEntry("then a question"),
+	}
+	msgs := assembleMessages(history)
+	require.Len(t, msgs, 2)
+	assert.Contains(t, msgs[0].Content, "Session Summary")
+	assert.Contains(t, msgs[0].Content, "old style summary")
+}
+
+// mustMarshalMessageData serializes a MessageData blob for legacy meta tests.
+func mustMarshalMessageData(t *testing.T, text string) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(session.MessageData{Text: text})
+	require.NoError(t, err)
+	return data
+}

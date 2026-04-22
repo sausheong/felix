@@ -168,6 +168,16 @@ func assembleMessages(history []session.SessionEntry) []llm.Message {
 
 	for _, entry := range history {
 		switch entry.Type {
+		case session.EntryTypeCompaction:
+			var cd session.CompactionData
+			if err := json.Unmarshal(entry.Data, &cd); err != nil {
+				continue
+			}
+			msgs = append(msgs, llm.Message{
+				Role:    "user",
+				Content: "[Previous conversation summary]\n\n" + cd.Summary,
+			})
+
 		case session.EntryTypeMeta:
 			// Meta entries (e.g. compaction summaries) are treated as system context
 			var md session.MessageData
