@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -142,4 +143,38 @@ func TestStripJSON5(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestCompactionDefaultsAreSensible(t *testing.T) {
+	cfg := DefaultConfig()
+	c := cfg.Agents.Defaults.Compaction
+	assert.True(t, c.Enabled)
+	assert.Equal(t, "local/qwen2.5:3b-instruct", c.Model)
+	assert.InDelta(t, 0.6, c.Threshold, 0.001)
+	assert.Equal(t, 4, c.PreserveTurns)
+	assert.Equal(t, 60, c.TimeoutSec)
+}
+
+func TestCompactionConfigUnmarshals(t *testing.T) {
+	raw := []byte(`{
+		"agents": {
+			"defaults": {
+				"compaction": {
+					"enabled": false,
+					"model": "local/gemma2:2b",
+					"threshold": 0.5,
+					"preserveTurns": 6,
+					"timeoutSec": 30
+				}
+			}
+		}
+	}`)
+	var cfg Config
+	require.NoError(t, json.Unmarshal(raw, &cfg))
+	c := cfg.Agents.Defaults.Compaction
+	assert.False(t, c.Enabled)
+	assert.Equal(t, "local/gemma2:2b", c.Model)
+	assert.InDelta(t, 0.5, c.Threshold, 0.001)
+	assert.Equal(t, 6, c.PreserveTurns)
+	assert.Equal(t, 30, c.TimeoutSec)
 }

@@ -53,7 +53,22 @@ type ReloadConfig struct {
 }
 
 type AgentsConfig struct {
-	List []AgentConfig `json:"list"`
+	List     []AgentConfig  `json:"list"`
+	Defaults AgentsDefaults `json:"defaults"`
+}
+
+// AgentsDefaults holds defaults applied across all agents unless overridden.
+type AgentsDefaults struct {
+	Compaction CompactionConfig `json:"compaction"`
+}
+
+// CompactionConfig configures session compaction.
+type CompactionConfig struct {
+	Enabled       bool    `json:"enabled"`
+	Model         string  `json:"model"`         // "provider/model-id", e.g. "local/qwen2.5:3b-instruct"
+	Threshold     float64 `json:"threshold"`     // fraction of context window that triggers preventive compaction
+	PreserveTurns int     `json:"preserveTurns"` // K — last K user turns kept verbatim
+	TimeoutSec    int     `json:"timeoutSec"`    // per-summarizer-call deadline
 }
 
 type AgentConfig struct {
@@ -227,6 +242,11 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.path = path
 
+	// Backfill compaction defaults if the user's config is silent.
+	if cfg.Agents.Defaults.Compaction.Model == "" {
+		cfg.Agents.Defaults.Compaction = DefaultConfig().Agents.Defaults.Compaction
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
@@ -254,6 +274,15 @@ func DefaultConfig() *Config {
 					Tools: ToolPolicy{
 						Allow: []string{"read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "send_message", "cron"},
 					},
+				},
+			},
+			Defaults: AgentsDefaults{
+				Compaction: CompactionConfig{
+					Enabled:       true,
+					Model:         "local/qwen2.5:3b-instruct",
+					Threshold:     0.6,
+					PreserveTurns: 4,
+					TimeoutSec:    60,
 				},
 			},
 		},
