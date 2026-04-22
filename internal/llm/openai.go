@@ -163,10 +163,11 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 	}
 
 	openaiReq := openai.ChatCompletionRequest{
-		Model:                model,
-		Messages:             msgs,
-		MaxCompletionTokens:  maxTokens,
-		Stream:               true,
+		Model:               model,
+		Messages:            msgs,
+		MaxCompletionTokens: maxTokens,
+		Stream:              true,
+		StreamOptions:       &openai.StreamOptions{IncludeUsage: true},
 	}
 
 	if len(tools) > 0 {
@@ -196,6 +197,8 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		}
 		toolCalls := make(map[int]*pendingTC)
 
+		var lastUsage *Usage
+
 		for {
 			resp, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
@@ -204,6 +207,15 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 			if err != nil {
 				events <- ChatEvent{Type: EventError, Error: err}
 				return
+			}
+
+			// Capture usage when the provider finally sends it (typically on
+			// the final chunk thanks to StreamOptions.IncludeUsage=true).
+			if resp.Usage != nil && resp.Usage.TotalTokens > 0 {
+				lastUsage = &Usage{
+					InputTokens:  resp.Usage.PromptTokens,
+					OutputTokens: resp.Usage.CompletionTokens,
+				}
 			}
 
 			for _, choice := range resp.Choices {
@@ -266,7 +278,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 			}
 		}
 
-		events <- ChatEvent{Type: EventDone}
+		events <- ChatEvent{Type: EventDone, Usage: lastUsage}
 	}()
 
 	return events, nil

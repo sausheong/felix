@@ -2,6 +2,10 @@ package llm
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -146,4 +150,37 @@ func TestNewProviderLocal(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, p)
+}
+
+func TestOpenAIProviderRequestsUsageStats(t *testing.T) {
+	var seenBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Minimal SSE stream: one delta + DONE.
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":7,\"total_tokens\":49}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p := NewOpenAIProvider("test-key", srv.URL)
+	stream, err := p.ChatStream(context.Background(), ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err)
+
+	var sawUsage bool
+	for ev := range stream {
+		if ev.Type == EventDone && ev.Usage != nil {
+			sawUsage = true
+			assert.Equal(t, 42, ev.Usage.InputTokens)
+			assert.Equal(t, 7, ev.Usage.OutputTokens)
+		}
+	}
+	assert.True(t, sawUsage, "EventDone must carry Usage when provider returns it")
+
+	// And the outgoing request must have asked for usage stats.
+	assert.Contains(t, string(seenBody), `"include_usage":true`)
 }
