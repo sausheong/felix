@@ -296,9 +296,15 @@ func DefaultConfig() *Config {
 			Interval: "30m",
 			Enabled:  false,
 		},
+		Memory: MemoryConfig{
+			Enabled:           true,
+			EmbeddingProvider: "local",
+			EmbeddingModel:    "nomic-embed-text",
+		},
 		Cortex: CortexConfig{
-			Enabled:  true,
-			LLMModel: "gpt-5-mini",
+			Enabled: true,
+			// Provider and LLMModel intentionally empty: cortex.Init mirrors
+			// the default agent's model when both are unset.
 		},
 		Security: SecurityConfig{
 			ExecApprovals: ExecApprovalsConfig{
@@ -355,10 +361,6 @@ func (c *Config) Validate() error {
 		if a.Sandbox == "" {
 			a.Sandbox = "none"
 		}
-	}
-
-	if c.Cortex.Enabled && c.Cortex.Provider == "" {
-		c.Cortex.Provider = "openai"
 	}
 
 	return nil

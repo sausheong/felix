@@ -18,7 +18,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 18789, cfg.Gateway.Port)
 	assert.Len(t, cfg.Agents.List, 1)
 	assert.Equal(t, "default", cfg.Agents.List[0].ID)
-	assert.Equal(t, "anthropic/claude-sonnet-4-5-20250514", cfg.Agents.List[0].Model)
+	assert.Equal(t, "openai/gpt-5.4", cfg.Agents.List[0].Model)
 }
 
 func TestLoadMissingFile(t *testing.T) {
@@ -177,4 +177,36 @@ func TestCompactionConfigUnmarshals(t *testing.T) {
 	assert.InDelta(t, 0.5, c.Threshold, 0.001)
 	assert.Equal(t, 6, c.PreserveTurns)
 	assert.Equal(t, 30, c.TimeoutSec)
+}
+
+func TestDefaultConfigCortexEmbedDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if got := cfg.Memory.EmbeddingProvider; got != "local" {
+		t.Errorf("Memory.EmbeddingProvider default = %q, want \"local\"", got)
+	}
+	if got := cfg.Memory.EmbeddingModel; got != "nomic-embed-text" {
+		t.Errorf("Memory.EmbeddingModel default = %q, want \"nomic-embed-text\"", got)
+	}
+	if !cfg.Memory.Enabled {
+		t.Errorf("Memory.Enabled default should be true")
+	}
+	if cfg.Cortex.Provider != "" {
+		t.Errorf("Cortex.Provider default = %q, want \"\" (auto-mirror sentinel)", cfg.Cortex.Provider)
+	}
+	if cfg.Cortex.LLMModel != "" {
+		t.Errorf("Cortex.LLMModel default = %q, want \"\" (auto-mirror sentinel)", cfg.Cortex.LLMModel)
+	}
+}
+
+func TestValidateDoesNotBackfillCortexProvider(t *testing.T) {
+	cfg := DefaultConfig()
+	// Default has at least one agent already; Validate should leave
+	// Cortex.Provider empty (the new auto-mirror sentinel).
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	if cfg.Cortex.Provider != "" {
+		t.Errorf("Validate must NOT backfill Cortex.Provider; got %q", cfg.Cortex.Provider)
+	}
 }
