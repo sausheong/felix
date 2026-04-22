@@ -277,7 +277,6 @@ func runChat(agentID, configPath, modelOverride string) error {
 			pcfg := cfg.GetProvider(cfg.Memory.EmbeddingProvider)
 			embedder := memory.NewOpenAIEmbedder(pcfg.APIKey, pcfg.BaseURL, cfg.Memory.EmbeddingModel)
 			memory.AttachWithProbe(memMgr, embedder, cfg.Memory.EmbeddingModel)
-			slog.Info("memory vector search enabled", "provider", cfg.Memory.EmbeddingProvider, "model", cfg.Memory.EmbeddingModel)
 		}
 		memMgr.Load()
 	}

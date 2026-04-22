@@ -17,4 +17,5 @@ func AttachWithProbe(mgr *Manager, embedder Embedder, modelName string) {
 		return
 	}
 	mgr.SetEmbedder(embedder)
+	slog.Info("memory vector search enabled", "model", modelName)
 }
