@@ -75,14 +75,15 @@ func TestCalibratorStartsAtOne(t *testing.T) {
 
 func TestCalibratorConvergesTowardActual(t *testing.T) {
 	c := NewCalibrator()
-	// Estimate said 100, actual was 150 → ratio should drift toward 1.5
+	// After 5 identical samples of (actual=150, estimated=100), the running mean
+	// should reach exactly 1.5, so Adjust(100) returns 150.
 	c.Update(150, 100)
 	c.Update(150, 100)
 	c.Update(150, 100)
 	c.Update(150, 100)
 	c.Update(150, 100)
 	got := c.Adjust(100)
-	assert.Greater(t, got, 130, "calibrator should learn ratio>1.0")
+	assert.GreaterOrEqual(t, got, 148, "calibrator should learn ratio≈1.5")
 	assert.LessOrEqual(t, got, 150)
 }
 

@@ -135,7 +135,7 @@ func (c *Calibrator) Update(actual, estimated int) {
 	sample := float64(actual) / float64(estimated)
 	c.count++
 	// Simple running mean — converges, never gets stuck on early outliers.
-	c.ratio += (sample - c.ratio) / float64(c.count+1)
+	c.ratio += (sample - c.ratio) / float64(c.count)
 }
 
 // Adjust applies the learned ratio to a fresh estimate.
