@@ -221,7 +221,7 @@ OSASCRIPT
     "cli": { "enabled": true, "interactive": true }
   },
   "heartbeat": { "interval": "30m", "enabled": false },
-  "cortex": { "enabled": true, "llmModel": "gpt-5-mini" }
+  "cortex": { "enabled": true }
 }
 EOF
 

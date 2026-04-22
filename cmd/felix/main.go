@@ -1230,31 +1230,16 @@ func runOnboard() error {
 
 	if !hasCloudKey {
 		fmt.Println("No cloud API key found in your environment.")
-		fmt.Println("Pick a local model to download (you can change this later):")
+		fmt.Println("Felix will use the bundled local model.")
+		fmt.Println("`gemma4:latest` (~9.6 GB) and `nomic-embed-text` (~270 MB) will")
+		fmt.Println("download in the background on first launch.")
 		fmt.Println()
-		localChoice := choose("", []string{
-			"Qwen 3.5 9B                ~5.0 GB   (recommended — good general agent)",
-			"Gemma 4 (multimodal)       ~9.6 GB   (vision-capable)",
-			"Skip — I'll configure a cloud key later",
-		}, 0)
-		if localChoice != 2 {
-			models := []string{
-				"qwen3.5:9b",
-				"gemma4:latest",
-			}
-			modelTag := models[localChoice]
-			if err := pullLocalModel(modelTag); err != nil {
-				fmt.Printf("Pull failed: %v\n", err)
-				fmt.Println("Falling back to cloud setup.")
-			} else {
-				cfg.Agents.List[0].Model = "local/" + modelTag
-				cfg.Providers["local"] = config.ProviderConfig{
-					Kind:    "local",
-					BaseURL: "http://127.0.0.1:18790/v1",
-				}
-				return finishOnboard(cfg)
-			}
+		cfg.Agents.List[0].Model = "local/gemma4:latest"
+		cfg.Providers["local"] = config.ProviderConfig{
+			Kind:    "local",
+			BaseURL: "http://127.0.0.1:18790/v1",
 		}
+		return finishOnboard(cfg)
 	}
 
 	// Step 1: LLM Provider
