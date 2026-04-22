@@ -22,7 +22,6 @@ type Config struct {
 	Heartbeat HeartbeatConfig          `json:"heartbeat"`
 	Memory    MemoryConfig             `json:"memory"`
 	Cortex    CortexConfig             `json:"cortex"`
-	Google    GoogleConfig             `json:"google"`
 	Security  SecurityConfig           `json:"security"`
 	Local     LocalConfig              `json:"local"`
 
@@ -113,24 +112,7 @@ type PeerMatch struct {
 }
 
 type ChannelsConfig struct {
-	Telegram TelegramConfig `json:"telegram"`
-	WhatsApp WhatsAppConfig `json:"whatsapp"`
-	CLI      CLIConfig      `json:"cli"`
-}
-
-type WhatsAppConfig struct {
-	PhoneNumber      string   `json:"phone_number"`      // for display/identification only
-	DBPath           string   `json:"db_path"`           // SQLite path for device state (default: ~/.felix/whatsapp.db)
-	AllowedSenders   []string `json:"allowed_senders"`   // phone numbers or JIDs allowed to send messages (empty = allow all)
-	DMPolicy         string   `json:"dm_policy"`         // "ignore", "respond", "process", "notify" (overrides global; default: "")
-	ProcessingPrompt string   `json:"processing_prompt"` // prepended to system prompt for WhatsApp messages
-}
-
-type TelegramConfig struct {
-	Token            string `json:"token"`
-	Mode             string `json:"mode"` // "polling" or "webhook"
-	DMPolicy         string `json:"dm_policy"`         // "ignore", "respond", "process", "notify" (overrides global; default: "")
-	ProcessingPrompt string `json:"processing_prompt"` // prepended to system prompt for Telegram messages
+	CLI CLIConfig `json:"cli"`
 }
 
 type CLIConfig struct {
@@ -162,14 +144,6 @@ type CortexConfig struct {
 	DBPath   string `json:"dbPath"`   // path to brain.db (default: ~/.felix/brain.db)
 	Provider string `json:"provider"` // provider name matching a key in cfg.Providers (e.g. "openai", "anthropic")
 	LLMModel string `json:"llmModel"` // model for extraction/decomposition (default: gpt-5.4-mini for openai, claude-sonnet-4-5-20250929 for anthropic)
-}
-
-type GoogleConfig struct {
-	// ClientID and ClientSecret come from a Google Cloud OAuth client (Desktop app type).
-	// Felix's settings UI guides the user through registering one. Empty means
-	// Google integration is not configured.
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
 }
 
 type SecurityConfig struct {
@@ -267,12 +241,12 @@ func DefaultConfig() *Config {
 			List: []AgentConfig{
 				{
 					ID:        "default",
-					Name:      "Assistant",
+					Name:      "Felix",
 					Workspace: filepath.Join(DefaultDataDir(), "workspace-default"),
 					Model:     "openai/gpt-5.4",
 					Sandbox:   "none",
 					Tools: ToolPolicy{
-						Allow: []string{"read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "send_message", "cron"},
+						Allow: []string{"read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "cron"},
 					},
 				},
 			},
@@ -341,6 +315,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Reload.Mode == "" {
 		c.Gateway.Reload.Mode = "hybrid"
+	}
+
+	// Backfill Memory defaults if the section is absent (all zero values).
+	// We can't distinguish "user explicitly disabled" from "field missing"
+	// in plain JSON unmarshalling, so the heuristic is: if every Memory
+	// field is the Go zero value, treat the section as missing.
+	if c.Memory == (MemoryConfig{}) {
+		c.Memory = DefaultConfig().Memory
+	} else if c.Memory.EmbeddingModel == "" {
+		c.Memory.EmbeddingModel = "nomic-embed-text"
+	}
+
+	// Same heuristic for Cortex.
+	if c.Cortex == (CortexConfig{}) {
+		c.Cortex = DefaultConfig().Cortex
 	}
 
 	if len(c.Agents.List) == 0 {

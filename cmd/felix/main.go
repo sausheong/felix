@@ -23,7 +23,6 @@ import (
 
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/felix/internal/agent"
-	"github.com/sausheong/felix/internal/channel"
 	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/config"
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
@@ -46,7 +45,7 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "felix",
 		Short: "Felix — self-hosted AI agent gateway",
-		Long:  "Felix is a self-hosted AI agent gateway that connects Telegram and CLI to LLMs.",
+		Long:  "Felix is a self-hosted AI agent gateway that connects you (CLI or web chat) to LLMs.",
 	}
 
 	rootCmd.AddCommand(
@@ -310,59 +309,12 @@ func runChat(agentID, configPath, modelOverride string) error {
 	}
 	tools.RegisterCoreTools(toolReg, agentCfg.Workspace, execPolicy)
 
-	// Connect channel adapters so the agent can use the send_message tool
-	sender := &chatSender{channels: make(map[string]channel.Channel)}
 	ctx := context.Background()
-
-	if cfg.Channels.Telegram.Token != "" {
-		tgChan := channel.NewTelegramChannel(
-			cfg.Channels.Telegram.Token,
-			cfg.Security.GroupPolicy.RequireMention,
-		)
-		tgChan.SetSendOnly(true)
-		if err := tgChan.Connect(ctx); err != nil {
-			slog.Warn("telegram channel failed to connect in chat mode", "error", err)
-		} else {
-			sender.channels["telegram"] = tgChan
-			slog.Info("telegram channel connected in chat mode")
-		}
-	}
-
-	waDBPath := cfg.Channels.WhatsApp.DBPath
-	if waDBPath == "" {
-		defaultDB := filepath.Join(dataDir, "whatsapp.db")
-		if _, err := os.Stat(defaultDB); err == nil {
-			waDBPath = defaultDB
-		}
-	}
-	if waDBPath != "" {
-		waChan := channel.NewWhatsAppChannel(waDBPath, cfg.Channels.WhatsApp.AllowedSenders)
-		if err := waChan.Connect(ctx); err != nil {
-			slog.Warn("whatsapp channel failed to connect in chat mode", "error", err)
-		} else {
-			sender.channels["whatsapp"] = waChan
-			slog.Info("whatsapp channel connected in chat mode")
-		}
-	}
-
-	if len(sender.channels) > 0 {
-		tools.RegisterSendMessage(toolReg, sender)
-		defer func() {
-			for name, ch := range sender.channels {
-				if err := ch.Disconnect(); err != nil {
-					slog.Error("disconnect channel", "channel", name, "error", err)
-				}
-			}
-		}()
-	}
 
 	// Register ask_agent tool for inter-agent delegation.
 	// Build a full providers map so delegated agents can use different models.
 	allProviders := startup.InitProviders(cfg)
 	chatAgentRunner := gateway.NewAgentRunner(allProviders, cfg, sessionStore)
-	if len(sender.channels) > 0 {
-		chatAgentRunner.SetSender(sender)
-	}
 	chatAgentRunner.SetSkills(skillLoader)
 	chatAgentRunner.SetMemory(memMgr)
 	chatAgentRunner.SetCortex(cx)
@@ -385,9 +337,6 @@ func runChat(agentID, configPath, modelOverride string) error {
 			cronSess := session.NewSession(agentID, "cron_"+jobName)
 			cronToolReg := tools.NewRegistry()
 			tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace, execPolicy)
-			if len(sender.channels) > 0 {
-				tools.RegisterSendMessage(cronToolReg, sender)
-			}
 			cronRT := &agent.Runtime{
 				LLM:          provider,
 				Tools:        cronToolReg,
@@ -431,14 +380,8 @@ func runChat(agentID, configPath, modelOverride string) error {
 	})
 
 	// Apply tool policy from agent config.
-	// If channels are connected and the policy uses an allow list,
-	// add send_message so it isn't filtered out.
-	allow := agentCfg.Tools.Allow
-	if len(sender.channels) > 0 && len(allow) > 0 {
-		allow = append(append([]string{}, allow...), "send_message")
-	}
 	policy := tools.Policy{
-		Allow: allow,
+		Allow: agentCfg.Tools.Allow,
 		Deny:  agentCfg.Tools.Deny,
 	}
 	var toolExecutor tools.Executor = toolReg
@@ -1214,8 +1157,8 @@ func runOnboard() error {
 	fmt.Println("Welcome to Felix!")
 	fmt.Println("==================")
 	fmt.Println()
-	fmt.Println("Felix is a self-hosted AI agent gateway that connects")
-	fmt.Println("Telegram and CLI to LLMs like Claude, GPT, and more.")
+	fmt.Println("Felix is a self-hosted AI agent gateway that connects you")
+	fmt.Println("(via CLI or web chat) to LLMs like Claude, GPT, and more.")
 	fmt.Println()
 	fmt.Println("This wizard will help you set up your configuration.")
 	fmt.Println()
@@ -1343,67 +1286,6 @@ func runOnboard() error {
 	}
 	cfg.Agents.List[0].Model = modelStr
 
-	// Step 4: Telegram setup (optional)
-	fmt.Println()
-	setupTelegram := prompt("Set up Telegram bot? (y/n)", "n")
-	if strings.ToLower(setupTelegram) == "y" {
-		fmt.Println()
-		fmt.Println("To create a Telegram bot:")
-		fmt.Println("  1. Open Telegram and search for @BotFather")
-		fmt.Println("  2. Send /newbot and follow the instructions")
-		fmt.Println("  3. Copy the bot token provided by BotFather")
-		fmt.Println()
-
-		token := promptSecret("Enter your Telegram bot token")
-		if token != "" {
-			// Test the token
-			fmt.Print("Testing bot token... ")
-			tgChan := channel.NewTelegramChannel(token, true)
-			testCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			err := tgChan.Connect(testCtx)
-			cancel()
-			if err != nil {
-				fmt.Printf("failed: %v\n", err)
-				fmt.Println("Token saved anyway. You can fix it later in the config file.")
-			} else {
-				fmt.Printf("OK (bot: @%s)\n", tgChan.BotUsername())
-				tgChan.Disconnect()
-			}
-
-			cfg.Channels.Telegram.Token = token
-			cfg.Channels.Telegram.Mode = "polling"
-
-			// Add default telegram binding
-			cfg.Bindings = append(cfg.Bindings, config.Binding{
-				AgentID: "default",
-				Match:   config.BindingMatch{Channel: "telegram"},
-			})
-		}
-	}
-
-	// Step 5: WhatsApp setup (optional)
-	fmt.Println()
-	setupWhatsApp := prompt("Set up WhatsApp? (y/n)", "n")
-	if strings.ToLower(setupWhatsApp) == "y" {
-		fmt.Println()
-		fmt.Println("WhatsApp uses the Web multidevice protocol.")
-		fmt.Println("On first 'felix start', a QR code will appear in the terminal.")
-		fmt.Println("Scan it with WhatsApp on your phone to link this device.")
-		fmt.Println()
-
-		// DB path defaults to ~/.felix/whatsapp.db; advanced users can edit
-		// the config later if they need a custom location.
-		cfg.Channels.WhatsApp.DBPath = filepath.Join(config.DefaultDataDir(), "whatsapp.db")
-
-		// Add default whatsapp binding
-		cfg.Bindings = append(cfg.Bindings, config.Binding{
-			AgentID: "default",
-			Match:   config.BindingMatch{Channel: "whatsapp"},
-		})
-
-		fmt.Println("WhatsApp configured. Pair the device from the settings page after `felix start`.")
-	}
-
 	return finishOnboard(cfg)
 }
 
@@ -1459,7 +1341,7 @@ func finishOnboard(cfg *config.Config) error {
 
 	identityPath := filepath.Join(workspace, "IDENTITY.md")
 	if _, err := os.Stat(identityPath); os.IsNotExist(err) {
-		identity := `You are a helpful AI assistant called Felix. You can read files, write files, edit files, execute bash commands on the user's machine, fetch web pages, and search the web. Be concise and helpful. When executing tasks, think step by step and use your tools to accomplish the user's goals.`
+		identity := `You are Felix, an AI agent. You can read files, write files, edit files, execute bash commands on the user's machine, fetch web pages, and search the web. Conduct yourself professionally and politely. Be concise and direct. When executing tasks, think step by step and use your tools to accomplish the user's goals.`
 		os.WriteFile(identityPath, []byte(identity), 0o644)
 		fmt.Printf("Created workspace at %s\n", workspace)
 	}
@@ -1471,14 +1353,6 @@ func finishOnboard(cfg *config.Config) error {
 	fmt.Println("  felix start   — Start the gateway server")
 	fmt.Println("  felix chat    — Start an interactive chat session")
 	fmt.Println()
-	if cfg.Channels.Telegram.Token != "" {
-		fmt.Println("  Your Telegram bot is configured and will start with 'felix start'.")
-		fmt.Println()
-	}
-	if cfg.Channels.WhatsApp.DBPath != "" {
-		fmt.Println("  WhatsApp is configured. A QR code will appear on first 'felix start'.")
-		fmt.Println()
-	}
 
 	return nil
 }
@@ -1603,25 +1477,6 @@ func runDoctor(configPath string) error {
 		})
 	}
 
-	// Check 5: Telegram
-	fmt.Println("\nChannels:")
-	check("Telegram", func() (string, error) {
-		if cfg.Channels.Telegram.Token == "" {
-			return "not configured (optional)", nil
-		}
-		return "token configured", nil
-	})
-
-	check("WhatsApp", func() (string, error) {
-		if cfg.Channels.WhatsApp.DBPath == "" {
-			return "not configured (optional)", nil
-		}
-		if _, err := os.Stat(cfg.Channels.WhatsApp.DBPath); os.IsNotExist(err) {
-			return "database not found (will be created on first connect)", nil
-		}
-		return "database found", nil
-	})
-
 	// Check 6: Gateway port
 	fmt.Println("\nGateway:")
 	check(fmt.Sprintf("Port %d", cfg.Gateway.Port), func() (string, error) {
@@ -1653,31 +1508,5 @@ func runDoctor(configPath string) error {
 	}
 
 	return nil
-}
-
-// chatSender implements tools.MessageSender for chat mode.
-// It holds channel adapters that were connected at startup and delegates
-// send operations to the appropriate channel.
-type chatSender struct {
-	channels map[string]channel.Channel
-}
-
-func (s *chatSender) SendToChannel(ctx context.Context, channelName, chatID, text string) error {
-	ch, ok := s.channels[channelName]
-	if !ok {
-		return fmt.Errorf("channel %q not connected", channelName)
-	}
-	return ch.Send(ctx, channel.OutboundMessage{
-		ChatID: chatID,
-		Text:   text,
-	})
-}
-
-func (s *chatSender) AvailableChannels() []string {
-	names := make([]string, 0, len(s.channels))
-	for name := range s.channels {
-		names = append(names, name)
-	}
-	return names
 }
 

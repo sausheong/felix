@@ -83,7 +83,7 @@ func TestGetAgent(t *testing.T) {
 
 	a, ok := cfg.GetAgent("default")
 	assert.True(t, ok)
-	assert.Equal(t, "Assistant", a.Name)
+	assert.Equal(t, "Felix", a.Name)
 
 	_, ok = cfg.GetAgent("nonexistent")
 	assert.False(t, ok)

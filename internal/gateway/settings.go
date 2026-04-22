@@ -6,8 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 
 	"github.com/sausheong/felix/internal/config"
+	"github.com/sausheong/felix/internal/tools"
 )
 
 // SettingsHandlers holds the HTTP handlers for the settings page and config API.
@@ -15,10 +17,12 @@ type SettingsHandlers struct {
 	Page       http.HandlerFunc
 	GetConfig  http.HandlerFunc
 	SaveConfig http.HandlerFunc
+	ListTools  http.HandlerFunc
 }
 
 // NewSettingsHandlers returns handlers for the settings page and config REST API.
-func NewSettingsHandlers(cfg *config.Config, onSave func(*config.Config)) *SettingsHandlers {
+// toolReg may be nil; ListTools then returns an empty list.
+func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, onSave func(*config.Config)) *SettingsHandlers {
 	return &SettingsHandlers{
 		Page: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -80,6 +84,34 @@ func NewSettingsHandlers(cfg *config.Config, onSave func(*config.Config)) *Setti
 
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"ok":true}`)
+		},
+
+		ListTools: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			type toolDTO struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			}
+			out := struct {
+				Tools []toolDTO `json:"tools"`
+			}{Tools: []toolDTO{}}
+			if toolReg != nil {
+				names := toolReg.Names()
+				sort.Strings(names)
+				for _, n := range names {
+					t, ok := toolReg.Get(n)
+					if !ok {
+						continue
+					}
+					out.Tools = append(out.Tools, toolDTO{Name: n, Description: t.Description()})
+				}
+			}
+			data, err := json.Marshal(out)
+			if err != nil {
+				http.Error(w, `{"error":"marshal tools"}`, http.StatusInternalServerError)
+				return
+			}
+			w.Write(data)
 		},
 	}
 }
@@ -421,21 +453,19 @@ html.dark .error-state { background: #450a0a; }
 	<div id="settings-root" style="display:none">
 		<div class="settings-wide">
 			<div class="finger-tabs" id="tabs">
-				<button class="finger-tab active" data-tab="gateway">Gateway</button>
+				<button class="finger-tab active" data-tab="agents">Agents</button>
 				<button class="finger-tab" data-tab="providers">Providers</button>
 				<button class="finger-tab" data-tab="models">Models</button>
-				<button class="finger-tab" data-tab="agents">Agents</button>
-				<button class="finger-tab" data-tab="channels">Channels</button>
 				<button class="finger-tab" data-tab="intelligence">Intelligence</button>
 				<button class="finger-tab" data-tab="security">Security</button>
+				<button class="finger-tab" data-tab="gateway">Gateway</button>
 			</div>
-			<div class="finger-panel active" id="panel-gateway"></div>
+			<div class="finger-panel active" id="panel-agents"></div>
 			<div class="finger-panel" id="panel-providers"></div>
 			<div class="finger-panel" id="panel-models"></div>
-			<div class="finger-panel" id="panel-agents"></div>
-			<div class="finger-panel" id="panel-channels"></div>
 			<div class="finger-panel" id="panel-intelligence"></div>
 			<div class="finger-panel" id="panel-security"></div>
+			<div class="finger-panel" id="panel-gateway"></div>
 		</div>
 	</div>
 </div>
@@ -449,6 +479,7 @@ html.dark .error-state { background: #450a0a; }
 	var loading = document.getElementById('loading');
 	var settingsRoot = document.getElementById('settings-root');
 	var cfg = null;
+	var availableTools = []; // [{name, description}], populated from /settings/api/tools
 
 	// === Theme ===
 	function setTheme(mode) {
@@ -485,20 +516,23 @@ html.dark .error-state { background: #450a0a; }
 		if (!isError) setTimeout(function() { statusMsg.textContent = ''; statusMsg.className = ''; }, 3000);
 	}
 
-	// === Load config ===
-	fetch(location.pathname + '/api/config')
-		.then(function(r) { return r.json(); })
-		.then(function(data) {
-			cfg = data;
-			loading.style.display = 'none';
-			settingsRoot.style.display = 'block';
-			render();
-			saveBtn.disabled = false;
-		})
-		.catch(function(err) {
-			loading.className = 'error-state';
-			loading.textContent = 'Failed to load config: ' + err.message;
-		});
+	// === Load config + tools list in parallel ===
+	Promise.all([
+		fetch(location.pathname + '/api/config').then(function(r) { return r.json(); }),
+		fetch(location.pathname + '/api/tools').then(function(r) {
+			return r.ok ? r.json() : {tools: []};
+		}).catch(function() { return {tools: []}; })
+	]).then(function(results) {
+		cfg = results[0];
+		availableTools = (results[1] && results[1].tools) || [];
+		loading.style.display = 'none';
+		settingsRoot.style.display = 'block';
+		render();
+		saveBtn.disabled = false;
+	}).catch(function(err) {
+		loading.className = 'error-state';
+		loading.textContent = 'Failed to load config: ' + err.message;
+	});
 
 	// === Save ===
 	saveBtn.addEventListener('click', function() {
@@ -525,19 +559,20 @@ html.dark .error-state { background: #450a0a; }
 
 	// === Render all panels ===
 	function render() {
-		renderGateway();
+		renderAgents();
 		renderProviders();
 		renderModels();
-		renderAgents();
-		renderChannels();
 		renderIntelligence();
 		renderSecurity();
+		renderGateway();
 	}
 
 	// === Models tab — talks directly to bundled Ollama via providers.local.base_url ===
 	var CURATED_MODELS = [
-		{name: 'gemma4:latest', label: 'Gemma 4 (multimodal)', size: '~9.6 GB', note: 'recommended — vision + general agent'},
-		{name: 'qwen3.5:9b',    label: 'Qwen 3.5 9B',          size: '~5.0 GB', note: 'lighter, text-only'}
+		{name: 'gemma4:latest',     label: 'Gemma 4 (multimodal)',     size: '~9.6 GB', note: 'recommended — vision + general agent'},
+		{name: 'qwen3.5:9b',        label: 'Qwen 3.5 9B',              size: '~5.0 GB', note: 'lighter, text-only'},
+		{name: 'nomic-embed-text',  label: 'Nomic Embed Text',         size: '~274 MB', note: 'embeddings — recommended for memory'},
+		{name: 'mxbai-embed-large', label: 'MixedBread Embed Large',   size: '~670 MB', note: 'embeddings — higher quality'}
 	];
 	var pullState = {}; // name -> {pct, status, err}
 	var pollTimer = null;
@@ -563,7 +598,7 @@ html.dark .error-state { background: #450a0a; }
 		var section = document.createElement('div');
 		section.className = 'panel-section';
 		var h = document.createElement('h3');
-		h.textContent = 'Local models (via bundled Ollama)';
+		h.textContent = 'Local models';
 		section.appendChild(h);
 
 		var p = document.createElement('p');
@@ -649,14 +684,21 @@ html.dark .error-state { background: #450a0a; }
 				box.innerHTML = '';
 				models.forEach(function(m) {
 					var row = document.createElement('div');
-					row.style.cssText = 'display:flex; justify-content:space-between; padding:0.4rem 0.25rem; border-bottom:1px solid var(--color-border);';
+					row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:0.5rem; padding:0.4rem 0.25rem; border-bottom:1px solid var(--color-border);';
 					var nm = document.createElement('div');
+					nm.style.cssText = 'flex:1; min-width:0; word-break:break-all;';
 					nm.textContent = m.name;
 					var sz = document.createElement('div');
 					sz.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem;';
 					sz.textContent = fmtBytes(m.size);
+					var rm = document.createElement('button');
+					rm.className = 'btn';
+					rm.textContent = 'Remove';
+					rm.style.cssText = 'padding:0.25rem 0.6rem; font-size:0.8rem;';
+					rm.addEventListener('click', function() { removeInstalledModel(m.name); });
 					row.appendChild(nm);
 					row.appendChild(sz);
+					row.appendChild(rm);
 					box.appendChild(row);
 				});
 				box.lastChild.style.borderBottom = 'none';
@@ -664,6 +706,24 @@ html.dark .error-state { background: #450a0a; }
 			.catch(function(err) {
 				box.textContent = 'Error: ' + err.message + ' — is the bundled Ollama running?';
 			});
+	}
+
+	function removeInstalledModel(name) {
+		if (!confirm('Remove model "' + name + '"? This deletes it from the bundled Ollama store.')) return;
+		fetch(ollamaBase() + '/api/delete', {
+			method: 'DELETE',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify({name: name})
+		}).then(function(r) {
+			if (!r.ok) {
+				return r.text().then(function(t) {
+					alert('Remove failed: ' + (t || ('HTTP ' + r.status)));
+				});
+			}
+			refreshInstalled();
+		}).catch(function(err) {
+			alert('Remove failed: ' + err.message);
+		});
 	}
 
 	function applyPullState(name) {
@@ -839,57 +899,67 @@ html.dark .error-state { background: #450a0a; }
 		return g;
 	}
 
+	// === Helper: tools checkbox grid for an agent ===
+	function makeToolsCheckboxes(parent, idx, agent) {
+		var g = document.createElement('div');
+		g.className = 'form-group';
+		var l = document.createElement('label');
+		l.textContent = 'Allowed Tools';
+		g.appendChild(l);
+
+		var allow = ((agent.tools || {}).allow || []).slice();
+		// Empty allow = allow all (matches Policy semantics). Render that as all-checked.
+		var allowAll = allow.length === 0;
+
+		if (availableTools.length === 0) {
+			var empty = document.createElement('div');
+			empty.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; padding:0.5rem 0;';
+			empty.textContent = 'No tools registered (or tools list endpoint unavailable).';
+			g.appendChild(empty);
+			parent.appendChild(g);
+			return g;
+		}
+
+		var grid = document.createElement('div');
+		grid.style.cssText = 'display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:0.4rem 0.75rem; padding:0.4rem 0;';
+
+		availableTools.forEach(function(t) {
+			var lbl = document.createElement('label');
+			lbl.style.cssText = 'display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; cursor:pointer;';
+			lbl.title = t.description || '';
+			var cb = document.createElement('input');
+			cb.type = 'checkbox';
+			cb.checked = allowAll || allow.indexOf(t.name) >= 0;
+			cb.addEventListener('change', function() {
+				if (!cfg.agents.list[idx].tools) cfg.agents.list[idx].tools = {};
+				var cur = (cfg.agents.list[idx].tools.allow || []).slice();
+				// If it was empty (allow-all), seed with the full list before mutating.
+				if (cur.length === 0) {
+					cur = availableTools.map(function(x) { return x.name; });
+				}
+				var pos = cur.indexOf(t.name);
+				if (cb.checked && pos < 0) cur.push(t.name);
+				if (!cb.checked && pos >= 0) cur.splice(pos, 1);
+				cfg.agents.list[idx].tools.allow = cur;
+			});
+			lbl.appendChild(cb);
+			var span = document.createElement('span');
+			span.textContent = t.name;
+			lbl.appendChild(span);
+			grid.appendChild(lbl);
+		});
+
+		g.appendChild(grid);
+		parent.appendChild(g);
+		return g;
+	}
+
 	// === Helper: 2-column row ===
 	function makeRow(parent) {
 		var row = document.createElement('div');
 		row.className = 'form-row';
 		parent.appendChild(row);
 		return row;
-	}
-
-	// === Helper: DM policy options (label/value) ===
-	function dmPolicyOptions() {
-		return [
-			{value: 'ignore', label: 'Ignore'},
-			{value: 'respond', label: 'Respond'},
-			{value: 'process', label: 'Process (no reply)'},
-			{value: 'notify', label: 'Notify'}
-		];
-	}
-
-	// === Helper: read peer IDs from bindings for a channel ===
-	function peerIDsFromBindings(channelName) {
-		var ids = [];
-		var bindings = cfg.bindings || [];
-		for (var i = 0; i < bindings.length; i++) {
-			var m = bindings[i].match || {};
-			if (m.channel === channelName && m.peer && m.peer.id) {
-				ids.push(m.peer.id);
-			}
-		}
-		return ids.join(', ');
-	}
-
-	// === Helper: replace peer-specific bindings for a channel ===
-	function setPeerIDsInBindings(channelName, csv) {
-		if (!cfg.bindings) cfg.bindings = [];
-		// Remove existing bindings whose match has channel + peer.id for this channel
-		cfg.bindings = cfg.bindings.filter(function(b) {
-			var m = b.match || {};
-			return !(m.channel === channelName && m.peer && m.peer.id);
-		});
-		// Pick a default agentId (first agent, or 'default')
-		var defaultAgent = 'default';
-		var agents = (cfg.agents || {}).list || [];
-		if (agents.length > 0 && agents[0].id) defaultAgent = agents[0].id;
-		// Add a binding per peer ID
-		var ids = csv.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
-		for (var i = 0; i < ids.length; i++) {
-			cfg.bindings.push({
-				agentId: defaultAgent,
-				match: {channel: channelName, peer: {id: ids[i]}}
-			});
-		}
 	}
 
 	// === Helper: panel section with optional heading ===
@@ -1015,24 +1085,13 @@ html.dark .error-state { background: #450a0a; }
 				makeField(row2, 'Model', 'text', a.model || '', function(v) { cfg.agents.list[idx].model = v; });
 				makeField(row2, 'Max Turns', 'number', a.maxTurns || 0, function(v) { cfg.agents.list[idx].maxTurns = v; });
 
-				makeField(item, 'Sandbox', 'select', {
-					value: a.sandbox || 'none',
-					options: ['none', 'docker', 'namespace']
-				}, function(v) { cfg.agents.list[idx].sandbox = v; });
+				makeReadOnlyField(item, 'Sandbox', 'agent-sandbox-' + idx, 'not implemented yet');
 
 				makeField(item, 'System Prompt', 'textarea', a.system_prompt || '', function(v) {
 					cfg.agents.list[idx].system_prompt = v;
 				});
 
-				var row3 = makeRow(item);
-				makeField(row3, 'Allowed Tools', 'text', ((a.tools || {}).allow || []).join(', '), function(v) {
-					if (!cfg.agents.list[idx].tools) cfg.agents.list[idx].tools = {};
-					cfg.agents.list[idx].tools.allow = v.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
-				});
-				makeField(row3, 'Denied Tools', 'text', ((a.tools || {}).deny || []).join(', '), function(v) {
-					if (!cfg.agents.list[idx].tools) cfg.agents.list[idx].tools = {};
-					cfg.agents.list[idx].tools.deny = v.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
-				});
+				makeToolsCheckboxes(item, idx, a);
 
 				list.appendChild(item);
 			})(i);
@@ -1044,423 +1103,10 @@ html.dark .error-state { background: #450a0a; }
 		addBtn.onclick = function() {
 			if (!cfg.agents) cfg.agents = {list: []};
 			if (!cfg.agents.list) cfg.agents.list = [];
-			cfg.agents.list.push({id: '', name: '', model: '', sandbox: 'none', tools: {allow: []}});
+			cfg.agents.list.push({id: '', name: '', model: '', tools: {allow: []}});
 			render();
 		};
 		sec.appendChild(addBtn);
-	}
-
-	// === Channels Panel ===
-	function renderChannels() {
-		var p = document.getElementById('panel-channels');
-		p.innerHTML = '';
-		var ch = cfg.channels || {};
-
-		// CLI
-		var cliSec = makeSection(p, 'CLI');
-		makeField(cliSec, 'Enabled', 'toggle', (ch.cli || {}).enabled, function(v) {
-			if (!cfg.channels) cfg.channels = {};
-			if (!cfg.channels.cli) cfg.channels.cli = {};
-			cfg.channels.cli.enabled = v;
-		});
-
-		// Telegram
-		var tg = ch.telegram || {};
-		var tgSec = makeSection(p, 'Telegram');
-		makeField(tgSec, 'Bot Token', 'password', '', function(v) {
-			if (!cfg.channels) cfg.channels = {};
-			if (!cfg.channels.telegram) cfg.channels.telegram = {};
-			cfg.channels.telegram.token = v;
-		});
-		var tgRow = makeRow(tgSec);
-		makeField(tgRow, 'Mode', 'select', {
-			value: tg.mode || 'polling',
-			options: ['polling', 'webhook']
-		}, function(v) {
-			if (!cfg.channels) cfg.channels = {};
-			if (!cfg.channels.telegram) cfg.channels.telegram = {};
-			cfg.channels.telegram.mode = v;
-		});
-		makeField(tgRow, 'Require Mention in Groups', 'toggle',
-			((cfg.security || {}).groupPolicy || {}).requireMention,
-			function(v) {
-				if (!cfg.security) cfg.security = {};
-				if (!cfg.security.groupPolicy) cfg.security.groupPolicy = {};
-				cfg.security.groupPolicy.requireMention = v;
-			}
-		);
-		var tgRow2 = makeRow(tgSec);
-		makeField(tgRow2, 'Peer IDs (comma-separated — known senders for DM policy)', 'text',
-			peerIDsFromBindings('telegram'),
-			function(v) { setPeerIDsInBindings('telegram', v); }
-		);
-		makeField(tgRow2, 'DM Policy: Unknown Senders', 'select', {
-			value: tg.dm_policy || 'ignore',
-			options: dmPolicyOptions()
-		}, function(v) {
-			if (!cfg.channels) cfg.channels = {};
-			if (!cfg.channels.telegram) cfg.channels.telegram = {};
-			cfg.channels.telegram.dm_policy = v;
-		});
-		makeField(tgSec, 'Processing Prompt (prepended to system prompt for Telegram messages)', 'textarea',
-			tg.processing_prompt || '',
-			function(v) {
-				if (!cfg.channels) cfg.channels = {};
-				if (!cfg.channels.telegram) cfg.channels.telegram = {};
-				cfg.channels.telegram.processing_prompt = v;
-			}
-		);
-
-		// WhatsApp
-		var wa = ch.whatsapp || {};
-		var waSec = makeSection(p, 'WhatsApp');
-
-		// Status indicator + connect/disconnect controls
-		var statusBar = document.createElement('div');
-		statusBar.id = 'wa-status-bar';
-		statusBar.style.cssText = 'display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;';
-		statusBar.innerHTML = '<span style="color:var(--color-text-muted);font-size:0.85rem;">Loading status&#8230;</span>';
-		waSec.appendChild(statusBar);
-
-		var waRow1 = makeRow(waSec);
-		makeReadOnlyField(waRow1, 'Phone Number', 'wa-phone-display', '—');
-		makeReadOnlyField(waRow1, 'DB Path', 'wa-dbpath-display', '—');
-		makeField(waSec, 'Allowed Senders (comma-separated phone numbers/JIDs, empty = allow all)', 'textarea',
-			(wa.allowed_senders || []).join(', '),
-			function(v) {
-				if (!cfg.channels) cfg.channels = {};
-				if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
-				cfg.channels.whatsapp.allowed_senders = v.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
-			}
-		);
-		var waRow2 = makeRow(waSec);
-		makeField(waRow2, 'Peer IDs (comma-separated — known senders for DM policy)', 'text',
-			peerIDsFromBindings('whatsapp'),
-			function(v) { setPeerIDsInBindings('whatsapp', v); }
-		);
-		makeField(waRow2, 'DM Policy: Unknown Senders', 'select', {
-			value: wa.dm_policy || 'ignore',
-			options: dmPolicyOptions()
-		}, function(v) {
-			if (!cfg.channels) cfg.channels = {};
-			if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
-			cfg.channels.whatsapp.dm_policy = v;
-		});
-		makeField(waSec, 'Processing Prompt (prepended to system prompt for WhatsApp messages)', 'textarea',
-			wa.processing_prompt || '',
-			function(v) {
-				if (!cfg.channels) cfg.channels = {};
-				if (!cfg.channels.whatsapp) cfg.channels.whatsapp = {};
-				cfg.channels.whatsapp.processing_prompt = v;
-			}
-		);
-
-		// Hidden modal markup (single instance per render).
-		if (!document.getElementById('wa-qr-modal')) {
-			var modal = document.createElement('div');
-			modal.id = 'wa-qr-modal';
-			modal.innerHTML = '<div class="wa-qr-overlay">' +
-				'<div class="wa-qr-card">' +
-				'<h3 style="margin-bottom:0.5rem;">Scan QR with WhatsApp</h3>' +
-				'<p style="color:var(--color-text-muted);font-size:0.85rem;margin-bottom:1rem;">Open WhatsApp &rarr; Settings &rarr; Linked Devices &rarr; Link a Device.</p>' +
-				'<div id="wa-qr-img" style="margin:0 auto 1rem;min-height:256px;display:flex;align-items:center;justify-content:center;color:var(--color-text-muted);">Waiting for QR&#8230;</div>' +
-				'<div id="wa-qr-error" style="color:var(--color-error);margin-bottom:0.75rem;display:none;font-size:0.85rem;"></div>' +
-				'<button id="wa-qr-cancel" class="btn-primary" style="background:var(--color-text-muted);">Cancel</button>' +
-				'</div></div>';
-			document.body.appendChild(modal);
-		}
-
-		refreshWhatsAppStatus();
-
-		// Google Workspace
-		var gSec = makeSection(p, 'Google Workspace');
-		gSec.id = 'google';
-		var gContainer = document.createElement('div');
-		gContainer.id = 'google-container';
-		gSec.appendChild(gContainer);
-		refreshGoogleStatus();
-	}
-
-	// === Google Workspace ===
-	function refreshGoogleStatus() {
-		fetch('/google/status').then(function(r) { return r.json(); }).then(function(d) {
-			renderGoogle(d);
-		}).catch(function() {
-			renderGoogle({configured: false, connected: false});
-		});
-	}
-
-	function renderGoogle(s) {
-		var c = document.getElementById('google-container');
-		if (!c) return;
-		c.innerHTML = '';
-
-		// Surface query-string error/success from the OAuth callback redirect
-		var qs = new URLSearchParams(location.search);
-		var qsErr = qs.get('google_error');
-		var qsOk = qs.get('google_connected');
-		if (qsErr) {
-			var bar = document.createElement('div');
-			bar.style.cssText = 'background:var(--color-error);color:#fff;padding:0.5rem 0.75rem;border-radius:var(--radius);margin-bottom:0.75rem;font-size:0.85rem;';
-			bar.textContent = 'Google: ' + qsErr;
-			c.appendChild(bar);
-		}
-		if (qsOk) {
-			var ok = document.createElement('div');
-			ok.style.cssText = 'background:var(--color-success);color:#fff;padding:0.5rem 0.75rem;border-radius:var(--radius);margin-bottom:0.75rem;font-size:0.85rem;';
-			ok.textContent = 'Google account connected.';
-			c.appendChild(ok);
-		}
-
-		if (s.connected) {
-			renderGoogleConnected(c, s);
-			return;
-		}
-		if (s.configured) {
-			renderGoogleAuthorize(c);
-			return;
-		}
-		renderGoogleWizard(c);
-	}
-
-	function renderGoogleConnected(c, s) {
-		var bar = document.createElement('div');
-		bar.style.cssText = 'display:flex;align-items:center;gap:0.75rem;';
-		bar.innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--color-success);"></span>' +
-			'<span style="font-size:0.875rem;">Connected as <strong>' + (s.email || 'Google account') + '</strong></span>' +
-			'<span style="margin-left:auto;"><button id="google-disconnect" class="btn-primary" style="background:var(--color-error);">Disconnect</button></span>';
-		c.appendChild(bar);
-		document.getElementById('google-disconnect').addEventListener('click', function() {
-			if (!confirm('Disconnect Google? Felix will lose access to Gmail/Drive/Calendar until you reconnect.')) return;
-			fetch('/google/disconnect', {method: 'POST'}).then(function() { refreshGoogleStatus(); });
-		});
-	}
-
-	function renderGoogleAuthorize(c) {
-		var p = document.createElement('p');
-		p.style.cssText = 'color:var(--color-text-muted);font-size:0.9rem;margin-bottom:0.75rem;';
-		p.textContent = 'Credentials saved. Click Connect to grant Felix access to your Google account.';
-		c.appendChild(p);
-		var btn = document.createElement('button');
-		btn.className = 'btn-primary';
-		btn.textContent = 'Connect with Google';
-		btn.addEventListener('click', function() { location.href = '/google/oauth/start'; });
-		c.appendChild(btn);
-		var reset = document.createElement('button');
-		reset.className = 'btn-primary';
-		reset.style.cssText = 'margin-left:0.5rem;background:var(--color-text-muted);';
-		reset.textContent = 'Re-enter Credentials';
-		reset.addEventListener('click', function() { renderGoogleWizard(c); });
-		c.appendChild(reset);
-	}
-
-	function renderGoogleWizard(c) {
-		c.innerHTML = '';
-		var intro = document.createElement('p');
-		intro.style.cssText = 'color:var(--color-text-muted);font-size:0.9rem;margin-bottom:1rem;';
-		intro.innerHTML = 'Felix needs its own Google "app" to ask for permission to access your Gmail, Drive, and Calendar. ' +
-			'This is a one-time setup that takes about 5 minutes. Tokens are stored encrypted on this machine and never leave it.';
-		c.appendChild(intro);
-
-		var steps = [
-			{ n: 1, title: 'Create a project',
-			  body: 'In the page that opens, click <strong>NEW PROJECT</strong>, name it <code>Felix</code>, then click <strong>CREATE</strong>. Wait for it to finish, then come back here.',
-			  href: 'https://console.cloud.google.com/projectcreate', linkText: 'Open Google Cloud Console' },
-			{ n: 2, title: 'Enable the APIs',
-			  body: 'Click <strong>ENABLE</strong> on each of these three pages.',
-			  multiHref: [
-				  ['Enable Gmail API', 'https://console.cloud.google.com/apis/library/gmail.googleapis.com'],
-				  ['Enable Drive API', 'https://console.cloud.google.com/apis/library/drive.googleapis.com'],
-				  ['Enable Calendar API', 'https://console.cloud.google.com/apis/library/calendar-json.googleapis.com'],
-			  ] },
-			{ n: 3, title: 'Set up consent screen',
-			  body: 'Pick <strong>External</strong>, click <strong>CREATE</strong>. Enter <code>Felix</code> as App name, your email for both <em>User support email</em> and <em>Developer contact</em>, and click <strong>SAVE AND CONTINUE</strong> through the rest. On the <em>Test users</em> step, add your own Google account.',
-			  href: 'https://console.cloud.google.com/apis/credentials/consent', linkText: 'Open Consent Screen' },
-			{ n: 4, title: 'Create credentials',
-			  body: 'Click <strong>+ CREATE CREDENTIALS → OAuth client ID</strong>. Application type: <strong>Desktop app</strong>. Name: <code>Felix</code>. Click <strong>CREATE</strong>. A popup will show your Client ID and Client Secret — paste both below.',
-			  href: 'https://console.cloud.google.com/apis/credentials', linkText: 'Open Credentials Page' },
-		];
-
-		steps.forEach(function(step) {
-			var div = document.createElement('div');
-			div.style.cssText = 'margin-bottom:1rem;padding:0.75rem;border:1px solid var(--color-border);border-radius:var(--radius);background:var(--color-bg);';
-			var h = document.createElement('div');
-			h.style.cssText = 'font-weight:600;margin-bottom:0.25rem;font-size:0.9rem;';
-			h.textContent = 'Step ' + step.n + ' of 4 — ' + step.title;
-			div.appendChild(h);
-			var body = document.createElement('div');
-			body.style.cssText = 'font-size:0.85rem;color:var(--color-text);margin-bottom:0.5rem;';
-			body.innerHTML = step.body;
-			div.appendChild(body);
-			if (step.href) {
-				var link = document.createElement('a');
-				link.href = step.href;
-				link.target = '_blank';
-				link.rel = 'noopener noreferrer';
-				link.className = 'btn-primary';
-				link.style.cssText = 'display:inline-block;text-decoration:none;font-size:0.85rem;';
-				link.textContent = step.linkText + ' →';
-				div.appendChild(link);
-			}
-			if (step.multiHref) {
-				step.multiHref.forEach(function(pair) {
-					var a = document.createElement('a');
-					a.href = pair[1]; a.target = '_blank'; a.rel = 'noopener noreferrer';
-					a.className = 'btn-primary';
-					a.style.cssText = 'display:inline-block;text-decoration:none;font-size:0.85rem;margin-right:0.5rem;margin-bottom:0.25rem;';
-					a.textContent = pair[0] + ' →';
-					div.appendChild(a);
-				});
-			}
-			c.appendChild(div);
-		});
-
-		// Paste form
-		var formWrap = document.createElement('div');
-		formWrap.style.cssText = 'padding:0.75rem;border:1px solid var(--color-border);border-radius:var(--radius);';
-		var fh = document.createElement('div');
-		fh.style.cssText = 'font-weight:600;margin-bottom:0.5rem;font-size:0.9rem;';
-		fh.textContent = 'Paste your credentials';
-		formWrap.appendChild(fh);
-
-		var idField = document.createElement('div');
-		idField.className = 'form-group';
-		idField.innerHTML = '<label>Client ID</label><input type="text" id="g-client-id" placeholder="123-abc.apps.googleusercontent.com">';
-		formWrap.appendChild(idField);
-
-		var secField = document.createElement('div');
-		secField.className = 'form-group';
-		secField.innerHTML = '<label>Client Secret</label><input type="text" id="g-client-secret" placeholder="GOCSPX-…">';
-		formWrap.appendChild(secField);
-
-		var err = document.createElement('div');
-		err.id = 'g-error';
-		err.style.cssText = 'color:var(--color-error);font-size:0.85rem;margin-bottom:0.5rem;display:none;';
-		formWrap.appendChild(err);
-
-		var btn = document.createElement('button');
-		btn.className = 'btn-primary';
-		btn.textContent = 'Save & Connect';
-		btn.addEventListener('click', function() {
-			var id = (document.getElementById('g-client-id').value || '').trim();
-			var sec = (document.getElementById('g-client-secret').value || '').trim();
-			err.style.display = 'none';
-			fetch('/google/credentials', {
-				method: 'POST',
-				headers: {'Content-Type': 'application/json'},
-				body: JSON.stringify({client_id: id, client_secret: sec})
-			})
-			.then(function(r) {
-				if (!r.ok) {
-					return r.text().then(function(t) {
-						err.textContent = t.replace(/^[^"]*"error":"|"\}.*$/g, '');
-						err.style.display = 'block';
-						throw new Error('save failed');
-					});
-				}
-				location.href = '/google/oauth/start';
-			})
-			.catch(function() {});
-		});
-		formWrap.appendChild(btn);
-		c.appendChild(formWrap);
-	}
-
-	// === WhatsApp pairing flow ===
-	var waEvtSource = null;
-	function refreshWhatsAppStatus() {
-		var bar = document.getElementById('wa-status-bar');
-		if (!bar) return;
-		fetch('/whatsapp/status').then(function(r) { return r.json(); }).then(function(d) {
-			renderWhatsAppStatusBar(d.status || 'not_configured');
-			var phoneEl = document.getElementById('wa-phone-display');
-			if (phoneEl) {
-				if (d.jid) {
-					var num = d.jid.split('@')[0];
-					phoneEl.textContent = '+' + num;
-				} else {
-					phoneEl.textContent = '—';
-				}
-			}
-			var dbEl = document.getElementById('wa-dbpath-display');
-			if (dbEl) dbEl.textContent = d.db_path || '—';
-		}).catch(function() {
-			renderWhatsAppStatusBar('not_configured');
-		});
-	}
-	function renderWhatsAppStatusBar(status) {
-		var bar = document.getElementById('wa-status-bar');
-		if (!bar) return;
-		var badgeColor = status === 'connected' ? 'var(--color-success)'
-			: status === 'pairing' ? 'var(--color-primary)'
-			: status === 'disconnected' ? 'var(--color-text-muted)'
-			: 'var(--color-error)';
-		var label = {
-			'connected': 'Connected',
-			'pairing': 'Pairing&#8230;',
-			'disconnected': 'Disconnected',
-			'not_paired': 'Not paired',
-			'not_configured': 'Not configured'
-		}[status] || status;
-		var actions = '';
-		if (status === 'connected') {
-			actions = '<button id="wa-disconnect" class="btn-primary" style="background:var(--color-error);">Unpair</button>';
-		} else if (status === 'disconnected') {
-			actions = '<button id="wa-pair" class="btn-primary">Reconnect</button>' +
-				' <button id="wa-disconnect" class="btn-primary" style="background:var(--color-error);">Unpair</button>';
-		} else if (status === 'not_paired') {
-			actions = '<button id="wa-pair" class="btn-primary">Pair Device</button>';
-		}
-		bar.innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + badgeColor + ';"></span>' +
-			'<span style="font-size:0.875rem;">' + label + '</span>' +
-			'<span style="margin-left:auto;">' + actions + '</span>';
-
-		var pair = document.getElementById('wa-pair');
-		if (pair) pair.addEventListener('click', startWhatsAppPairing);
-		var disc = document.getElementById('wa-disconnect');
-		if (disc) disc.addEventListener('click', disconnectWhatsApp);
-	}
-	function startWhatsAppPairing() {
-		var modal = document.getElementById('wa-qr-modal');
-		var img = document.getElementById('wa-qr-img');
-		var err = document.getElementById('wa-qr-error');
-		var cancel = document.getElementById('wa-qr-cancel');
-		modal.style.display = 'flex';
-		err.style.display = 'none';
-		img.innerHTML = 'Waiting for QR&#8230;';
-
-		if (waEvtSource) { waEvtSource.close(); }
-		waEvtSource = new EventSource('/whatsapp/pair');
-		waEvtSource.addEventListener('qr', function(e) {
-			var data = JSON.parse(e.data);
-			img.innerHTML = '<img src="data:image/png;base64,' + data.png_b64 + '" alt="QR" style="width:256px;height:256px;display:block;" />';
-		});
-		waEvtSource.addEventListener('connected', function() {
-			img.innerHTML = '<div style="color:var(--color-success);font-weight:600;">Connected!</div>';
-			setTimeout(function() {
-				modal.style.display = 'none';
-				if (waEvtSource) { waEvtSource.close(); waEvtSource = null; }
-				refreshWhatsAppStatus();
-			}, 800);
-		});
-		waEvtSource.addEventListener('error', function(e) {
-			if (e.data) {
-				var data = JSON.parse(e.data);
-				err.textContent = data.message || 'Pairing failed';
-				err.style.display = 'block';
-			}
-			if (waEvtSource) { waEvtSource.close(); waEvtSource = null; }
-		});
-		cancel.onclick = function() {
-			if (waEvtSource) { waEvtSource.close(); waEvtSource = null; }
-			modal.style.display = 'none';
-		};
-	}
-	function disconnectWhatsApp() {
-		if (!confirm('Unpair WhatsApp? You will need to scan the QR again to reconnect.')) return;
-		fetch('/whatsapp/disconnect', {method: 'POST'}).then(function() {
-			refreshWhatsAppStatus();
-		});
 	}
 
 	// === Intelligence Panel (Memory + Cortex + Heartbeat) ===
@@ -1468,11 +1114,16 @@ html.dark .error-state { background: #450a0a; }
 		var p = document.getElementById('panel-intelligence');
 		p.innerHTML = '';
 
-		// Memory
+		// Memory — defaults to enabled when the field is missing.
 		var m = cfg.memory || {};
+		var memEnabled = m.enabled !== false;
+		if (!cfg.memory) cfg.memory = {};
+		cfg.memory.enabled = memEnabled;
+		// Default the embedding model to nomic-embed-text when not set.
+		if (!cfg.memory.embeddingModel) cfg.memory.embeddingModel = 'nomic-embed-text';
+
 		var memSec = makeSection(p, 'Memory');
-		makeField(memSec, 'Enabled', 'toggle', m.enabled, function(v) {
-			if (!cfg.memory) cfg.memory = {};
+		makeField(memSec, 'Enabled', 'toggle', memEnabled, function(v) {
 			cfg.memory.enabled = v;
 		});
 		var memRow = makeRow(memSec);
@@ -1480,19 +1131,22 @@ html.dark .error-state { background: #450a0a; }
 			value: m.embeddingProvider || '',
 			options: Object.keys(cfg.providers || {})
 		}, function(v) {
-			if (!cfg.memory) cfg.memory = {};
 			cfg.memory.embeddingProvider = v;
 		});
-		makeField(memRow, 'Embedding Model', 'text', m.embeddingModel || '', function(v) {
-			if (!cfg.memory) cfg.memory = {};
+		var embFld = makeField(memRow, 'Embedding Model', 'text', cfg.memory.embeddingModel, function(v) {
 			cfg.memory.embeddingModel = v;
 		});
+		var embInp = embFld.querySelector('input');
+		if (embInp) embInp.placeholder = 'nomic-embed-text';
 
-		// Cortex
+		// Cortex — defaults to enabled when the field is missing.
 		var cx = cfg.cortex || {};
+		var cxEnabled = cx.enabled !== false;
+		if (!cfg.cortex) cfg.cortex = {};
+		cfg.cortex.enabled = cxEnabled;
+
 		var cxSec = makeSection(p, 'Cortex');
-		makeField(cxSec, 'Enabled', 'toggle', cx.enabled, function(v) {
-			if (!cfg.cortex) cfg.cortex = {};
+		makeField(cxSec, 'Enabled', 'toggle', cxEnabled, function(v) {
 			cfg.cortex.enabled = v;
 		});
 		makeField(cxSec, 'DB Path', 'text', cx.dbPath || '', function(v) {

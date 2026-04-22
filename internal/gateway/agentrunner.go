@@ -24,7 +24,6 @@ type AgentRunnerImpl struct {
 	providers     map[string]llm.LLMProvider
 	config        *config.Config
 	sessionStore  *session.Store
-	sender        tools.MessageSender // optional: for send_message in delegated agents
 	skills        *skill.Loader
 	memory        *memory.Manager
 	cortex        *cortex.Cortex
@@ -43,11 +42,6 @@ func NewAgentRunner(
 		sessionStore:  sessionStore,
 		compactionMgr: compaction.BuildManager(cfg),
 	}
-}
-
-// SetSender sets the message sender for delegated agents.
-func (r *AgentRunnerImpl) SetSender(sender tools.MessageSender) {
-	r.sender = sender
 }
 
 // SetSkills sets the skill loader for delegated agents.
@@ -86,10 +80,6 @@ func (r *AgentRunnerImpl) RunAgent(ctx context.Context, agentID, prompt string) 
 		Allowlist: r.config.Security.ExecApprovals.Allowlist,
 	}
 	tools.RegisterCoreTools(delegateToolReg, agentCfg.Workspace, execPolicy)
-
-	if r.sender != nil {
-		tools.RegisterSendMessage(delegateToolReg, r.sender)
-	}
 
 	// Apply the target agent's tool policy
 	var executor tools.Executor = delegateToolReg

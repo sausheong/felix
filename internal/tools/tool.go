@@ -272,11 +272,6 @@ func validatePathInWorkDir(path, workDir string) error {
 	return nil
 }
 
-// RegisterSendMessage registers the send_message tool with the given sender.
-func RegisterSendMessage(reg *Registry, sender MessageSender) {
-	reg.Register(&SendMessageTool{Sender: sender})
-}
-
 // RegisterCron registers the cron tool with the given scheduler.
 func RegisterCron(reg *Registry, scheduler JobScheduler) {
 	reg.Register(&CronTool{Scheduler: scheduler})

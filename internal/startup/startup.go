@@ -13,18 +13,15 @@ import (
 
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/felix/internal/agent"
-	"github.com/sausheong/felix/internal/channel"
 	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/config"
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
 	"github.com/sausheong/felix/internal/cron"
 	"github.com/sausheong/felix/internal/gateway"
-	"github.com/sausheong/felix/internal/google"
 	"github.com/sausheong/felix/internal/heartbeat"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/memory"
-	"github.com/sausheong/felix/internal/router"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
 	"github.com/sausheong/felix/internal/tools"
@@ -154,22 +151,14 @@ func (a *CronSchedulerAdapter) UpdateJobSchedule(name, schedule string) error {
 	return a.Scheduler.UpdateSchedule(name, schedule)
 }
 
-// Options configures gateway startup behavior.
-type Options struct {
-	// ConnectTimeout is the per-channel connect timeout. Zero means no
-	// timeout (channels block until connected). Set this for headless
-	// environments where interactive channel setup is not possible.
-	ConnectTimeout time.Duration
-}
+// Options configures gateway startup behavior. Reserved for future use.
+type Options struct{}
 
 // StartGateway starts the full gateway server and returns the result.
 // The caller is responsible for calling Result.Cleanup() on shutdown and
 // starting the HTTP server via Result.Server.Start() in a goroutine.
 func StartGateway(configPath, version string, opts ...Options) (*Result, error) {
-	var opt Options
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
+	_ = opts
 	// Install a tee log handler that captures entries for the /logs page
 	// while forwarding to a stderr handler. We create a fresh TextHandler
 	// rather than using slog.Default().Handler() because in Go 1.22+ the
@@ -282,71 +271,14 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		}
 	}
 
-	// Init Google integration. The manager is always created (so the OAuth
-	// callback endpoint works); credentials are loaded from config and may be
-	// updated later via the settings UI.
-	googleMgr, gerr := google.NewManager(dataDir)
-	if gerr != nil {
-		slog.Warn("failed to init google manager", "error", gerr)
-	} else {
-		googleMgr.SetCredentials(cfg.Google.ClientID, cfg.Google.ClientSecret)
-		if googleMgr.IsConnected() {
-			toolReg.Register(&google.GmailListRecentTool{Manager: googleMgr})
-			slog.Info("google integration connected", "email", googleMgr.ConnectedEmail())
-		}
-	}
-
 	// Init WebSocket handler
 	wsHandler := gateway.NewWebSocketHandler(providers, toolReg, sessionStore, cfg)
 	wsHandler.SetSkills(skillLoader)
 	wsHandler.SetMemory(memMgr)
 	wsHandler.SetCortex(cx)
 
-	// Init message router
-	fallbackAgent := "default"
-	if len(cfg.Agents.List) > 0 {
-		fallbackAgent = cfg.Agents.List[0].ID
-	}
-	msgRouter := router.NewRouter(cfg.Bindings, fallbackAgent)
-
-	// Init channel manager
-	chanMgr := gateway.NewChannelManager(msgRouter, providers, toolReg, sessionStore, cfg)
-	chanMgr.SetSkills(skillLoader)
-	chanMgr.SetMemory(memMgr)
-	chanMgr.SetCortex(cx)
-	if opt.ConnectTimeout > 0 {
-		chanMgr.SetConnectTimeout(opt.ConnectTimeout)
-	}
-
-	// Register Telegram channel if configured
-	if cfg.Channels.Telegram.Token != "" {
-		tgChan := channel.NewTelegramChannel(
-			cfg.Channels.Telegram.Token,
-			cfg.Security.GroupPolicy.RequireMention,
-		)
-		chanMgr.Register(tgChan)
-		slog.Info("telegram channel registered")
-	}
-
-	// Always register the WhatsApp channel so it can be paired via the
-	// settings UI even on first run (no DB yet). The store will be created
-	// on first Connect() if needed.
-	waDBPath := cfg.Channels.WhatsApp.DBPath
-	if waDBPath == "" {
-		waDBPath = filepath.Join(dataDir, "whatsapp.db")
-	}
-	{
-		waChan := channel.NewWhatsAppChannel(waDBPath, cfg.Channels.WhatsApp.AllowedSenders)
-		chanMgr.Register(waChan)
-		slog.Info("whatsapp channel registered")
-	}
-
-	// Register send_message tool with channel manager as the sender
-	tools.RegisterSendMessage(toolReg, chanMgr)
-
 	// Register ask_agent tool for inter-agent delegation
 	agentRunner := gateway.NewAgentRunner(providers, cfg, sessionStore)
-	agentRunner.SetSender(chanMgr)
 	agentRunner.SetSkills(skillLoader)
 	agentRunner.SetMemory(memMgr)
 	agentRunner.SetCortex(cx)
@@ -367,11 +299,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		}
 	}
 
-	// Start channel manager
 	ctx := context.Background()
-	if err := chanMgr.Start(ctx); err != nil {
-		return nil, fmt.Errorf("start channel manager: %w", err)
-	}
 
 	// Build the compaction Manager once and share across heartbeat, cron,
 	// and the cron-tool agent factory below. The Manager's per-session mutex
@@ -403,7 +331,6 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentID, "heartbeat")
 				hbToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(hbToolReg, agentWorkspace, execPolicy)
-				tools.RegisterSendMessage(hbToolReg, chanMgr)
 
 				rt := &agent.Runtime{
 					LLM:          provider,
@@ -449,7 +376,6 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentID, "cron_"+cronJob.Name)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, agentWorkspace, execPolicy)
-				tools.RegisterSendMessage(cronToolReg, chanMgr)
 				rt := &agent.Runtime{
 					LLM:          provider,
 					Tools:        cronToolReg,
@@ -491,7 +417,6 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				cronSess := session.NewSession(defaultCfg.ID, "cron_"+jobName)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, defaultCfg.Workspace, execPolicy)
-				tools.RegisterSendMessage(cronToolReg, chanMgr)
 				rt := &agent.Runtime{
 					LLM:          p,
 					Tools:        cronToolReg,
@@ -529,14 +454,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		UIHandler:      gateway.NewUIHandler(cfg, version),
 		ChatHandler:    gateway.NewChatHandler(port),
 		JobsHandler:    gateway.NewJobsHandler(port),
-		Settings: gateway.NewSettingsHandlers(cfg, func(newCfg *config.Config) {
+		Settings: gateway.NewSettingsHandlers(cfg, toolReg, func(newCfg *config.Config) {
 			wsHandler.UpdateConfig(newCfg)
 			slog.Info("config updated via settings page")
-		}),
-		WhatsApp: gateway.NewWhatsAppHandlers(chanMgr),
-		Google: gateway.NewGoogleHandlers(googleMgr, cfg, func(newCfg *config.Config) {
-			wsHandler.UpdateConfig(newCfg)
-			slog.Info("config updated via google settings")
 		}),
 		LogBuffer: logBuf,
 	})
@@ -549,7 +469,6 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		if localSup != nil {
 			_ = localSup.Stop()
 		}
-		chanMgr.Stop()
 		if configWatcher != nil {
 			configWatcher.Stop()
 		}

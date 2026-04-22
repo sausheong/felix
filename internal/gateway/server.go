@@ -21,8 +21,6 @@ type ServerOptions struct {
 	ChatHandler    http.HandlerFunc  // optional /chat handler
 	JobsHandler    http.HandlerFunc  // optional /jobs handler
 	Settings       *SettingsHandlers // optional /settings handlers
-	WhatsApp       *WhatsAppHandlers // optional /whatsapp/* handlers
-	Google         *GoogleHandlers   // optional /google/* handlers
 	LogBuffer      *LogBuffer        // optional log buffer for /logs
 }
 
@@ -95,20 +93,9 @@ func (s *Server) routes() {
 		s.router.Get("/settings/", s.opts.Settings.Page)
 		s.router.Get("/settings/api/config", s.opts.Settings.GetConfig)
 		s.router.Post("/settings/api/config", s.opts.Settings.SaveConfig)
-	}
-
-	if s.opts.WhatsApp != nil {
-		s.router.Get("/whatsapp/status", s.opts.WhatsApp.Status)
-		s.router.Get("/whatsapp/pair", s.opts.WhatsApp.Pair)
-		s.router.Post("/whatsapp/disconnect", s.opts.WhatsApp.Disconnect)
-	}
-
-	if s.opts.Google != nil {
-		s.router.Get("/google/status", s.opts.Google.Status)
-		s.router.Post("/google/credentials", s.opts.Google.SaveCredentials)
-		s.router.Get("/google/oauth/start", s.opts.Google.OAuthStart)
-		s.router.Get("/google/oauth/callback", s.opts.Google.OAuthCallback)
-		s.router.Post("/google/disconnect", s.opts.Google.Disconnect)
+		if s.opts.Settings.ListTools != nil {
+			s.router.Get("/settings/api/tools", s.opts.Settings.ListTools)
+		}
 	}
 
 	if s.opts.LogBuffer != nil {

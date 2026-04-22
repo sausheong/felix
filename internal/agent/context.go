@@ -33,7 +33,7 @@ func detectImageMIME(data []byte, hint string) string {
 	return hint
 }
 
-const defaultIdentityBase = `You are a helpful AI assistant called Felix. Be concise and helpful. When executing tasks, think step by step and use your tools to accomplish the user's goals.`
+const defaultIdentityBase = `You are Felix, an AI agent. Conduct yourself professionally and politely. Be concise and direct. When executing tasks, think step by step and use your tools to accomplish the user's goals.`
 
 // toolHints maps tool names to usage guidance injected into the default identity.
 var toolHints = map[string]string{
@@ -130,19 +130,9 @@ func configSummary() string {
 		}
 	}
 
-	// Channels
-	var channels []string
-	if cfg.Channels.Telegram.Token != "" {
-		channels = append(channels, "telegram")
-	}
-	if cfg.Channels.WhatsApp.DBPath != "" {
-		channels = append(channels, "whatsapp")
-	}
+	// Channels (CLI is always available)
 	if cfg.Channels.CLI.Enabled {
-		channels = append(channels, "cli")
-	}
-	if len(channels) > 0 {
-		sb.WriteString("\n\nConfigured channels: " + strings.Join(channels, ", "))
+		sb.WriteString("\n\nConfigured channels: cli")
 	}
 
 	return sb.String()

@@ -4,7 +4,7 @@
 
 A self-hosted AI agent gateway written in Go. Single binary, low memory, fast startup.
 
-Felix connects messaging channels (Telegram, WhatsApp, CLI) to LLMs (Claude, GPT, Gemini, DeepSeek, Ollama), enabling autonomous task execution on your own hardware. Inspired by [OpenClaw](https://github.com/openclaw/openclaw), rewritten in Go for single-binary deployment, sub-50MB memory, and <100ms startup.
+Felix connects you (via CLI or web chat) to LLMs (Claude, GPT, Gemini, DeepSeek, Ollama), enabling autonomous task execution on your own hardware. Inspired by [OpenClaw](https://github.com/openclaw/openclaw), rewritten in Go for single-binary deployment, sub-50MB memory, and <100ms startup.
 
 ---
 
@@ -12,7 +12,7 @@ Felix connects messaging channels (Telegram, WhatsApp, CLI) to LLMs (Claude, GPT
 
 - **Single binary** — no runtime dependencies, no Node.js, no npm. Download and run.
 - **System tray app** — runs the gateway in the background with a tray icon, web chat, and one-click access to settings (macOS and Windows)
-- **Three interfaces** — Telegram (mobile/remote), WhatsApp (personal messaging), CLI (local terminal)
+- **Two interfaces** — local CLI (`felix chat`) and a web chat page served by the gateway
 - **Model-agnostic** — Claude, GPT, Gemini, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible API
 - **Multi-agent** — run multiple agents with different models, tools, and personas
 - **Inter-agent delegation** — agents can delegate subtasks to other agents via the `ask_agent` tool
@@ -20,8 +20,8 @@ Felix connects messaging channels (Telegram, WhatsApp, CLI) to LLMs (Claude, GPT
 - **Skill system** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance
 - **Heartbeat daemon** — proactive agent actions on a schedule via HEARTBEAT.md checklists
 - **Cron jobs** — recurring prompts on configurable intervals, with pause/resume/remove management
-- **Vision/image support** — send photos via Telegram, WhatsApp, or CLI and the LLM describes/analyzes them
-- **Tool policies** — per-agent allow/deny lists for all ten tools
+- **Vision/image support** — paste or drop image paths in CLI/web chat and the LLM analyzes them
+- **Tool policies** — per-agent allow/deny lists for all built-in tools
 - **Session persistence** — append-only JSONL files with DAG structure and branching
 - **Config hot-reload** — edit felix.json5 while running, changes apply immediately
 - **WebSocket API** — JSON-RPC 2.0 control plane for programmatic access
@@ -55,7 +55,7 @@ make build-app-windows  # Build the Windows system tray app (felix-app.exe)
 ./felix onboard
 ```
 
-The wizard walks you through choosing an LLM provider, entering your API key, and optionally setting up Telegram and/or WhatsApp.
+The wizard walks you through choosing an LLM provider and entering your API key.
 
 ### Chat
 
@@ -63,7 +63,7 @@ The wizard walks you through choosing an LLM provider, entering your API key, an
 # Interactive CLI session (no gateway needed)
 ./felix chat
 
-# Start the full gateway (enables Telegram, WhatsApp, WebSocket API)
+# Start the full gateway (web chat, settings UI, WebSocket API)
 ./felix start
 
 # Or launch the system tray app
@@ -173,11 +173,11 @@ Single-process, hub-and-spoke design. All components run in one binary.
 ### Core Components
 
 - **Gateway Server** (`cmd/felix/`) — HTTP + WebSocket server on `:18789` using chi router + gorilla/websocket. Entry point for all CLI subcommands via cobra.
-- **Channel Adapters** — Implement the `Channel` interface. Three adapters ship: Telegram (`go-telegram/bot`), WhatsApp (`whatsmeow`), and CLI (stdin/stdout). The interface is generic for future extensibility.
+- **CLI Adapter** — `felix chat` runs the agent loop directly against stdin/stdout with readline editing and Markdown rendering. The gateway also serves a web chat page at `/chat`.
 - **Agent Runtime** — The think-act loop: assemble context (identity + skills + memory + history), stream LLM response, execute tool calls with policy checks, loop until final text response.
 - **LLM Client** — Abstracted behind `LLMProvider` interface with `ChatStream()` and `Embed()` methods. Providers: Anthropic (custom SSE), OpenAI (`sashabaranov/go-openai`), Google Gemini (`google/generative-ai-go`), Ollama (OpenAI-compatible HTTP).
 - **Session Manager** — Append-only JSONL files with DAG structure. One file per session. Supports compaction when history exceeds context window.
-- **Message Router** — Declarative bindings (JSON) map channel + account + peer to agent IDs. Priority: peer.id > peer.kind > accountId > channel > default.
+- **Message Router** — Declarative bindings (JSON) map channel + account + peer to agent IDs (currently only the `cli` channel routes through here). Priority: peer.id > peer.kind > accountId > channel > default.
 - **Memory Manager** — BM25 text search over Markdown files in `~/.felix/memory/`.
 - **Skill System** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance. Compatible with OpenClaw/Claude Code/Cursor skill format.
 - **Heartbeat Daemon** — Background goroutine on configurable interval (default 30min), reads `HEARTBEAT.md`, sends to agent for proactive actions.
@@ -215,19 +215,15 @@ type Tool interface {
 
 ---
 
-## Channels
-
-### Telegram
-
-Uses the Telegram Bot API. Create a bot via [@BotFather](https://t.me/BotFather), add the token to your config, and start the gateway. Supports polling and webhook modes, group chats with mention-only mode, and image vision (send a photo and the LLM will describe it).
-
-### WhatsApp
-
-Uses the WhatsApp Web multidevice protocol via [whatsmeow](https://github.com/tulir/whatsmeow). No Meta Business account, no webhooks, no public URL needed. QR code authentication on first connect, credentials persisted in SQLite for automatic reconnection. Supports image vision — send a photo and the LLM will analyze it.
+## Interfaces
 
 ### CLI
 
 Interactive terminal chat with Markdown rendering. Available via `felix chat` without starting the full gateway. Supports image input — paste or drag-and-drop a file path to send images to the LLM for vision analysis.
+
+### Web chat
+
+Served by the gateway at `http://127.0.0.1:18789/chat` once `felix start` is running (or via the system tray app). Streaming responses, agent switcher, light/dark mode, inline tool-call display, and Markdown rendering.
 
 ---
 
@@ -349,32 +345,27 @@ The naming convention is `{PROVIDER}_API_KEY` (or `{PROVIDER}_AUTH_TOKEN`), and 
     "list": [
       {
         "id": "default",
-        "name": "Assistant",
+        "name": "Felix",
         "model": "anthropic/claude-sonnet-4-5-20250514",
         "workspace": "~/.felix/workspace-default",
         "system_prompt": "You are a helpful coding assistant.",  // optional: overrides IDENTITY.md
         "tools": {
-          "allow": ["read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "send_message", "cron", "ask_agent"]
+          "allow": ["read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "cron", "ask_agent"]
         }
       }
     ]
   },
   "bindings": [
-    { "agentId": "default", "match": { "channel": "cli" } },
-    { "agentId": "default", "match": { "channel": "telegram" } },
-    { "agentId": "default", "match": { "channel": "whatsapp" } }
+    { "agentId": "default", "match": { "channel": "cli" } }
   ],
   "channels": {
-    "telegram": { "token": "123456:ABC...", "mode": "polling" },
-    "whatsapp": { "db_path": "~/.felix/whatsapp.db" },
     "cli": { "enabled": true }
   },
   "memory": { "enabled": true },
+  "cortex": { "enabled": true },
   "heartbeat": { "enabled": true, "interval": "30m" },
   "security": {
-    "execApprovals": { "level": "full" },
-    "dmPolicy": { "unknownSenders": "ignore" },
-    "groupPolicy": { "requireMention": true }
+    "execApprovals": { "level": "full" }
   }
 }
 ```
@@ -383,7 +374,7 @@ The naming convention is `{PROVIDER}_API_KEY` (or `{PROVIDER}_AUTH_TOKEN`), and 
 
 ## Tools
 
-Ten built-in tools that agents can use:
+Built-in tools that agents can use:
 
 | Tool | Description |
 |------|-------------|
@@ -394,11 +385,10 @@ Ten built-in tools that agents can use:
 | `web_fetch` | Fetch a URL and return its content |
 | `web_search` | Search the web |
 | `browser` | Headless Chrome automation (navigate, click, type, screenshot, evaluate JS). All actions accept an optional `url` to navigate before acting |
-| `send_message` | Send a message to a user/group on any connected channel |
 | `cron` | Dynamically schedule, list, pause, resume, remove, and update recurring tasks |
 | `ask_agent` | Delegate a task to another agent and get back the result |
 
-Tool access is controlled per-agent via allow/deny policies.
+Tool access is controlled per-agent via allow/deny policies, configurable from the Settings UI's Agents tab.
 
 ---
 
@@ -416,7 +406,8 @@ All state lives in `~/.felix/` (on Windows: `C:\Users\<you>\.felix\`) — no ext
     IDENTITY.md            # Agent identity/persona (fallback if no system_prompt in config)
     HEARTBEAT.md           # Heartbeat checklist
     skills/                # Agent-specific skills
-  whatsapp.db              # WhatsApp device credentials (SQLite)
+  brain.db                 # Cortex knowledge graph (SQLite)
+  ollama/                  # Bundled Ollama model store
 ```
 
 Everything is human-readable files you can inspect, edit, and version-control.
@@ -476,16 +467,6 @@ Felix is designed to run on your own hardware. The following measures protect yo
 - **DEBUG-level tool logging** — tool inputs and outputs (which may contain sensitive data) are logged at DEBUG, not INFO, so they don't appear in production logs
 - **API keys via environment** — credentials can be set as `{PROVIDER}_API_KEY` environment variables to keep them out of config files entirely
 
-### Channel Access Control
-
-- **DM policy** — control how agents respond to unknown senders on Telegram/WhatsApp:
-  - `ignore` — silently drop messages from unknown users (default)
-  - `notify` — log but drop (useful for discovering user IDs)
-  - `respond` — process all messages
-- **Peer bindings** — route specific Telegram/WhatsApp user IDs to specific agents, combined with `ignore` policy to whitelist users
-- **Group policy** — `requireMention: true` makes agents respond only when @mentioned in group chats
-- **WhatsApp allowed senders** — optional allowlist of phone numbers/JIDs
-
 ---
 
 ## Development
@@ -512,16 +493,13 @@ make help                   # Show all targets
 | HTTP router | `github.com/go-chi/chi/v5` |
 | WebSocket | `github.com/gorilla/websocket` |
 | CLI framework | `github.com/spf13/cobra` |
-| Telegram | `github.com/go-telegram/bot` |
-| WhatsApp | `go.mau.fi/whatsmeow` |
+| Anthropic client | `github.com/anthropics/anthropic-sdk-go` |
 | OpenAI client | `github.com/sashabaranov/go-openai` |
 | Gemini client | `google.golang.org/genai` |
 | Vector DB | `github.com/philippgille/chromem-go` |
 | File watching | `github.com/fsnotify/fsnotify` |
 | Browser automation | `github.com/chromedp/chromedp` |
 | System tray | `fyne.io/systray` |
-| QR code display | `github.com/mdp/qrterminal` |
-| SQLite (pure Go) | `modernc.org/sqlite` |
 | Testing | `github.com/stretchr/testify` |
 | Logging | `log/slog` (stdlib) |
 
@@ -547,7 +525,6 @@ Per-package test coverage:
 | `internal/config` | 73.9% |
 | `internal/gateway` | 56.8% |
 | `internal/tools` | 44.4% |
-| `internal/channel` | 15.0% |
 | `internal/llm` | 14.5% |
 
 ---
@@ -557,10 +534,9 @@ Per-package test coverage:
 | Feature | OpenClaw | Felix |
 |---------|----------|--------|
 | Gateway (WebSocket control plane) | Yes | Yes |
-| Telegram channel | Yes | Yes |
-| WhatsApp channel | Yes | Yes |
 | CLI / Terminal channel | Yes | Yes |
-| Other channels (Discord, Slack, etc.) | Yes (15+) | No (adapter interface allows future addition) |
+| Web chat UI | No | Yes |
+| Telegram / WhatsApp / other messaging channels | Yes (15+) | No |
 | Agent loop with tool calling | Yes (via Pi SDK) | Yes (native Go) |
 | Session persistence (JSONL DAG) | Yes | Yes |
 | Multi-agent routing | Yes | Yes |

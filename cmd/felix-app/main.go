@@ -14,8 +14,6 @@ import (
 
 	"fyne.io/systray"
 
-	"time"
-
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/startup"
 )
@@ -99,9 +97,7 @@ func onReady() {
 	systray.SetTooltip("Felix")
 
 	// Start gateway in the background
-	result, err := startup.StartGateway("", version, startup.Options{
-		ConnectTimeout: 30 * time.Second,
-	})
+	result, err := startup.StartGateway("", version, startup.Options{})
 	if err != nil {
 		slog.Error("failed to start gateway", "error", err)
 		showError(fmt.Sprintf("Felix failed to start:\n\n%v\n\nCheck config at:\n%s", err, config.DefaultConfigPath()))
@@ -148,9 +144,7 @@ func onReady() {
 			case <-mRestart.ClickedCh:
 				slog.Info("restarting gateway")
 				result.Cleanup()
-				newResult, err := startup.StartGateway("", version, startup.Options{
-					ConnectTimeout: 30 * time.Second,
-				})
+				newResult, err := startup.StartGateway("", version, startup.Options{})
 				if err != nil {
 					slog.Error("failed to restart gateway", "error", err)
 					continue

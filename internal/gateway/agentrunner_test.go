@@ -91,7 +91,6 @@ func TestRunAgentSetters(t *testing.T) {
 	runner := NewAgentRunner(nil, cfg, nil)
 
 	// Verify setters don't panic
-	runner.SetSender(nil)
 	runner.SetSkills(nil)
 	runner.SetMemory(nil)
 }
