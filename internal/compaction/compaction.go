@@ -118,6 +118,8 @@ func classifySummarizerError(err error) string {
 		return "empty_summary"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
 	default:
 		// Network failure to localhost Ollama → "ollama_down" (best effort).
 		// More specific classification can come later.

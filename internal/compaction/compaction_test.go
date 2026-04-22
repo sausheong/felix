@@ -112,6 +112,35 @@ func TestManagerSerializesPerSession(t *testing.T) {
 	//  We assert serialization indirectly: with delay 200ms each, total wall time > 200ms.)
 }
 
+func TestManagerClassifiesCancellation(t *testing.T) {
+	// Provider that blocks until ctx is cancelled, returning ctx.Err().
+	cancelMe, cancelFn := context.WithCancel(context.Background())
+	mgr := &Manager{
+		Summarizer: &Summarizer{
+			Provider: &delayedProvider{
+				text:    "never reached",
+				delay:   5 * time.Second,
+				started: make(chan struct{}),
+			},
+			Model:   "m",
+			Timeout: 10 * time.Second,
+		},
+		PreserveTurns: 4,
+	}
+	sess := longSession()
+
+	// Cancel the parent ctx after 50ms — fires while summarizer is still waiting.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancelFn()
+	}()
+
+	res, err := mgr.MaybeCompact(cancelMe, sess, ReasonManual, "")
+	require.NoError(t, err) // skip is not a hard error
+	assert.False(t, res.Compacted)
+	assert.Equal(t, "cancelled", res.Skipped)
+}
+
 // delayedProvider sleeps before responding, signalling start via a channel.
 type delayedProvider struct {
 	text    string
