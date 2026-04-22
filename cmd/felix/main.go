@@ -30,6 +30,7 @@ import (
 	"github.com/sausheong/felix/internal/cron"
 	"github.com/sausheong/felix/internal/gateway"
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
@@ -297,6 +298,24 @@ func runChat(agentID, configPath, modelOverride string) error {
 				cortexadapter.Drain()
 				cx.Close()
 			}()
+		}
+	}
+
+	// First-run background pull of default local models. Runs in a goroutine.
+	if cfg.Local.Enabled {
+		if pcfg := cfg.GetProvider("local"); pcfg.BaseURL != "" {
+			puller := local.NewInstaller(strings.TrimSuffix(pcfg.BaseURL, "/v1"))
+			local.EnsureFirstRunModels(context.Background(), config.DefaultDataDir(), puller, func(ev local.BootstrapEvent) {
+				switch ev.Type {
+				case local.BootstrapStart:
+					fmt.Printf("\033[90m📥 Downloading default models in background: %v\033[0m\n", ev.Models)
+				case local.BootstrapDone:
+					fmt.Printf("\033[90m📥 Default models ready (%ds)\033[0m\n", ev.DurationSec)
+				case local.BootstrapFailed:
+					fmt.Printf("\033[33m📥 Pull failed for %s: %s — will retry on next launch\033[0m\n", ev.Model, ev.Error)
+				}
+				// BootstrapProgress is intentionally silent — too noisy for the CLI.
+			})
 		}
 	}
 

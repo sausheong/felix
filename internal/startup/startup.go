@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sausheong/cortex"
@@ -214,6 +215,13 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				// Re-load so InitProviders sees the local block.
 				if reloaded, rerr := config.Load(configPath); rerr == nil {
 					cfg.UpdateFrom(reloaded)
+				}
+				// First-run background pull of default local models (gemma4 + nomic-embed).
+				if cfg.Local.Enabled {
+					if pcfg := cfg.GetProvider("local"); pcfg.BaseURL != "" {
+						puller := local.NewInstaller(strings.TrimSuffix(pcfg.BaseURL, "/v1"))
+						local.EnsureFirstRunModels(context.Background(), config.DefaultDataDir(), puller, nil)
+					}
 				}
 			}
 			startCancel()
