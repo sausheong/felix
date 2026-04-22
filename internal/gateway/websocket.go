@@ -192,6 +192,8 @@ func (h *WebSocketHandler) dispatch(conn *websocket.Conn, req JSONRPCRequest) {
 		h.handleChatSend(conn, req)
 	case "chat.abort":
 		h.handleChatAbort(conn, req)
+	case "chat.compact":
+		h.handleChatCompact(conn, req)
 	case "agent.status":
 		h.handleAgentStatus(conn, req)
 	case "session.list":
@@ -404,6 +406,88 @@ func (h *WebSocketHandler) handleChatAbort(conn *websocket.Conn, req JSONRPCRequ
 		JSONRPC: "2.0",
 		Result:  map[string]any{"ok": true},
 		ID:      req.ID,
+	})
+}
+
+type chatCompactParams struct {
+	AgentID      string `json:"agentId"`
+	SessionKey   string `json:"sessionKey,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
+}
+
+func (h *WebSocketHandler) handleChatCompact(conn *websocket.Conn, req JSONRPCRequest) {
+	var params chatCompactParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "Invalid params"},
+			ID:      req.ID,
+		})
+		return
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+
+	h.mu.RLock()
+	cfg := h.config
+	h.mu.RUnlock()
+
+	mgr := compaction.BuildManager(cfg)
+	if mgr == nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32001, "message": "compaction not enabled"},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	// Resolve session key — explicit param, per-connection tracking, or default.
+	sessionKey := params.SessionKey
+	if sessionKey == "" {
+		h.mu.RLock()
+		if m, ok := h.activeSessionKeys[conn]; ok {
+			sessionKey = m[params.AgentID]
+		}
+		h.mu.RUnlock()
+	}
+	if sessionKey == "" {
+		sessionKey = "ws_default"
+	}
+
+	sess, err := h.sessionStore.Load(params.AgentID, sessionKey)
+	if err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32004, "message": "session not found: " + err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	res, err := mgr.MaybeCompact(context.Background(), sess, compaction.ReasonManual, params.Instructions)
+	if err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32000, "message": err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result: map[string]any{
+			"compacted":      res.Compacted,
+			"reason":         string(res.Reason),
+			"skipped":        res.Skipped,
+			"turnsCompacted": res.TurnsCompacted,
+			"tokensBefore":   res.TokensBefore,
+			"tokensAfter":    res.TokensAfter,
+			"durationMs":     res.DurationMs,
+		},
+		ID: req.ID,
 	})
 }
 
