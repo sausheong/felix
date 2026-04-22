@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	goopenai "github.com/sashabaranov/go-openai"
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/cortex/connector/conversation"
 	"github.com/sausheong/cortex/extractor/deterministic"
@@ -19,6 +20,8 @@ import (
 	cortexanthropic "github.com/sausheong/cortex/llm/anthropic"
 	cortexoai "github.com/sausheong/cortex/llm/openai"
 	"github.com/sausheong/felix/internal/config"
+	"github.com/sausheong/felix/internal/llm"
+	localpkg "github.com/sausheong/felix/internal/local"
 )
 
 // ingestWG tracks in-flight background ingest goroutines.
@@ -40,46 +43,86 @@ func Drain() {
 	ingestWG.Wait()
 }
 
+// resolveCortexModel returns the (provider, model) cortex.Init should use.
+// When both cfg.Provider and cfg.LLMModel are empty, it mirrors the default
+// agent's model (e.g. "local/gemma4:latest" → "local", "gemma4:latest").
+// Otherwise it returns the explicit values verbatim — no half-mirroring.
+func resolveCortexModel(cfg config.CortexConfig, defaultAgentModel string) (provider, model string) {
+	if cfg.Provider == "" && cfg.LLMModel == "" {
+		return llm.ParseProviderModel(defaultAgentModel)
+	}
+	return cfg.Provider, cfg.LLMModel
+}
+
 // Init opens (or creates) a Cortex knowledge graph using the provided config.
-// apiKey is the API key for the configured provider, looked up by the caller
-// from cfg.Providers[cfg.Cortex.Provider].
-func Init(cfg config.CortexConfig, apiKey string) (*cortex.Cortex, error) {
+// When cfg.Provider and cfg.LLMModel are both empty, the function mirrors
+// defaultAgentModel: e.g. "local/gemma4:latest" wires cortex through bundled
+// Ollama with the same model the default agent uses. getProvider is used to
+// look up the resolved provider's API key + base URL.
+func Init(cfg config.CortexConfig, memCfg config.MemoryConfig, defaultAgentModel string, getProvider func(name string) config.ProviderConfig) (*cortex.Cortex, error) {
 	dbPath := cfg.DBPath
 	if dbPath == "" {
 		dbPath = filepath.Join(config.DefaultDataDir(), "brain.db")
 	}
 
+	provider, model := resolveCortexModel(cfg, defaultAgentModel)
+	pcfg := getProvider(provider)
+	apiKey := pcfg.APIKey
+	baseURL := pcfg.BaseURL
+	slog.Info("cortex auto-mirror",
+		"agent_model", defaultAgentModel,
+		"resolved_provider", provider,
+		"resolved_model", model)
+
 	var opts []cortex.Option
 
-	if apiKey != "" {
-		model := cfg.LLMModel
-		provider := cfg.Provider
-		if provider == "" {
-			provider = "openai"
-		}
-
+	// "local" needs no API key (bundled Ollama). Other providers require one
+	// to enable LLM-backed extraction; without a key cortex runs deterministic-
+	// only via cortex.Open's default extractor.
+	if provider == "local" || apiKey != "" {
 		detExt := deterministic.New()
 
 		switch provider {
+		case "local":
+			if model == "" {
+				model = "gemma4:latest"
+			}
+			llmClient := cortexoai.NewLLM("",
+				cortexoai.WithBaseURL(baseURL),
+				cortexoai.WithModel(model))
+
+			embModel, embDims := localpkg.EmbeddingDims(memCfg.EmbeddingModel)
+			embedder := cortexoai.NewEmbedder("",
+				cortexoai.WithEmbedderBaseURL(baseURL),
+				cortexoai.WithEmbeddingModel(goopenai.EmbeddingModel(embModel), embDims))
+
+			extractor := hybrid.New(detExt, llmext.New(llmClient))
+			opts = append(opts,
+				cortex.WithLLM(llmClient),
+				cortex.WithEmbedder(embedder),
+				cortex.WithExtractor(extractor),
+			)
+
 		case "anthropic":
 			if model == "" {
 				model = "claude-sonnet-4-5-20250929"
 			}
-			llm := cortexanthropic.NewLLM(apiKey, cortexanthropic.WithModel(model))
-			extractor := hybrid.New(detExt, llmext.New(llm))
+			llmClient := cortexanthropic.NewLLM(apiKey, cortexanthropic.WithModel(model))
+			extractor := hybrid.New(detExt, llmext.New(llmClient))
 			opts = append(opts,
-				cortex.WithLLM(llm),
+				cortex.WithLLM(llmClient),
 				cortex.WithExtractor(extractor),
 			)
-		default: // "openai"
+
+		default: // "openai" and any unknown provider
 			if model == "" {
 				model = "gpt-5.4-mini"
 			}
-			llm := cortexoai.NewLLM(apiKey, cortexoai.WithModel(model))
+			llmClient := cortexoai.NewLLM(apiKey, cortexoai.WithModel(model))
 			embedder := cortexoai.NewEmbedder(apiKey)
-			extractor := hybrid.New(detExt, llmext.New(llm))
+			extractor := hybrid.New(detExt, llmext.New(llmClient))
 			opts = append(opts,
-				cortex.WithLLM(llm),
+				cortex.WithLLM(llmClient),
 				cortex.WithEmbedder(embedder),
 				cortex.WithExtractor(extractor),
 			)

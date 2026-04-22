@@ -4,8 +4,41 @@ import (
 	"testing"
 
 	"github.com/sausheong/cortex/connector/conversation"
+	"github.com/sausheong/felix/internal/config"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestResolveCortexModelMirrorsAgentWhenEmpty(t *testing.T) {
+	cfg := config.CortexConfig{Enabled: true} // Provider and LLMModel both empty
+	provider, model := resolveCortexModel(cfg, "local/gemma4:latest")
+	if provider != "local" {
+		t.Errorf("auto-mirror provider = %q, want \"local\"", provider)
+	}
+	if model != "gemma4:latest" {
+		t.Errorf("auto-mirror model = %q, want \"gemma4:latest\"", model)
+	}
+}
+
+func TestResolveCortexModelPreservesExplicitConfig(t *testing.T) {
+	cfg := config.CortexConfig{Enabled: true, Provider: "openai", LLMModel: "gpt-4o"}
+	provider, model := resolveCortexModel(cfg, "local/gemma4:latest")
+	if provider != "openai" {
+		t.Errorf("explicit provider should be preserved; got %q", provider)
+	}
+	if model != "gpt-4o" {
+		t.Errorf("explicit model should be preserved; got %q", model)
+	}
+}
+
+func TestResolveCortexModelDoesNotHalfMirror(t *testing.T) {
+	// If only one of Provider/LLMModel is set, the explicit values win
+	// verbatim and we don't fill the missing field from the agent.
+	cfg := config.CortexConfig{Enabled: true, Provider: "anthropic", LLMModel: ""}
+	provider, model := resolveCortexModel(cfg, "local/gemma4:latest")
+	if provider != "anthropic" || model != "" {
+		t.Errorf("partial config should not auto-mirror; got (%q, %q)", provider, model)
+	}
+}
 
 // msgs is a helper that builds a []conversation.Message from alternating role/content pairs.
 func msgs(pairs ...string) []conversation.Message {
