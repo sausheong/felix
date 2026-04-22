@@ -9,11 +9,13 @@ import (
 
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/cortex/connector/conversation"
+	"github.com/sausheong/felix/internal/compaction"
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
+	"github.com/sausheong/felix/internal/tokens"
 	"github.com/sausheong/felix/internal/tools"
 )
 
@@ -27,15 +29,19 @@ const (
 	EventDone
 	EventError
 	EventAborted
+	EventCompactionStart
+	EventCompactionDone
+	EventCompactionSkipped
 )
 
 // AgentEvent is a single streaming event from the agent.
 type AgentEvent struct {
-	Type     EventType
-	Text     string
-	ToolCall *llm.ToolCall
-	Result   *tools.ToolResult
-	Error    error
+	Type       EventType
+	Text       string
+	ToolCall   *llm.ToolCall
+	Result     *tools.ToolResult
+	Error      error
+	Compaction *compaction.Result // populated for EventCompaction* events
 }
 
 // Runtime is the agent think-act loop.
@@ -47,11 +53,14 @@ type Runtime struct {
 	AgentName    string // human-readable name (e.g. "Assistant", "Coder")
 	Model        string
 	Workspace    string
-	MaxTurns     int // safety limit for tool-use loops
-	SystemPrompt string          // optional: inline system prompt (overrides IDENTITY.md)
-	Skills       *skill.Loader   // optional: skill loader for selective injection
-	Memory       *memory.Manager // optional: memory manager for context retrieval
-	Cortex       *cortex.Cortex  // optional: Cortex knowledge graph for recall/ingest
+	MaxTurns     int                 // safety limit for tool-use loops
+	SystemPrompt string              // optional: inline system prompt (overrides IDENTITY.md)
+	Skills       *skill.Loader       // optional: skill loader for selective injection
+	Memory       *memory.Manager     // optional: memory manager for context retrieval
+	Cortex       *cortex.Cortex      // optional: Cortex knowledge graph for recall/ingest
+	Compaction   *compaction.Manager // optional; nil → no compaction
+
+	calibrator *tokens.Calibrator
 }
 
 // Run executes the agent loop for a user message, returning a channel of events.
@@ -138,13 +147,35 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				systemPrompt += cortexContext
 			}
 
-			history := r.Session.History()
+			history := r.Session.View()
 			msgs := assembleMessages(history)
 
 			// Prune oversized tool results
 			pruneToolResults(msgs, maxToolResultLen)
 
 			toolDefs := r.Tools.ToolDefs()
+
+			// Preventive compaction check.
+			if r.Compaction != nil && r.Model != "" {
+				if r.calibrator == nil {
+					r.calibrator = tokens.NewCalibrator()
+				}
+				estimate := r.calibrator.Adjust(tokens.Estimate(msgs, systemPrompt, toolDefs))
+				window := tokens.ContextWindow(r.Model)
+				if window > 0 && estimate > int(0.6*float64(window)) {
+					events <- AgentEvent{Type: EventCompactionStart}
+					res, _ := r.Compaction.MaybeCompact(ctx, r.Session, compaction.ReasonPreventive, "")
+					if res.Compacted {
+						events <- AgentEvent{Type: EventCompactionDone, Compaction: &res}
+						// Re-assemble messages after compaction.
+						history = r.Session.View()
+						msgs = assembleMessages(history)
+						pruneToolResults(msgs, maxToolResultLen)
+					} else {
+						events <- AgentEvent{Type: EventCompactionSkipped, Compaction: &res}
+					}
+				}
+			}
 
 			req := llm.ChatRequest{
 				Model:        r.Model,
@@ -157,8 +188,25 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// Call LLM
 			stream, err := r.LLM.ChatStream(ctx, req)
 			if err != nil {
-				events <- AgentEvent{Type: EventError, Error: fmt.Errorf("llm error: %w", err)}
-				return
+				if compaction.IsContextOverflow(err) && r.Compaction != nil {
+					events <- AgentEvent{Type: EventCompactionStart}
+					res, _ := r.Compaction.MaybeCompact(ctx, r.Session, compaction.ReasonReactive, "")
+					if res.Compacted {
+						events <- AgentEvent{Type: EventCompactionDone, Compaction: &res}
+						// Re-assemble + retry once.
+						history = r.Session.View()
+						msgs = assembleMessages(history)
+						pruneToolResults(msgs, maxToolResultLen)
+						req.Messages = msgs
+						stream, err = r.LLM.ChatStream(ctx, req)
+					} else {
+						events <- AgentEvent{Type: EventCompactionSkipped, Compaction: &res}
+					}
+				}
+				if err != nil {
+					events <- AgentEvent{Type: EventError, Error: fmt.Errorf("llm error: %w", err)}
+					return
+				}
 			}
 
 			// Collect the response
@@ -177,6 +225,11 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				case llm.EventToolCallDone:
 					if event.ToolCall != nil {
 						toolCalls = append(toolCalls, *event.ToolCall)
+					}
+
+				case llm.EventDone:
+					if event.Usage != nil && r.calibrator != nil {
+						r.calibrator.Update(event.Usage.InputTokens, tokens.Estimate(msgs, systemPrompt, toolDefs))
 					}
 
 				case llm.EventError:

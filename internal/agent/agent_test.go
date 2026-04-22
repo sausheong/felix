@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/tools"
@@ -456,4 +459,113 @@ func mustMarshalMessageData(t *testing.T, text string) json.RawMessage {
 	data, err := json.Marshal(session.MessageData{Text: text})
 	require.NoError(t, err)
 	return data
+}
+
+// fakeLLM is a minimal llm.LLMProvider that returns a scripted response.
+//
+// overflow is the call index (0-based) at which the provider returns a
+// context-overflow error instead of streaming. Defaults to -1 (never).
+// On the overflow path the call index is NOT advanced, so the next call
+// (the retry after compaction) consumes the responses[0] entry.
+type fakeLLM struct {
+	responses []string // one per turn; no tool calls
+	idx       int
+	overflow  int // call index at which to return a context-overflow error; -1 disables
+}
+
+func (f *fakeLLM) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
+	if f.idx == f.overflow {
+		// Mark overflow as consumed so we only fail once.
+		f.overflow = -1
+		return nil, errors.New("context length exceeded")
+	}
+	resp := "(silent)"
+	if f.idx < len(f.responses) {
+		resp = f.responses[f.idx]
+	}
+	f.idx++
+	ch := make(chan llm.ChatEvent, 4)
+	go func() {
+		defer close(ch)
+		ch <- llm.ChatEvent{Type: llm.EventTextDelta, Text: resp}
+		ch <- llm.ChatEvent{Type: llm.EventDone}
+	}()
+	return ch, nil
+}
+
+func (f *fakeLLM) Models() []llm.ModelInfo { return nil }
+
+// alwaysSummary: every call returns "compacted summary".
+type alwaysSummary struct{}
+
+func (alwaysSummary) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
+	ch := make(chan llm.ChatEvent, 2)
+	go func() {
+		defer close(ch)
+		ch <- llm.ChatEvent{Type: llm.EventTextDelta, Text: "compacted summary"}
+		ch <- llm.ChatEvent{Type: llm.EventDone}
+	}()
+	return ch, nil
+}
+func (alwaysSummary) Models() []llm.ModelInfo { return nil }
+
+func newCompactionMgr() *compaction.Manager {
+	return &compaction.Manager{
+		Summarizer:    &compaction.Summarizer{Provider: alwaysSummary{}, Model: "m", Timeout: time.Second},
+		PreserveTurns: 4,
+	}
+}
+
+// noopExecutor is a tools.Executor with no tools registered.
+type noopExecutor struct{}
+
+func (noopExecutor) Execute(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
+	return tools.ToolResult{}, errors.New("no tools")
+}
+func (noopExecutor) Names() []string             { return nil }
+func (noopExecutor) ToolDefs() []llm.ToolDef     { return nil }
+func (noopExecutor) Get(name string) (tools.Tool, bool) { return nil, false }
+
+func TestRuntimeReactiveCompactionRetriesOnce(t *testing.T) {
+	sess := session.NewSession("default", "test")
+	for i := 0; i < 6; i++ {
+		sess.Append(session.UserMessageEntry("u"))
+		sess.Append(session.AssistantMessageEntry("a"))
+	}
+	rt := &Runtime{
+		LLM:        &fakeLLM{responses: []string{"final reply"}, overflow: 0},
+		Tools:      noopExecutor{},
+		Session:    sess,
+		Model:      "anthropic/claude-3-5-sonnet-20241022",
+		Workspace:  t.TempDir(),
+		Compaction: newCompactionMgr(),
+	}
+	out, err := rt.RunSync(context.Background(), "next question", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "final reply", out)
+
+	// Session should now contain a compaction entry.
+	view := sess.View()
+	require.NotEmpty(t, view)
+	assert.Equal(t, session.EntryTypeCompaction, view[0].Type)
+}
+
+func TestRuntimeShortSessionDoesNotCompactOnPreventive(t *testing.T) {
+	sess := session.NewSession("default", "test")
+	sess.Append(session.UserMessageEntry("only msg"))
+	rt := &Runtime{
+		LLM:        &fakeLLM{responses: []string{"hi"}, overflow: -1},
+		Tools:      noopExecutor{},
+		Session:    sess,
+		Model:      "anthropic/claude-3-5-sonnet-20241022",
+		Workspace:  t.TempDir(),
+		Compaction: newCompactionMgr(),
+	}
+	_, err := rt.RunSync(context.Background(), "hi", nil)
+	require.NoError(t, err)
+
+	// No compaction entry should have been added.
+	for _, e := range sess.Entries() {
+		assert.NotEqual(t, session.EntryTypeCompaction, e.Type)
+	}
 }
