@@ -21,13 +21,14 @@ import (
 // The delegated agent gets core tools only — ask_agent is NOT registered
 // to prevent infinite recursion.
 type AgentRunnerImpl struct {
-	providers    map[string]llm.LLMProvider
-	config       *config.Config
-	sessionStore *session.Store
-	sender       tools.MessageSender // optional: for send_message in delegated agents
-	skills       *skill.Loader
-	memory       *memory.Manager
-	cortex       *cortex.Cortex
+	providers     map[string]llm.LLMProvider
+	config        *config.Config
+	sessionStore  *session.Store
+	sender        tools.MessageSender // optional: for send_message in delegated agents
+	skills        *skill.Loader
+	memory        *memory.Manager
+	cortex        *cortex.Cortex
+	compactionMgr *compaction.Manager // shared across all delegated runtimes
 }
 
 // NewAgentRunner creates an AgentRunnerImpl.
@@ -37,9 +38,10 @@ func NewAgentRunner(
 	sessionStore *session.Store,
 ) *AgentRunnerImpl {
 	return &AgentRunnerImpl{
-		providers:    providers,
-		config:       cfg,
-		sessionStore: sessionStore,
+		providers:     providers,
+		config:        cfg,
+		sessionStore:  sessionStore,
+		compactionMgr: compaction.BuildManager(cfg),
 	}
 }
 
@@ -114,7 +116,7 @@ func (r *AgentRunnerImpl) RunAgent(ctx context.Context, agentID, prompt string) 
 		Skills:       r.skills,
 		Memory:       r.memory,
 		Cortex:       r.cortex,
-		Compaction:   compaction.BuildManager(r.config),
+		Compaction:   r.compactionMgr,
 	}
 
 	slog.Info("delegating to agent", "agent", agentID, "prompt_len", len(prompt))

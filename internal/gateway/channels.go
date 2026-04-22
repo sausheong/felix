@@ -26,15 +26,16 @@ import (
 // It listens on each registered channel, routes inbound messages to the
 // appropriate agent, runs the agent loop, and sends the response back.
 type ChannelManager struct {
-	channels     map[string]channel.Channel
-	router       *router.Router
-	providers    map[string]llm.LLMProvider
-	tools        *tools.Registry
-	sessionStore *session.Store
-	config       *config.Config
-	skills       *skill.Loader
-	memory       *memory.Manager
-	cortex       *cortex.Cortex
+	channels      map[string]channel.Channel
+	router        *router.Router
+	providers     map[string]llm.LLMProvider
+	tools         *tools.Registry
+	sessionStore  *session.Store
+	config        *config.Config
+	skills        *skill.Loader
+	memory        *memory.Manager
+	cortex        *cortex.Cortex
+	compactionMgr *compaction.Manager // shared across all channel-driven runtimes
 
 	connectTimeout time.Duration // 0 means no timeout (blocks until connected)
 	cancel         context.CancelFunc
@@ -54,12 +55,13 @@ func NewChannelManager(
 	cfg *config.Config,
 ) *ChannelManager {
 	return &ChannelManager{
-		channels:     make(map[string]channel.Channel),
-		router:       r,
-		providers:    providers,
-		tools:        toolReg,
-		sessionStore: sessionStore,
-		config:       cfg,
+		channels:      make(map[string]channel.Channel),
+		router:        r,
+		providers:     providers,
+		tools:         toolReg,
+		sessionStore:  sessionStore,
+		config:        cfg,
+		compactionMgr: compaction.BuildManager(cfg),
 	}
 }
 
@@ -365,7 +367,7 @@ func (cm *ChannelManager) handleMessage(ctx context.Context, ch channel.Channel,
 		Skills:       cm.skills,
 		Memory:       cm.memory,
 		Cortex:       cm.cortex,
-		Compaction:   compaction.BuildManager(cm.config),
+		Compaction:   cm.compactionMgr,
 	}
 
 	slog.Info("processing message",

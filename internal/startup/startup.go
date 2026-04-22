@@ -362,6 +362,11 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		return nil, fmt.Errorf("start channel manager: %w", err)
 	}
 
+	// Build the compaction Manager once and share across heartbeat, cron,
+	// and the cron-tool agent factory below. The Manager's per-session mutex
+	// map only serializes correctly when the same instance is reused.
+	startupCompactionMgr := compaction.BuildManager(cfg)
+
 	// Start heartbeat daemon for each agent if enabled
 	var heartbeats []*heartbeat.Daemon
 	if cfg.Heartbeat.Enabled {
@@ -402,7 +407,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Skills:       skillLoader,
 					Memory:       memMgr,
 					Cortex:       cx,
-					Compaction:   compaction.BuildManager(cfg),
+					Compaction:   startupCompactionMgr,
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -447,7 +452,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Skills:       skillLoader,
 					Memory:       memMgr,
 					Cortex:       cx,
-					Compaction:   compaction.BuildManager(cfg),
+					Compaction:   startupCompactionMgr,
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -489,7 +494,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Skills:       skillLoader,
 					Memory:       memMgr,
 					Cortex:       cx,
-					Compaction:   compaction.BuildManager(cfg),
+					Compaction:   startupCompactionMgr,
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}

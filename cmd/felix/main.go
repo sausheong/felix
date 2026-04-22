@@ -369,6 +369,11 @@ func runChat(agentID, configPath, modelOverride string) error {
 	// Init cron scheduler for chat mode so the agent can use the cron tool
 	cronScheduler := cron.NewScheduler()
 
+	// Build the compaction Manager once and share it across all Runtime
+	// constructions in this chat session. The Manager's per-session mutex
+	// map only serializes correctly when the same Manager instance is reused.
+	compactionMgr := compaction.BuildManager(cfg)
+
 	// Build an agent factory for dynamic cron jobs — each job gets its own
 	// session and runtime so it can actually execute the prompt via the LLM.
 	agentFactory := func(jobName string) func(context.Context, string) (string, error) {
@@ -394,7 +399,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 				Skills:       skillLoader,
 				Memory:       memMgr,
 				Cortex:       cx,
-				Compaction:   compaction.BuildManager(cfg),
+				Compaction:   compactionMgr,
 			}
 			return cronRT.RunSync(ctx, prompt, nil)
 		}
@@ -457,7 +462,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		Skills:       skillLoader,
 		Memory:       memMgr,
 		Cortex:       cx,
-		Compaction:   compaction.BuildManager(cfg),
+		Compaction:   compactionMgr,
 	}
 
 	// Track current session key for switching
@@ -700,6 +705,20 @@ func runChat(agentID, configPath, modelOverride string) error {
 					} else if out := formatToolOutput(event.Result.Output); out != "" {
 						fmt.Printf("\033[90m  %s\033[0m\n", strings.ReplaceAll(out, "\n", "\n  "))
 					}
+				case agent.EventCompactionStart:
+					fmt.Print("\033[90m🧹 Compacting…\033[0m\n")
+				case agent.EventCompactionDone:
+					if event.Compaction != nil {
+						fmt.Printf("\033[90m🧹 Compacted %d turns in %dms\033[0m\n", event.Compaction.TurnsCompacted, event.Compaction.DurationMs)
+					}
+				case agent.EventCompactionSkipped:
+					if event.Compaction != nil {
+						// Skipped during a normal turn; only show if it was reactive (the user hit a real wall).
+						if event.Compaction.Reason == compaction.ReasonReactive {
+							fmt.Printf("\033[33m⚠ Compaction skipped during reactive retry: %s\033[0m\n", event.Compaction.Skipped)
+						}
+						// Preventive skips (e.g. too_short) are silent — don't bother the user.
+					}
 				case agent.EventError:
 					fmt.Printf("\n\033[31mError: %v\033[0m\n", event.Error)
 				case agent.EventAborted:
@@ -769,6 +788,20 @@ func runChat(agentID, configPath, modelOverride string) error {
 					fmt.Printf("\033[31m  error: %s\033[0m\n", event.Result.Error)
 				} else if out := formatToolOutput(event.Result.Output); out != "" {
 					fmt.Printf("\033[90m  %s\033[0m\n", strings.ReplaceAll(out, "\n", "\n  "))
+				}
+			case agent.EventCompactionStart:
+				fmt.Print("\033[90m🧹 Compacting…\033[0m\n")
+			case agent.EventCompactionDone:
+				if event.Compaction != nil {
+					fmt.Printf("\033[90m🧹 Compacted %d turns in %dms\033[0m\n", event.Compaction.TurnsCompacted, event.Compaction.DurationMs)
+				}
+			case agent.EventCompactionSkipped:
+				if event.Compaction != nil {
+					// Skipped during a normal turn; only show if it was reactive (the user hit a real wall).
+					if event.Compaction.Reason == compaction.ReasonReactive {
+						fmt.Printf("\033[33m⚠ Compaction skipped during reactive retry: %s\033[0m\n", event.Compaction.Skipped)
+					}
+					// Preventive skips (e.g. too_short) are silent — don't bother the user.
 				}
 			case agent.EventError:
 				fmt.Printf("\n\033[31mError: %v\033[0m\n", event.Error)

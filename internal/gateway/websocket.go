@@ -43,6 +43,7 @@ type WebSocketHandler struct {
 	tools             *tools.Registry
 	sessionStore      *session.Store
 	config            *config.Config
+	compactionMgr     *compaction.Manager // shared across all chat runtimes; rebuilt in UpdateConfig
 	jobScheduler      tools.JobScheduler
 	skills            *skill.Loader
 	memory            *memory.Manager
@@ -65,6 +66,7 @@ func NewWebSocketHandler(
 		tools:             toolReg,
 		sessionStore:      sessionStore,
 		config:            cfg,
+		compactionMgr:     compaction.BuildManager(cfg),
 		activeRuns:        make(map[*websocket.Conn]context.CancelFunc),
 		activeSessionKeys: make(map[*websocket.Conn]map[string]string),
 		upgrader: websocket.Upgrader{
@@ -85,6 +87,9 @@ func (h *WebSocketHandler) UpdateConfig(cfg *config.Config) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.config = cfg
+	// Rebuild the shared compaction Manager so config changes (enable/disable,
+	// model swap, threshold tweak) take effect on the next chat turn.
+	h.compactionMgr = compaction.BuildManager(cfg)
 }
 
 // SetJobScheduler sets the job scheduler for jobs.* RPC methods.
@@ -307,7 +312,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	cx := h.cortex
 	sk := h.skills
 	mem := h.memory
-	cfg := h.config
+	compactionMgr := h.compactionMgr
 	h.mu.RUnlock()
 
 	rt := &agent.Runtime{
@@ -323,7 +328,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		Skills:       sk,
 		Memory:       mem,
 		Cortex:       cx,
-		Compaction:   compaction.BuildManager(cfg),
+		Compaction:   compactionMgr,
 	}
 
 	runCtx, runCancel := context.WithCancel(context.Background())
@@ -377,6 +382,24 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 					r["images"] = imgs
 				}
 				result = r
+			case agent.EventCompactionStart:
+				result = map[string]any{"type": "compaction.start"}
+			case agent.EventCompactionDone:
+				if event.Compaction != nil {
+					result = map[string]any{
+						"type":           "compaction.done",
+						"turnsCompacted": event.Compaction.TurnsCompacted,
+						"durationMs":     event.Compaction.DurationMs,
+					}
+				}
+			case agent.EventCompactionSkipped:
+				if event.Compaction != nil {
+					result = map[string]any{
+						"type":    "compaction.skipped",
+						"reason":  string(event.Compaction.Reason),
+						"skipped": event.Compaction.Skipped,
+					}
+				}
 			case agent.EventDone:
 				result = map[string]any{"type": "done"}
 			case agent.EventError:
@@ -430,10 +453,9 @@ func (h *WebSocketHandler) handleChatCompact(conn *websocket.Conn, req JSONRPCRe
 	}
 
 	h.mu.RLock()
-	cfg := h.config
+	mgr := h.compactionMgr
 	h.mu.RUnlock()
 
-	mgr := compaction.BuildManager(cfg)
 	if mgr == nil {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",

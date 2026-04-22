@@ -166,6 +166,62 @@ func TestManagerForgetsSession(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// TestSeparateManagersDoNotSerialize sanity-checks that the per-session lock
+// lives on the Manager instance — two Manager instances run concurrently
+// even when handed the same session ID. This proves why call sites must build
+// ONE Manager at startup and share it; per-call construction would lose the
+// serialization guarantee provided by the per-session mutex.
+//
+// We use two distinct *session.Session values with the same agent/key so that
+// the timing assertion isn't undermined by an actual data race on Append
+// (which is the very thing the shared-Manager design prevents). The point of
+// this test is the timing — separate Managers complete in ~1 delay, not 2.
+// Companion to TestManagerSerializesPerSession (which proves the shared case).
+func TestSeparateManagersDoNotSerialize(t *testing.T) {
+	delay := 200 * time.Millisecond
+	mgrA := &Manager{
+		Summarizer: &Summarizer{
+			Provider: &delayedProvider{text: "a", delay: delay, started: make(chan struct{})},
+			Model:    "m",
+			Timeout:  5 * time.Second,
+		},
+		PreserveTurns: 4,
+	}
+	mgrB := &Manager{
+		Summarizer: &Summarizer{
+			Provider: &delayedProvider{text: "b", delay: delay, started: make(chan struct{})},
+			Model:    "m",
+			Timeout:  5 * time.Second,
+		},
+		PreserveTurns: 4,
+	}
+	// Distinct sessions so the assertion isn't muddied by a real data race
+	// on session.Append; we only care about the per-Manager lock's scope here.
+	sessA := longSession()
+	sessB := longSession()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	start := time.Now()
+	go func() {
+		defer wg.Done()
+		_, _ = mgrA.MaybeCompact(context.Background(), sessA, ReasonManual, "")
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = mgrB.MaybeCompact(context.Background(), sessB, ReasonManual, "")
+	}()
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	// Two separate Managers don't share a per-session lock; they run in
+	// parallel. Total wall time should be close to one delay, not two.
+	// Allow generous slack for slow CI: anything < 1.5 * delay proves overlap.
+	assert.Less(t, elapsed, 3*delay/2,
+		"separate Managers should run concurrently; observed %s vs single delay %s — they appear serialized",
+		elapsed, delay)
+}
+
 // delayedProvider sleeps before responding, signalling start via a channel.
 type delayedProvider struct {
 	text    string
