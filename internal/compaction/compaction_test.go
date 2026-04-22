@@ -141,6 +141,31 @@ func TestManagerClassifiesCancellation(t *testing.T) {
 	assert.Equal(t, "cancelled", res.Skipped)
 }
 
+func TestManagerForgetsSession(t *testing.T) {
+	mgr := &Manager{
+		Summarizer: &Summarizer{
+			Provider: &fakeProvider{text: "ok"},
+			Model:    "m",
+			Timeout:  time.Second,
+		},
+		PreserveTurns: 4,
+	}
+	sess := longSession()
+	_, _ = mgr.MaybeCompact(context.Background(), sess, ReasonManual, "")
+	// Manager should now have a lock entry for this session.
+	mgr.mu.Lock()
+	_, ok := mgr.locks[sess.ID]
+	mgr.mu.Unlock()
+	require.True(t, ok)
+
+	mgr.ForgetSession(sess.ID)
+
+	mgr.mu.Lock()
+	_, ok = mgr.locks[sess.ID]
+	mgr.mu.Unlock()
+	assert.False(t, ok)
+}
+
 // delayedProvider sleeps before responding, signalling start via a channel.
 type delayedProvider struct {
 	text    string
