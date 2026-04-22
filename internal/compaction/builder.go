@@ -48,5 +48,6 @@ func BuildManager(cfg *config.Config) *Manager {
 			Timeout:  timeout,
 		},
 		PreserveTurns: c.PreserveTurns,
+		Threshold:     c.Threshold,
 	}
 }

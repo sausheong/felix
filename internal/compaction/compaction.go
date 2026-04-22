@@ -37,7 +37,8 @@ type Result struct {
 // the whole agent runtime; it tracks per-session mutexes internally.
 type Manager struct {
 	Summarizer    *Summarizer
-	PreserveTurns int // K; default 4 if zero
+	PreserveTurns int     // K; default 4 if zero
+	Threshold     float64 // fraction of context window that triggers preventive compaction (e.g. 0.6); 0 means use caller default
 
 	mu    sync.Mutex             // guards locks map
 	locks map[string]*sync.Mutex // session.ID → mutex
@@ -50,6 +51,12 @@ type Manager struct {
 // Errors are returned only for true unexpected failures. Routine "skip"
 // outcomes (too short, empty summary, provider error) come back via
 // Result.Skipped with err == nil so callers can treat them uniformly.
+//
+// Note: MaybeCompact holds the per-session mutex for the entire summarizer
+// call (default 60s timeout). A second concurrent call on the same session
+// will block until the first completes. This is intentional — it prevents
+// two compactions from racing on session.Append — but callers triggering
+// manual compactions while a preventive one is in flight should expect a wait.
 func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reason Reason, instructions string) (Result, error) {
 	if m == nil || m.Summarizer == nil {
 		return Result{Reason: reason, Skipped: "no_summarizer"}, nil
@@ -96,6 +103,22 @@ func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reaso
 		Summary:        summary,
 		DurationMs:     dur,
 	}, nil
+}
+
+// ForgetSession removes the per-session lock for the given session ID.
+// Call this when a session is closed/deleted so the locks map doesn't
+// grow unbounded. Safe to call on a nil Manager and on unknown sessions.
+//
+// TODO: not yet wired into the session lifecycle. Follow-up should call
+// this from session-deletion paths (e.g. /delete slash command, WebSocket
+// disconnects that close their session) so the locks map stays bounded.
+func (m *Manager) ForgetSession(sessionID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.locks, sessionID)
 }
 
 func (m *Manager) lockFor(sessionID string) *sync.Mutex {
