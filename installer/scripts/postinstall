@@ -43,23 +43,7 @@ if [ ! -f "$CONFIG" ]; then
   BUNDLED_OLLAMA="/Applications/Felix.app/Contents/Resources/bin/ollama"
   if [ -x "$BUNDLED_OLLAMA" ]; then
 
-    # Ask which local model to configure (Felix downloads it later).
-    LOCAL_PICK=$(sudo -u "$LOGGED_IN_USER" osascript <<'OSASCRIPT'
-set choices to {"gemma4:latest (~9.6 GB, recommended)", "qwen3.5:9b (~5 GB)"}
-set picked to choose from list choices ¬
-  with prompt "Pick a local model for Felix to use." ¬
-  default items {"gemma4:latest (~9.6 GB, recommended)"} ¬
-  without multiple selections allowed and empty selection allowed
-if picked is false then return "gemma4:latest"
-set choice to item 1 of picked
-if choice starts with "qwen" then
-  return "qwen3.5:9b"
-else
-  return "gemma4:latest"
-end if
-OSASCRIPT
-    )
-    LOCAL_MODEL="${LOCAL_PICK:-gemma4:latest}"
+    LOCAL_MODEL="gemma4"
 
     cat > "$CONFIG" <<EOF
 {
@@ -94,10 +78,10 @@ EOF
 
     # Multi-GB downloads don't belong in an installer — remind the user to
     # pull the model from Felix's Settings UI once it's open.
-    sudo -u "$LOGGED_IN_USER" osascript <<OSASCRIPT >/dev/null 2>&1 || true
-display dialog "Felix is configured to use $LOCAL_MODEL but the model isn't downloaded yet.
+    sudo -u "$LOGGED_IN_USER" osascript <<'OSASCRIPT' >/dev/null 2>&1 || true
+display dialog "Felix is configured to use gemma4 but the model isn't downloaded yet.
 
-After Felix opens, go to Settings → Models and click Download next to $LOCAL_MODEL. The download runs in the background and Felix will use the model as soon as it's ready." buttons {"OK"} default button "OK" with title "Felix Setup"
+After Felix opens, go to Settings → Models and click Download next to gemma4. The download runs in the background and Felix will use the model as soon as it's ready." buttons {"OK"} default button "OK" with title "Felix Setup"
 OSASCRIPT
 
     exit 0
