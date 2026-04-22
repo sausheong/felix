@@ -18,7 +18,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 18789, cfg.Gateway.Port)
 	assert.Len(t, cfg.Agents.List, 1)
 	assert.Equal(t, "default", cfg.Agents.List[0].ID)
-	assert.Equal(t, "openai/gpt-5.4", cfg.Agents.List[0].Model)
+	assert.Equal(t, "local/gemma4", cfg.Agents.List[0].Model)
 }
 
 func TestLoadMissingFile(t *testing.T) {
@@ -191,22 +191,26 @@ func TestDefaultConfigCortexEmbedDefaults(t *testing.T) {
 	if !cfg.Memory.Enabled {
 		t.Errorf("Memory.Enabled default should be true")
 	}
-	if cfg.Cortex.Provider != "" {
-		t.Errorf("Cortex.Provider default = %q, want \"\" (auto-mirror sentinel)", cfg.Cortex.Provider)
+	if got := cfg.Cortex.Provider; got != "local" {
+		t.Errorf("Cortex.Provider default = %q, want \"local\"", got)
 	}
-	if cfg.Cortex.LLMModel != "" {
-		t.Errorf("Cortex.LLMModel default = %q, want \"\" (auto-mirror sentinel)", cfg.Cortex.LLMModel)
+	if got := cfg.Cortex.LLMModel; got != "gemma4" {
+		t.Errorf("Cortex.LLMModel default = %q, want \"gemma4\"", got)
 	}
 }
 
-func TestValidateDoesNotBackfillCortexProvider(t *testing.T) {
+func TestValidateBackfillsCortexProvider(t *testing.T) {
 	cfg := DefaultConfig()
-	// Default has at least one agent already; Validate should leave
-	// Cortex.Provider empty (the new auto-mirror sentinel).
+	// Wipe the cortex provider/model and confirm Validate restores them.
+	cfg.Cortex.Provider = ""
+	cfg.Cortex.LLMModel = ""
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate failed: %v", err)
 	}
-	if cfg.Cortex.Provider != "" {
-		t.Errorf("Validate must NOT backfill Cortex.Provider; got %q", cfg.Cortex.Provider)
+	if cfg.Cortex.Provider != "local" {
+		t.Errorf("Validate should backfill Cortex.Provider to \"local\"; got %q", cfg.Cortex.Provider)
+	}
+	if cfg.Cortex.LLMModel != "gemma4" {
+		t.Errorf("Validate should backfill Cortex.LLMModel to \"gemma4\"; got %q", cfg.Cortex.LLMModel)
 	}
 }

@@ -243,7 +243,7 @@ func DefaultConfig() *Config {
 					ID:        "default",
 					Name:      "Felix",
 					Workspace: filepath.Join(DefaultDataDir(), "workspace-default"),
-					Model:     "openai/gpt-5.4",
+					Model:     "local/gemma4",
 					Sandbox:   "none",
 					Tools: ToolPolicy{
 						Allow: []string{"read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "cron"},
@@ -276,9 +276,9 @@ func DefaultConfig() *Config {
 			EmbeddingModel:    "nomic-embed-text",
 		},
 		Cortex: CortexConfig{
-			Enabled: true,
-			// Provider and LLMModel intentionally empty: cortex.Init mirrors
-			// the default agent's model when both are unset.
+			Enabled:  true,
+			Provider: "local",
+			LLMModel: "gemma4",
 		},
 		Security: SecurityConfig{
 			ExecApprovals: ExecApprovalsConfig{
@@ -330,6 +330,13 @@ func (c *Config) Validate() error {
 	// Same heuristic for Cortex.
 	if c.Cortex == (CortexConfig{}) {
 		c.Cortex = DefaultConfig().Cortex
+	} else {
+		if c.Cortex.Provider == "" {
+			c.Cortex.Provider = "local"
+		}
+		if c.Cortex.LLMModel == "" {
+			c.Cortex.LLMModel = "gemma4"
+		}
 	}
 
 	if len(c.Agents.List) == 0 {
