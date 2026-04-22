@@ -162,6 +162,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				}
 				estimate := r.calibrator.Adjust(tokens.Estimate(msgs, systemPrompt, toolDefs))
 				window := tokens.ContextWindow(r.Model)
+				// TODO: read agents.defaults.compaction.threshold from config (deferred — Task 11 hardcodes 0.6).
 				if window > 0 && estimate > int(0.6*float64(window)) {
 					events <- AgentEvent{Type: EventCompactionStart}
 					res, _ := r.Compaction.MaybeCompact(ctx, r.Session, compaction.ReasonPreventive, "")

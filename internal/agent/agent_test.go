@@ -522,8 +522,8 @@ type noopExecutor struct{}
 func (noopExecutor) Execute(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{}, errors.New("no tools")
 }
-func (noopExecutor) Names() []string             { return nil }
-func (noopExecutor) ToolDefs() []llm.ToolDef     { return nil }
+func (noopExecutor) Names() []string                    { return nil }
+func (noopExecutor) ToolDefs() []llm.ToolDef            { return nil }
 func (noopExecutor) Get(name string) (tools.Tool, bool) { return nil, false }
 
 func TestRuntimeReactiveCompactionRetriesOnce(t *testing.T) {
@@ -561,8 +561,9 @@ func TestRuntimeShortSessionDoesNotCompactOnPreventive(t *testing.T) {
 		Workspace:  t.TempDir(),
 		Compaction: newCompactionMgr(),
 	}
-	_, err := rt.RunSync(context.Background(), "hi", nil)
+	out, err := rt.RunSync(context.Background(), "hi", nil)
 	require.NoError(t, err)
+	assert.Equal(t, "hi", out, "LLM should still have been called when no compaction fires")
 
 	// No compaction entry should have been added.
 	for _, e := range sess.Entries() {
