@@ -265,7 +265,11 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	var cx *cortex.Cortex
 	if cfg.Cortex.Enabled {
 		var initErr error
-		cx, initErr = cortexadapter.Init(cfg.Cortex, cfg.GetProvider(cfg.Cortex.Provider).APIKey)
+		defaultAgentModel := ""
+		if len(cfg.Agents.List) > 0 {
+			defaultAgentModel = cfg.Agents.List[0].Model
+		}
+		cx, initErr = cortexadapter.Init(cfg.Cortex, cfg.Memory, defaultAgentModel, cfg.GetProvider)
 		if initErr != nil {
 			slog.Warn("failed to init cortex", "error", initErr)
 		}

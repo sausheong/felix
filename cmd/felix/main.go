@@ -286,7 +286,11 @@ func runChat(agentID, configPath, modelOverride string) error {
 	var cx *cortex.Cortex
 	if cfg.Cortex.Enabled {
 		var cxErr error
-		cx, cxErr = cortexadapter.Init(cfg.Cortex, cfg.GetProvider(cfg.Cortex.Provider).APIKey)
+		defaultAgentModel := ""
+		if len(cfg.Agents.List) > 0 {
+			defaultAgentModel = cfg.Agents.List[0].Model
+		}
+		cx, cxErr = cortexadapter.Init(cfg.Cortex, cfg.Memory, defaultAgentModel, cfg.GetProvider)
 		if cxErr != nil {
 			slog.Warn("failed to init cortex", "error", cxErr)
 		} else {
