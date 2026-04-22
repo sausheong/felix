@@ -16,6 +16,7 @@ const (
 	EntryTypeToolCall   EntryType = "tool_call"
 	EntryTypeToolResult EntryType = "tool_result"
 	EntryTypeMeta       EntryType = "meta"
+	EntryTypeCompaction EntryType = "compaction"
 )
 
 // SessionEntry is a single node in the session DAG.
@@ -54,6 +55,21 @@ type ToolResultData struct {
 	Error      string      `json:"error,omitempty"`
 	IsError    bool        `json:"is_error,omitempty"`
 	Images     []ImageData `json:"images,omitempty"`
+}
+
+// CompactionData holds an append-only summary of an older portion of the
+// session. The session view assembles messages by reading entries after the
+// most recent CompactionData entry, prepending the summary as a leading
+// synthetic user message. The raw entries before the compaction stay on
+// disk in JSONL — they are skipped at view assembly only.
+type CompactionData struct {
+	Summary              string `json:"summary"`
+	RangeStartID         string `json:"range_start_id,omitempty"` // first entry covered by the summary
+	RangeEndID           string `json:"range_end_id,omitempty"`   // last entry covered by the summary
+	Model                string `json:"model"`                    // e.g. "local/qwen2.5:3b-instruct"
+	TokensBefore         int    `json:"tokens_before"`
+	TokensEstimatedAfter int    `json:"tokens_estimated_after"`
+	TurnsCompacted       int    `json:"turns_compacted"`
 }
 
 // Session holds a conversation session with DAG-structured entries.
@@ -123,6 +139,40 @@ func (s *Session) History() []SessionEntry {
 		path[i], path[j] = path[j], path[i]
 	}
 
+	return path
+}
+
+// View returns the post-compaction message view for the LLM. Walks the
+// current branch from leaf back to root via ParentID; if a compaction entry
+// is encountered it becomes the first emitted entry and everything before
+// it is dropped. Without any compaction entries, View() is identical to
+// History().
+//
+// Multiple compaction entries stack naturally — only the most recent one
+// matters for assembly. Older compactions remain on disk in JSONL.
+func (s *Session) View() []SessionEntry {
+	if len(s.entries) == 0 {
+		return nil
+	}
+
+	var path []SessionEntry
+	current := s.leafID
+	for current != "" {
+		entry, ok := s.entryMap[current]
+		if !ok {
+			break
+		}
+		path = append(path, *entry)
+		if entry.Type == EntryTypeCompaction {
+			break // most recent compaction terminates the walk-back
+		}
+		current = entry.ParentID
+	}
+
+	// Reverse to root→leaf order.
+	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+		path[i], path[j] = path[j], path[i]
+	}
 	return path
 }
 
@@ -272,6 +322,26 @@ func ToolResultEntry(toolCallID, output, errMsg string, images []ImageData) Sess
 	})
 	return SessionEntry{
 		Type: EntryTypeToolResult,
+		Data: data,
+	}
+}
+
+// CompactionEntry creates a new compaction entry summarizing an older
+// range of session history. The append-only path: callers Append() this
+// entry, the JSONL on disk is never rewritten.
+func CompactionEntry(summary, rangeStartID, rangeEndID, model string, tokensBefore, tokensEstimatedAfter, turnsCompacted int) SessionEntry {
+	data, _ := json.Marshal(CompactionData{
+		Summary:              summary,
+		RangeStartID:         rangeStartID,
+		RangeEndID:           rangeEndID,
+		Model:                model,
+		TokensBefore:         tokensBefore,
+		TokensEstimatedAfter: tokensEstimatedAfter,
+		TurnsCompacted:       turnsCompacted,
+	})
+	return SessionEntry{
+		Type: EntryTypeCompaction,
+		Role: "system",
 		Data: data,
 	}
 }

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -173,4 +174,69 @@ func TestEstimateTokens(t *testing.T) {
 
 	tokens := sess.EstimateTokens()
 	assert.Greater(t, tokens, 0)
+}
+
+func TestSessionViewWithoutCompactionMatchesHistory(t *testing.T) {
+	sess := NewSession("default", "test")
+	sess.Append(UserMessageEntry("hi"))
+	sess.Append(AssistantMessageEntry("hello"))
+	sess.Append(UserMessageEntry("hello again"))
+
+	view := sess.View()
+	hist := sess.History()
+	assert.Equal(t, len(hist), len(view))
+	for i := range hist {
+		assert.Equal(t, hist[i].ID, view[i].ID)
+	}
+}
+
+func TestSessionViewWithSingleCompaction(t *testing.T) {
+	sess := NewSession("default", "test")
+	sess.Append(UserMessageEntry("u1"))
+	sess.Append(AssistantMessageEntry("a1"))
+	sess.Append(UserMessageEntry("u2"))
+	// Simulate compaction over [u1, a1, u2]: append a CompactionEntry,
+	// then continue appending normal entries after it.
+	sess.Append(CompactionEntry("summary of u1/a1/u2", "", "", "ollama/qwen2.5:3b-instruct", 100, 25, 3))
+	sess.Append(AssistantMessageEntry("a2 after compaction"))
+	sess.Append(UserMessageEntry("u3"))
+
+	view := sess.View()
+	require.Len(t, view, 3)
+	assert.Equal(t, EntryTypeCompaction, view[0].Type)
+	assert.Equal(t, EntryTypeMessage, view[1].Type)
+	assert.Equal(t, "assistant", view[1].Role)
+	assert.Equal(t, "user", view[2].Role)
+}
+
+func TestSessionViewWithMultipleCompactions(t *testing.T) {
+	sess := NewSession("default", "test")
+	sess.Append(UserMessageEntry("old"))
+	sess.Append(CompactionEntry("first summary", "", "", "m", 0, 0, 1))
+	sess.Append(UserMessageEntry("middle"))
+	sess.Append(CompactionEntry("second summary", "", "", "m", 0, 0, 1))
+	sess.Append(UserMessageEntry("recent"))
+
+	view := sess.View()
+	require.Len(t, view, 2)
+	// Most recent compaction supersedes the first — view starts at it.
+	var cd CompactionData
+	require.NoError(t, json.Unmarshal(view[0].Data, &cd))
+	assert.Equal(t, "second summary", cd.Summary)
+	assert.Equal(t, "user", view[1].Role)
+}
+
+func TestCompactionEntryHasCorrectFields(t *testing.T) {
+	e := CompactionEntry("hello summary", "start_id", "end_id", "ollama/qwen2.5:3b", 1000, 250, 12)
+	assert.Equal(t, EntryTypeCompaction, e.Type)
+	assert.Equal(t, "system", e.Role)
+	var cd CompactionData
+	require.NoError(t, json.Unmarshal(e.Data, &cd))
+	assert.Equal(t, "hello summary", cd.Summary)
+	assert.Equal(t, "start_id", cd.RangeStartID)
+	assert.Equal(t, "end_id", cd.RangeEndID)
+	assert.Equal(t, "ollama/qwen2.5:3b", cd.Model)
+	assert.Equal(t, 1000, cd.TokensBefore)
+	assert.Equal(t, 250, cd.TokensEstimatedAfter)
+	assert.Equal(t, 12, cd.TurnsCompacted)
 }
