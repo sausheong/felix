@@ -44,3 +44,13 @@ func TestBuildPromptWithFocusInstructions(t *testing.T) {
 	got := BuildPrompt("USER: hi", "focus on API decisions")
 	assert.Contains(t, got, "Additional focus: focus on API decisions")
 }
+
+func TestBuildTranscriptFoldsPreviousSummary(t *testing.T) {
+	entries := []session.SessionEntry{
+		session.CompactionEntry("earlier work: built X, decided Y", "", "", "m", 0, 0, 1),
+		session.UserMessageEntry("now what about Z?"),
+	}
+	got := BuildTranscript(entries)
+	assert.Contains(t, got, "PREVIOUS_SUMMARY: earlier work: built X, decided Y")
+	assert.Contains(t, got, "USER: now what about Z?")
+}
