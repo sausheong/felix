@@ -3,10 +3,12 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/sausheong/felix/internal/llm"
 )
@@ -126,6 +128,12 @@ func (t *BrowserTool) Execute(ctx context.Context, input json.RawMessage) (ToolR
 
 // navigateIfNeeded navigates to the given URL if non-empty.
 // It waits for the body to be ready and then briefly for JS to render.
+//
+// chromedp.Navigate waits for the page "load" event, which is the most
+// reliable signal but can hang on pages with stuck network calls (analytics
+// scripts, never-resolving fetches, etc.). If the load-wait times out, we
+// retry with page.Navigate directly, which returns as soon as navigation is
+// committed and lets WaitReady("body") gate progress instead.
 func (t *BrowserTool) navigateIfNeeded(ctx context.Context, url string) error {
 	if url == "" {
 		return nil
@@ -133,11 +141,47 @@ func (t *BrowserTool) navigateIfNeeded(ctx context.Context, url string) error {
 	if err := validateURLNotInternal(url); err != nil {
 		return err
 	}
-	return chromedp.Run(ctx,
+
+	// Give the load-event attempt at most half the parent deadline so the
+	// fallback always has time to run within the same overall budget.
+	primaryCtx, cancel := halfDeadlineContext(ctx, 30*time.Second)
+	defer cancel()
+	err := chromedp.Run(primaryCtx,
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body"),
 		chromedp.Sleep(2*time.Second),
 	)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	// Fallback: low-level navigate that does not wait for the load event.
+	return chromedp.Run(ctx,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, _, _, _, err := page.Navigate(url).Do(ctx)
+			return err
+		}),
+		chromedp.WaitReady("body"),
+	)
+}
+
+// halfDeadlineContext returns a context whose deadline is half of the
+// parent's remaining time, clamped to a minimum so it doesn't collapse to
+// nothing on already-near-expiry contexts. If the parent has no deadline,
+// the minimum is used as the absolute timeout.
+func halfDeadlineContext(parent context.Context, minTimeout time.Duration) (context.Context, context.CancelFunc) {
+	if dl, ok := parent.Deadline(); ok {
+		remaining := time.Until(dl)
+		half := remaining / 2
+		if half < minTimeout {
+			half = minTimeout
+		}
+		return context.WithTimeout(parent, half)
+	}
+	return context.WithTimeout(parent, minTimeout)
 }
 
 func (t *BrowserTool) navigate(ctx context.Context, in browserInput) (ToolResult, error) {
