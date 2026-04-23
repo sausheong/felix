@@ -499,15 +499,27 @@ html.dark .error-state { background: #450a0a; }
 
 	// === Tab switching ===
 	var tabBtns = document.querySelectorAll('.finger-tab');
+	function activateTab(name) {
+		var found = false;
+		tabBtns.forEach(function(b) {
+			if (b.dataset.tab === name) { b.classList.add('active'); found = true; }
+			else { b.classList.remove('active'); }
+		});
+		document.querySelectorAll('.finger-panel').forEach(function(p) { p.classList.remove('active'); });
+		var panel = document.getElementById('panel-' + name);
+		if (panel) panel.classList.add('active');
+		return found;
+	}
 	tabBtns.forEach(function(btn) {
 		btn.addEventListener('click', function() {
-			tabBtns.forEach(function(b) { b.classList.remove('active'); });
-			document.querySelectorAll('.finger-panel').forEach(function(p) { p.classList.remove('active'); });
-			btn.classList.add('active');
-			var panel = document.getElementById('panel-' + btn.dataset.tab);
-			if (panel) panel.classList.add('active');
+			activateTab(btn.dataset.tab);
 		});
 	});
+	// Honor URL hash on load (e.g. /settings#models) so the menu bar app
+	// can deep-link to a specific tab on first run.
+	if (location.hash) {
+		activateTab(location.hash.slice(1));
+	}
 
 	// === Status message ===
 	function showStatus(msg, isError) {

@@ -26,7 +26,16 @@ var (
 	commit  = "none"
 )
 
+// firstRun is set in main() before the data dir is created, so onReady()
+// can decide whether to land the user on Chat or Settings → Models.
+var firstRun bool
+
 func main() {
+	// Detect first run BEFORE initLogFile() creates the data dir.
+	if _, err := os.Stat(config.DefaultDataDir()); os.IsNotExist(err) {
+		firstRun = true
+	}
+
 	// Write logs to a file so crashes are diagnosable (macOS .app has no stderr,
 	// Windows GUI apps have no console).
 	initLogFile()
@@ -120,6 +129,14 @@ func onReady() {
 	if port == 0 {
 		port = 18789
 	}
+
+	// Auto-open the browser. First run lands on Settings → Models so the user
+	// can pull a local model immediately; subsequent runs land on Chat.
+	landingPath := "/chat"
+	if firstRun {
+		landingPath = "/settings#models"
+	}
+	openURL("http://localhost:" + itoa(port) + landingPath)
 
 	// Menu items
 	mChat := systray.AddMenuItem("Chat", "Open chat in browser")
