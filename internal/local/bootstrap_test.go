@@ -134,6 +134,63 @@ func TestEnsureFirstRunModelsSkipsAlreadyPulledModels(t *testing.T) {
 	}
 }
 
+func TestTrackerInitialSnapshotHasQueuedModels(t *testing.T) {
+	tr := NewTracker()
+	snap := tr.Snapshot()
+	for _, m := range FirstRunModels() {
+		st, ok := snap.Models[m]
+		if !ok {
+			t.Fatalf("model %q missing from initial snapshot", m)
+		}
+		if st.Status != "queued" {
+			t.Errorf("model %q: initial status = %q, want %q", m, st.Status, "queued")
+		}
+	}
+	if snap.Active || snap.Done {
+		t.Errorf("initial snapshot active=%v done=%v, want both false", snap.Active, snap.Done)
+	}
+}
+
+func TestTrackerRecordsProgressAndDone(t *testing.T) {
+	tr := NewTracker()
+	tr.OnEvent(BootstrapEvent{Type: BootstrapStart, Models: FirstRunModels()})
+	if !tr.Snapshot().Active {
+		t.Errorf("after Start, Active should be true")
+	}
+	tr.OnEvent(BootstrapEvent{
+		Type: BootstrapProgress, Model: "nomic-embed-text",
+		Percent: 42.5, Completed: 100, Total: 200,
+	})
+	st := tr.Snapshot().Models["nomic-embed-text"]
+	if st.Status != "downloading" || st.Pct != 42.5 || st.Completed != 100 || st.Total != 200 {
+		t.Errorf("progress not recorded: %+v", st)
+	}
+	tr.OnEvent(BootstrapEvent{Type: BootstrapDone, Models: FirstRunModels(), DurationSec: 10})
+	snap := tr.Snapshot()
+	if snap.Active || !snap.Done {
+		t.Errorf("after Done snapshot active=%v done=%v, want active=false done=true", snap.Active, snap.Done)
+	}
+	for _, m := range FirstRunModels() {
+		if got := snap.Models[m].Status; got != "done" {
+			t.Errorf("model %q final status = %q, want %q", m, got, "done")
+		}
+	}
+}
+
+func TestTrackerRecordsFailure(t *testing.T) {
+	tr := NewTracker()
+	tr.OnEvent(BootstrapEvent{Type: BootstrapStart, Models: FirstRunModels()})
+	tr.OnEvent(BootstrapEvent{Type: BootstrapFailed, Model: "gemma4:latest", Error: "boom"})
+	snap := tr.Snapshot()
+	if snap.Active {
+		t.Errorf("after Failed, Active should be false")
+	}
+	st := snap.Models["gemma4:latest"]
+	if st.Status != "failed" || st.Error != "boom" {
+		t.Errorf("failure not recorded: %+v", st)
+	}
+}
+
 func TestEnsureFirstRunModelsLeavesSentinelAbsentOnFailure(t *testing.T) {
 	tmp := t.TempDir()
 	puller := &fakePuller{failOn: "gemma4:latest", failWith: errors.New("network down")}

@@ -96,6 +96,9 @@ func (s *Server) routes() {
 		if s.opts.Settings.ListTools != nil {
 			s.router.Get("/settings/api/tools", s.opts.Settings.ListTools)
 		}
+		if s.opts.Settings.BootstrapStatus != nil {
+			s.router.Get("/settings/api/bootstrap", s.opts.Settings.BootstrapStatus)
+		}
 	}
 
 	if s.opts.LogBuffer != nil {

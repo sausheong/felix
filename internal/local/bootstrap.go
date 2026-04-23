@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -31,6 +32,8 @@ type BootstrapEvent struct {
 	Models      []string // populated for Start, Done
 	Model       string   // populated for Progress, Failed
 	Percent     float32  // populated for Progress (0-100)
+	Completed   int64    // populated for Progress (bytes pulled so far)
+	Total       int64    // populated for Progress (expected total bytes)
 	DurationSec int      // populated for Done
 	Error       string   // populated for Failed
 }
@@ -39,6 +42,98 @@ type BootstrapEvent struct {
 // Order matters: embedding model first (small, brings semantic search online
 // quickly) then the LLM (slow).
 var firstRunModels = []string{"nomic-embed-text", "gemma4:latest"}
+
+// FirstRunModels returns a copy of the first-run model list so other packages
+// (e.g. the gateway) can flag them in UI without hardcoding the names.
+func FirstRunModels() []string {
+	out := make([]string, len(firstRunModels))
+	copy(out, firstRunModels)
+	return out
+}
+
+// ModelStatus is one model's current bootstrap state, suitable for JSON output.
+type ModelStatus struct {
+	Status    string  `json:"status"`              // queued | downloading | done | failed
+	Completed int64   `json:"completed,omitempty"` // bytes pulled so far
+	Total     int64   `json:"total,omitempty"`     // expected total bytes
+	Pct       float32 `json:"pct,omitempty"`       // 0–100
+	Error     string  `json:"error,omitempty"`     // populated on failed
+}
+
+// BootstrapSnapshot is the public view returned by Tracker.Snapshot().
+type BootstrapSnapshot struct {
+	Active bool                   `json:"active"` // true while a pull is in flight
+	Done   bool                   `json:"done"`   // true once Done event observed
+	Models map[string]ModelStatus `json:"models"`
+}
+
+// Tracker records the most recent BootstrapEvent for each first-run model so
+// the gateway can surface progress to the Settings → Models tab.
+type Tracker struct {
+	mu     sync.RWMutex
+	models map[string]ModelStatus
+	active bool
+	done   bool
+}
+
+// NewTracker returns a Tracker pre-seeded with each first-run model in the
+// "queued" state. Use OnEvent as the callback to EnsureFirstRunModels.
+func NewTracker() *Tracker {
+	t := &Tracker{models: make(map[string]ModelStatus)}
+	for _, m := range firstRunModels {
+		t.models[m] = ModelStatus{Status: "queued"}
+	}
+	return t
+}
+
+// OnEvent matches the signature expected by EnsureFirstRunModels.
+func (t *Tracker) OnEvent(ev BootstrapEvent) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch ev.Type {
+	case BootstrapStart:
+		t.active = true
+	case BootstrapProgress:
+		st := t.models[ev.Model]
+		st.Status = "downloading"
+		st.Pct = ev.Percent
+		st.Completed = ev.Completed
+		st.Total = ev.Total
+		t.models[ev.Model] = st
+	case BootstrapDone:
+		t.active = false
+		t.done = true
+		for _, m := range ev.Models {
+			st := t.models[m]
+			if st.Status != "failed" {
+				st.Status = "done"
+				st.Pct = 100
+			}
+			t.models[m] = st
+		}
+	case BootstrapFailed:
+		t.active = false
+		st := t.models[ev.Model]
+		st.Status = "failed"
+		st.Error = ev.Error
+		t.models[ev.Model] = st
+	}
+}
+
+// Snapshot returns a deep copy of the current tracker state.
+func (t *Tracker) Snapshot() BootstrapSnapshot {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	out := BootstrapSnapshot{
+		Active: t.active,
+		Done:   t.done,
+		Models: make(map[string]ModelStatus, len(t.models)),
+	}
+	for k, v := range t.models {
+		out.Models[k] = v
+	}
+	return out
+}
 
 // EnsureFirstRunModels kicks off background pulls of the default LLM and
 // embedding model on the first ever Felix run. If `dataDir/.first-run-done`
@@ -81,7 +176,13 @@ func EnsureFirstRunModels(ctx context.Context, dataDir string, puller Puller, on
 			err := puller.Pull(ctx, m, func(ev ProgressEvent) {
 				if ev.Total > 0 {
 					pct := float32(ev.Completed) / float32(ev.Total) * 100
-					emit(BootstrapEvent{Type: BootstrapProgress, Model: m, Percent: pct})
+					emit(BootstrapEvent{
+						Type:      BootstrapProgress,
+						Model:     m,
+						Percent:   pct,
+						Completed: ev.Completed,
+						Total:     ev.Total,
+					})
 				}
 			})
 			if err != nil {

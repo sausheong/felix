@@ -175,6 +175,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// Bundled-Ollama supervisor — start before InitProviders so the local
 	// provider's BaseURL reflects the bound port.
 	var localSup *local.Supervisor
+	var bootstrapTracker *local.Tracker
 	if cfg.Local.Enabled {
 		exeDir, _ := os.Executable()
 		exeDir = filepath.Dir(exeDir)
@@ -209,7 +210,8 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				if cfg.Local.Enabled {
 					if pcfg := cfg.GetProvider("local"); pcfg.BaseURL != "" {
 						puller := local.NewInstaller(strings.TrimSuffix(pcfg.BaseURL, "/v1"))
-						local.EnsureFirstRunModels(context.Background(), config.DefaultDataDir(), puller, nil)
+						bootstrapTracker = local.NewTracker()
+						local.EnsureFirstRunModels(context.Background(), config.DefaultDataDir(), puller, bootstrapTracker.OnEvent)
 					}
 				}
 			}
@@ -454,7 +456,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		UIHandler:      gateway.NewUIHandler(cfg, version),
 		ChatHandler:    gateway.NewChatHandler(port),
 		JobsHandler:    gateway.NewJobsHandler(port),
-		Settings: gateway.NewSettingsHandlers(cfg, toolReg, func(newCfg *config.Config) {
+		Settings: gateway.NewSettingsHandlers(cfg, toolReg, settingsBootstrap(bootstrapTracker), func(newCfg *config.Config) {
 			wsHandler.UpdateConfig(newCfg)
 			slog.Info("config updated via settings page")
 		}),
@@ -486,4 +488,13 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		Config:  cfg,
 		Cleanup: cleanup,
 	}, nil
+}
+
+// settingsBootstrap returns t as a gateway.BootstrapSnapshotter, or nil when
+// t is nil. Avoids passing a typed-nil interface that would panic on Snapshot.
+func settingsBootstrap(t *local.Tracker) gateway.BootstrapSnapshotter {
+	if t == nil {
+		return nil
+	}
+	return t
 }

@@ -9,20 +9,30 @@ import (
 	"sort"
 
 	"github.com/sausheong/felix/internal/config"
+	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/tools"
 )
 
 // SettingsHandlers holds the HTTP handlers for the settings page and config API.
 type SettingsHandlers struct {
-	Page       http.HandlerFunc
-	GetConfig  http.HandlerFunc
-	SaveConfig http.HandlerFunc
-	ListTools  http.HandlerFunc
+	Page            http.HandlerFunc
+	GetConfig       http.HandlerFunc
+	SaveConfig      http.HandlerFunc
+	ListTools       http.HandlerFunc
+	BootstrapStatus http.HandlerFunc
+}
+
+// BootstrapSnapshotter is the subset of *local.Tracker the handler needs.
+// Defined as an interface so callers may pass nil (no-op handler) and tests
+// can inject fakes.
+type BootstrapSnapshotter interface {
+	Snapshot() local.BootstrapSnapshot
 }
 
 // NewSettingsHandlers returns handlers for the settings page and config REST API.
 // toolReg may be nil; ListTools then returns an empty list.
-func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, onSave func(*config.Config)) *SettingsHandlers {
+// bootstrap may be nil; BootstrapStatus then reports an inactive snapshot.
+func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap BootstrapSnapshotter, onSave func(*config.Config)) *SettingsHandlers {
 	return &SettingsHandlers{
 		Page: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -109,6 +119,24 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, onSave fun
 			data, err := json.Marshal(out)
 			if err != nil {
 				http.Error(w, `{"error":"marshal tools"}`, http.StatusInternalServerError)
+				return
+			}
+			w.Write(data)
+		},
+
+		BootstrapStatus: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			var snap local.BootstrapSnapshot
+			if bootstrap != nil {
+				snap = bootstrap.Snapshot()
+			}
+			if snap.Models == nil {
+				snap.Models = map[string]local.ModelStatus{}
+			}
+			data, err := json.Marshal(snap)
+			if err != nil {
+				http.Error(w, `{"error":"marshal bootstrap"}`, http.StatusInternalServerError)
 				return
 			}
 			w.Write(data)
@@ -586,8 +614,9 @@ html.dark .error-state { background: #450a0a; }
 		{name: 'nomic-embed-text',  label: 'Nomic Embed Text',         size: '~274 MB', note: 'embeddings — recommended for memory'},
 		{name: 'mxbai-embed-large', label: 'MixedBread Embed Large',   size: '~670 MB', note: 'embeddings — higher quality'}
 	];
-	var pullState = {}; // name -> {pct, status, err}
+	var pullState = {}; // name -> {pct, status, err, source}
 	var pollTimer = null;
+	var bootstrapTimer = null;
 
 	function ollamaBase() {
 		var base = (cfg.providers && cfg.providers.local && cfg.providers.local.base_url) || 'http://127.0.0.1:18790';
@@ -678,8 +707,53 @@ html.dark .error-state { background: #450a0a; }
 		panel.appendChild(section);
 
 		refreshInstalled();
+		refreshBootstrap();
 		// Apply any in-flight pull state in case the user switched tabs and back.
 		Object.keys(pullState).forEach(function(name) { applyPullState(name); });
+	}
+
+	// === First-run bootstrap polling — surface auto-pulls so users see progress ===
+	function refreshBootstrap() {
+		fetch('/settings/api/bootstrap', {cache: 'no-store'})
+			.then(function(r) { return r.ok ? r.json() : null; })
+			.then(function(snap) {
+				if (!snap || !snap.models) return;
+				var stillActive = false;
+				Object.keys(snap.models).forEach(function(name) {
+					var m = snap.models[name];
+					var st = pullState[name] || {};
+					// Don't overwrite a user-initiated pull already in flight.
+					if (st.source === 'user') return;
+					st.source = 'bootstrap';
+					st.status = m.status;
+					st.completed = m.completed;
+					st.total = m.total;
+					st.pct = m.pct;
+					st.err = m.error;
+					if (m.status === 'done') st.done = true;
+					pullState[name] = st;
+					if (m.status === 'queued' || m.status === 'downloading') {
+						stillActive = true;
+					}
+					applyPullState(name);
+					// Once a bootstrap pull completes, fade the progress UI after a
+					// short delay so the model just appears in the Installed list.
+					if (m.status === 'done' && !st._cleared) {
+						st._cleared = true;
+						setTimeout(function() {
+							delete pullState[name];
+							applyPullState(name);
+						}, 3000);
+					}
+				});
+				// On any change to "done", refresh the installed list.
+				refreshInstalled();
+				if (bootstrapTimer) { clearTimeout(bootstrapTimer); bootstrapTimer = null; }
+				if (stillActive || snap.active) {
+					bootstrapTimer = setTimeout(refreshBootstrap, 1500);
+				}
+			})
+			.catch(function() { /* endpoint absent or transient — ignore */ });
 	}
 
 	function refreshInstalled() {
@@ -769,7 +843,7 @@ html.dark .error-state { background: #450a0a; }
 
 	function startPull(name) {
 		if (pullState[name] && !pullState[name].err && !pullState[name].done) return;
-		pullState[name] = {pct: 0, status: 'starting'};
+		pullState[name] = {pct: 0, status: 'starting', source: 'user'};
 		applyPullState(name);
 
 		fetch(ollamaBase() + '/api/pull', {
