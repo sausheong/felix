@@ -22,7 +22,8 @@ type BootstrapEventType int
 const (
 	BootstrapStart BootstrapEventType = iota
 	BootstrapProgress
-	BootstrapDone
+	BootstrapModelDone // one model finished pulling (more may follow)
+	BootstrapDone      // all models finished
 	BootstrapFailed
 )
 
@@ -100,6 +101,11 @@ func (t *Tracker) OnEvent(ev BootstrapEvent) {
 		st.Completed = ev.Completed
 		st.Total = ev.Total
 		t.models[ev.Model] = st
+	case BootstrapModelDone:
+		st := t.models[ev.Model]
+		st.Status = "done"
+		st.Pct = 100
+		t.models[ev.Model] = st
 	case BootstrapDone:
 		t.active = false
 		t.done = true
@@ -170,6 +176,7 @@ func EnsureFirstRunModels(ctx context.Context, dataDir string, puller Puller, on
 		for _, m := range firstRunModels {
 			if have[m] {
 				slog.Info("first-run model already present", "model", m)
+				emit(BootstrapEvent{Type: BootstrapModelDone, Model: m})
 				continue
 			}
 			mStart := time.Now()
@@ -192,6 +199,7 @@ func EnsureFirstRunModels(ctx context.Context, dataDir string, puller Puller, on
 			}
 			slog.Info("first-run model pulled", "model", m,
 				"duration_ms", time.Since(mStart).Milliseconds())
+			emit(BootstrapEvent{Type: BootstrapModelDone, Model: m})
 		}
 
 		dur := time.Since(start)

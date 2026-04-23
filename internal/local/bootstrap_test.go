@@ -177,6 +177,46 @@ func TestTrackerRecordsProgressAndDone(t *testing.T) {
 	}
 }
 
+func TestTrackerModelDoneMarksOnlyThatModel(t *testing.T) {
+	tr := NewTracker()
+	tr.OnEvent(BootstrapEvent{Type: BootstrapStart, Models: FirstRunModels()})
+	tr.OnEvent(BootstrapEvent{Type: BootstrapModelDone, Model: "nomic-embed-text"})
+	snap := tr.Snapshot()
+	if snap.Models["nomic-embed-text"].Status != "done" {
+		t.Errorf("nomic should be done, got %q", snap.Models["nomic-embed-text"].Status)
+	}
+	if snap.Models["gemma4:latest"].Status != "queued" {
+		t.Errorf("gemma should still be queued, got %q", snap.Models["gemma4:latest"].Status)
+	}
+	// Active should remain true while gemma is still pending.
+	if !snap.Active {
+		t.Errorf("Active should still be true while gemma pending")
+	}
+}
+
+func TestEnsureFirstRunModelsEmitsModelDonePerModel(t *testing.T) {
+	tmp := t.TempDir()
+	puller := &fakePuller{}
+	var perModel []string
+	doneCh := make(chan struct{})
+	EnsureFirstRunModels(context.Background(), tmp, puller, func(ev BootstrapEvent) {
+		if ev.Type == BootstrapModelDone {
+			perModel = append(perModel, ev.Model)
+		}
+		if ev.Type == BootstrapDone || ev.Type == BootstrapFailed {
+			close(doneCh)
+		}
+	})
+	select {
+	case <-doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("bootstrap did not complete")
+	}
+	if len(perModel) != 2 || perModel[0] != "nomic-embed-text" || perModel[1] != "gemma4:latest" {
+		t.Errorf("ModelDone events = %v, want [nomic-embed-text gemma4:latest]", perModel)
+	}
+}
+
 func TestTrackerRecordsFailure(t *testing.T) {
 	tr := NewTracker()
 	tr.OnEvent(BootstrapEvent{Type: BootstrapStart, Models: FirstRunModels()})
