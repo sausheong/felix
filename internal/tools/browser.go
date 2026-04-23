@@ -11,7 +11,7 @@ import (
 	"github.com/sausheong/felix/internal/llm"
 )
 
-const browserTimeout = 60 * time.Second
+const browserTimeout = 120 * time.Second
 
 // BrowserTool provides headless browser automation via Chrome DevTools Protocol.
 type BrowserTool struct{}
@@ -65,7 +65,7 @@ func (t *BrowserTool) Parameters() json.RawMessage {
 			},
 			"timeout": {
 				"type": "integer",
-				"description": "Timeout in seconds (default: 60)"
+				"description": "Timeout in seconds (default: 120)"
 			}
 		},
 		"required": ["action"]
