@@ -10,7 +10,7 @@ APP_SIGN_ID      := Developer ID Application: Sau Sheong Chang (83N864XA6Z)
 PKG_SIGN_ID      := Developer ID Installer: Sau Sheong Chang (83N864XA6Z)
 KEYCHAIN_PROFILE := felix-notary
 
-.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release installer sign ollama-fetch
+.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release installer installer-windows sign ollama-fetch
 
 ## build: compile the binary
 build:
@@ -237,6 +237,43 @@ installer: build-app
 	rm -rf Felix-component.pkg installer/payload
 	@echo "Installer: Felix-$(VERSION).pkg"
 
+## installer-windows: build a Windows .exe installer (Inno Setup) with bundled skills + ollama
+##
+## Uses the amake/innosetup Docker image — no wine needed on the host.
+## Requires Docker Desktop or colima running. First run pulls the image (~200MB).
+##
+## Override ISCC if you want to point at a different compiler invocation
+## (e.g. native iscc.exe when running on Windows):
+##   make installer-windows ISCC='iscc.exe'
+ISCC ?= docker run --rm -i -v "$$PWD:/work" amake/innosetup
+
+installer-windows: ollama-fetch
+	@if [ ! -f bin/ollama-windows-amd64.exe ]; then \
+	  echo "ERROR: bin/ollama-windows-amd64.exe missing — run 'make ollama-fetch' first"; exit 1; \
+	fi
+	@echo "==> Cross-compiling Felix binaries for windows/amd64..."
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+		go build -trimpath -ldflags "$(LDFLAGS)" \
+		-o installer/windows/payload/felix.exe $(CMD)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+		go build -trimpath -ldflags "$(LDFLAGS) -H windowsgui" \
+		-o installer/windows/payload/felix-app.exe ./cmd/felix-app
+	@echo "==> Staging payload..."
+	mkdir -p installer/windows/payload/bin installer/windows/payload/skills
+	cp bin/ollama-windows-amd64.exe installer/windows/payload/bin/ollama.exe
+	cp skills/*.md installer/windows/payload/skills/
+	@if [ ! -f installer/windows/Felix.ico ] && command -v magick >/dev/null 2>&1; then \
+	  echo "==> Generating Felix.ico from cmd/felix-app/icon.png..."; \
+	  magick cmd/felix-app/icon.png -define icon:auto-resize=256,128,64,48,32,16 installer/windows/Felix.ico; \
+	elif [ ! -f installer/windows/Felix.ico ]; then \
+	  echo "(skipping installer icon — install ImageMagick or drop installer/windows/Felix.ico to embed one)"; \
+	fi
+	@echo "==> Compiling installer with Inno Setup..."
+	cd installer/windows && $(ISCC) /DMyAppVersion=$(patsubst v%,%,$(VERSION)) Felix.iss
+	mv installer/windows/Felix-$(patsubst v%,%,$(VERSION))-windows-amd64.exe .
+	rm -rf installer/windows/payload
+	@echo "Installer: Felix-$(patsubst v%,%,$(VERSION))-windows-amd64.exe"
+
 ## sign: sign, notarize, and staple the macOS PKG installer
 sign: build-app
 	# Sign the app bundle
@@ -279,7 +316,8 @@ sign: build-app
 ## clean: remove build artifacts
 clean:
 	rm -f $(BINARY) felix-app felix-app.exe
-	rm -rf Felix.app $(RELEASE_DIR)
+	rm -f Felix-*.pkg Felix-*-windows-amd64.exe
+	rm -rf Felix.app $(RELEASE_DIR) installer/windows/payload
 	go clean
 
 ## snapshot: cross-platform build via goreleaser
