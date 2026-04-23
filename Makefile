@@ -224,6 +224,7 @@ installer: build-app
 	cp skills/*.md installer/payload/usr/local/share/felix/skills/
 	pkgbuild \
 		--root installer/payload \
+		--component-plist installer/Felix-component.plist \
 		--scripts installer/scripts \
 		--identifier com.felix.app \
 		--version $(VERSION) \
@@ -253,6 +254,7 @@ sign: build-app
 	cp skills/*.md installer/payload/usr/local/share/felix/skills/
 	pkgbuild \
 		--root installer/payload \
+		--component-plist installer/Felix-component.plist \
 		--scripts installer/scripts \
 		--identifier com.felix.app \
 		--version $(VERSION) \
