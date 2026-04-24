@@ -223,8 +223,29 @@ func Load(path string) (*Config, error) {
 	// to remain empty; BuildManager auto-mirrors the default agent's model.
 	d := DefaultConfig().Agents.Defaults.Compaction
 	cur := cfg.Agents.Defaults.Compaction
+	// If the configured local compaction model isn't used by any configured
+	// agent, it's almost certainly not pulled (the historical default
+	// "local/qwen2.5:3b-instruct" is the common case, but the same logic
+	// catches typos and stale configs after model removal). Clear it so
+	// BuildManager auto-mirrors the default agent's model — guarantees the
+	// summarizer hits an actually-loaded model.
+	if strings.HasPrefix(cur.Model, "local/") {
+		used := false
+		for _, a := range cfg.Agents.List {
+			if a.Model == cur.Model {
+				used = true
+				break
+			}
+		}
+		if !used {
+			slog.Warn("compaction.model not used by any agent; clearing so it auto-mirrors", "model", cur.Model)
+			cur.Model = ""
+		}
+	}
 	if cur.Threshold == 0 && cur.PreserveTurns == 0 && cur.TimeoutSec == 0 {
 		cfg.Agents.Defaults.Compaction = d
+		// Preserve the cleared model from migration above.
+		cfg.Agents.Defaults.Compaction.Model = cur.Model
 	} else {
 		if cur.Threshold == 0 {
 			cur.Threshold = d.Threshold
