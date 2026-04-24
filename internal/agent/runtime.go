@@ -93,16 +93,21 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 		// Recall runs in a background goroutine so it overlaps with skill
 		// matching, memory search, and message assembly. The main goroutine
 		// waits for it (with a hard cap) right before invoking the LLM.
+		// On timeout the sub-context is cancelled so the goroutine doesn't
+		// keep tying up the embedder after the user wait has elapsed.
 		var thread []conversation.Message
 		cortexContext := ""
 		var cortexCh chan string // receives the formatted hint+results
+		var cortexCancel context.CancelFunc
 		if r.Cortex != nil {
 			thread = []conversation.Message{{Role: "user", Content: userMsg}}
 			cortexCh = make(chan string, 1)
+			var cortexCtx context.Context
+			cortexCtx, cortexCancel = context.WithCancel(ctx)
 			cxStart := time.Now()
 			cxModel := r.Cortex
 			go func() {
-				results, err := cxModel.Recall(ctx, userMsg, cortex.WithLimit(5))
+				results, err := cxModel.Recall(cortexCtx, userMsg, cortex.WithLimit(5))
 				tr.Mark("cortex.recall", "hits", len(results), "err", err != nil, "dur_ms_local", time.Since(cxStart).Milliseconds())
 				out := cortexadapter.CortexHint
 				if err != nil {
@@ -116,6 +121,9 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// Deferred ingest fires on every goroutine exit path.
 			cx := r.Cortex
 			defer func() {
+				if cortexCancel != nil {
+					cortexCancel()
+				}
 				if len(thread) > 1 {
 					cortexadapter.IngestThreadAsync(context.Background(), cx, thread)
 				}
@@ -161,11 +169,17 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// Inject Cortex context. On the first turn we need to wait for the
 			// background Recall (with a hard 800ms cap so a slow embedder can't
 			// stall the entire request). Subsequent turns reuse the result.
+			// On timeout we cancel the goroutine so it stops consuming embedder
+			// capacity after the user wait elapses.
 			if cortexCh != nil && cortexContext == "" {
 				select {
 				case cortexContext = <-cortexCh:
 				case <-time.After(800 * time.Millisecond):
 					tr.Mark("cortex.recall.timeout", "turn", turn, "budget_ms", 800)
+					if cortexCancel != nil {
+						cortexCancel()
+						cortexCancel = nil
+					}
 					cortexContext = cortexadapter.CortexHint
 				}
 				cortexCh = nil

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	goopenai "github.com/sashabaranov/go-openai"
 	"github.com/sausheong/cortex"
@@ -84,23 +85,23 @@ func Init(cfg config.CortexConfig, memCfg config.MemoryConfig, defaultAgentModel
 
 		switch provider {
 		case "local":
-			if model == "" {
-				model = "gemma4:latest"
-			}
-			llmClient := cortexoai.NewLLM("",
-				cortexoai.WithBaseURL(baseURL),
-				cortexoai.WithModel(model))
-
+			// Deterministic-only extraction for local. Small local models
+			// (gemma4, qwen, llama3.2) frequently return malformed JSON for
+			// the structured-extraction prompt, and each failed call can tie
+			// up Ollama for 30–90s — blocking both /api/embeddings and the
+			// next user chat turn since Ollama serializes per-model. Until
+			// the cortex library learns Ollama JSON-mode constraint, this
+			// is the right trade-off for the bundled deployment.
+			//
+			// Users who want LLM-augmented extraction can set
+			// cortex.provider = "anthropic" or "openai" in felix.json5.
 			embModel, embDims := localpkg.EmbeddingDims(memCfg.EmbeddingModel)
 			embedder := cortexoai.NewEmbedder("",
 				cortexoai.WithEmbedderBaseURL(baseURL),
 				cortexoai.WithEmbeddingModel(goopenai.EmbeddingModel(embModel), embDims))
-
-			extractor := hybrid.New(detExt, llmext.New(llmClient))
 			opts = append(opts,
-				cortex.WithLLM(llmClient),
 				cortex.WithEmbedder(embedder),
-				cortex.WithExtractor(extractor),
+				cortex.WithExtractor(detExt),
 			)
 
 		case "anthropic":
@@ -143,6 +144,17 @@ func Init(cfg config.CortexConfig, memCfg config.MemoryConfig, defaultAgentModel
 // greetings, and simple confirmations are skipped.
 const minIngestLen = 100
 
+// maxIngestLen caps the total characters per ingest. nomic-embed-text has
+// an 8192-token context window (~30 KB chars). We reject larger threads
+// to avoid the "input length exceeds the context length" embed error and
+// to bound the time the embedder is tied up.
+const maxIngestLen = 28000
+
+// ingestTimeout is the hard cap on a single IngestThread call. Even with
+// deterministic-only extraction the embedder still runs N HTTP calls per
+// chunk, so a runaway thread shouldn't be able to block forever.
+const ingestTimeout = 30 * time.Second
+
 // trivialPhrases are exact-match messages (lowercased) that are never
 // worth ingesting regardless of length.
 var trivialPhrases = map[string]bool{
@@ -165,7 +177,8 @@ var trivialPhrases = map[string]bool{
 }
 
 // ShouldIngest returns true if the conversation thread contains enough
-// substance to be worth storing in the knowledge graph.
+// substance to be worth storing in the knowledge graph, but isn't so large
+// that the embedder would reject it.
 func ShouldIngest(thread []conversation.Message) bool {
 	if len(thread) == 0 {
 		return false
@@ -183,23 +196,38 @@ func ShouldIngest(thread []conversation.Message) bool {
 			hasAssistant = true
 		}
 	}
-	return hasAssistant && total >= minIngestLen
+	if !hasAssistant || total < minIngestLen {
+		return false
+	}
+	if total > maxIngestLen {
+		slog.Debug("cortex: skipping oversized thread", "chars", total, "cap", maxIngestLen)
+		return false
+	}
+	return true
 }
 
 // IngestThread feeds a completed conversation thread into the Cortex knowledge
 // graph. The thread should contain all messages for the exchange: user message,
 // tool calls (as assistant messages), tool results (as user messages), and the
-// final assistant reply. It skips trivial or short threads.
-// It runs synchronously; callers should run it in a goroutine if they
-// don't want to block.
+// final assistant reply. It skips trivial, short, or oversized threads.
+// A hard ingestTimeout caps each call so a stuck extractor or embedder
+// can't tie up Ollama capacity indefinitely. It runs synchronously;
+// callers should run it in a goroutine if they don't want to block.
 func IngestThread(ctx context.Context, cx *cortex.Cortex, thread []conversation.Message) {
 	if !ShouldIngest(thread) {
-		slog.Debug("cortex: skipping trivial thread ingest", "len", len(thread))
+		slog.Debug("cortex: skipping ingest (trivial, too small, or too large)", "len", len(thread))
 		return
 	}
+	ingestCtx, cancel := context.WithTimeout(ctx, ingestTimeout)
+	defer cancel()
+	start := time.Now()
 	conn := conversation.New()
-	if err := conn.Ingest(ctx, cx, thread); err != nil {
-		slog.Warn("cortex: thread ingest failed", "error", err)
+	if err := conn.Ingest(ingestCtx, cx, thread); err != nil {
+		if ingestCtx.Err() == context.DeadlineExceeded {
+			slog.Warn("cortex: thread ingest timed out", "after_ms", time.Since(start).Milliseconds(), "cap_ms", ingestTimeout.Milliseconds())
+		} else {
+			slog.Warn("cortex: thread ingest failed", "error", err, "dur_ms", time.Since(start).Milliseconds())
+		}
 	}
 }
 
