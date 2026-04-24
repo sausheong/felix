@@ -33,7 +33,7 @@ func detectImageMIME(data []byte, hint string) string {
 	return hint
 }
 
-const defaultIdentityBase = `You are Felix, an AI agent. Conduct yourself professionally and politely. Be concise and direct. When executing tasks, think step by step and use your tools to accomplish the user's goals.`
+const defaultIdentityBase = `You are Felix, an AI agent. Conduct yourself professionally and politely. Be concise and direct. When executing tasks, think step by step and use your tools to accomplish the user's goals. When you need to call multiple independent tools to gather information, emit them in a single response (parallel tool calls) rather than waiting for each one — this cuts response latency on local models.`
 
 // toolHints maps tool names to usage guidance injected into the default identity.
 var toolHints = map[string]string{

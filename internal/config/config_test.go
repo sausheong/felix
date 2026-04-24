@@ -94,7 +94,7 @@ func TestDefaultConfigLocalSection(t *testing.T) {
 	require.NotNil(t, cfg)
 
 	assert.True(t, cfg.Local.Enabled, "local should default to enabled")
-	assert.Equal(t, "5m", cfg.Local.KeepAlive)
+	assert.Equal(t, "24h", cfg.Local.KeepAlive)
 	assert.Equal(t, "", cfg.Local.ModelsDir, "models_dir should default to empty (resolved at runtime)")
 }
 

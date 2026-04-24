@@ -289,7 +289,7 @@ func DefaultConfig() *Config {
 		},
 		Local: LocalConfig{
 			Enabled:   true,
-			KeepAlive: "5m",
+			KeepAlive: "24h",
 		},
 	}
 }

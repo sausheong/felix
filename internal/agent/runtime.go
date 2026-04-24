@@ -90,23 +90,28 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 		}
 
 		// Initialise Cortex thread and recall (once, before the loop).
+		// Recall runs in a background goroutine so it overlaps with skill
+		// matching, memory search, and message assembly. The main goroutine
+		// waits for it (with a hard cap) right before invoking the LLM.
 		var thread []conversation.Message
 		cortexContext := ""
+		var cortexCh chan string // receives the formatted hint+results
 		if r.Cortex != nil {
 			thread = []conversation.Message{{Role: "user", Content: userMsg}}
-
+			cortexCh = make(chan string, 1)
 			cxStart := time.Now()
-			results, err := r.Cortex.Recall(ctx, userMsg, cortex.WithLimit(5))
-			tr.Mark("cortex.recall", "hits", len(results), "err", err != nil, "dur_ms_local", time.Since(cxStart).Milliseconds())
-			if err != nil {
-				slog.Debug("cortex recall error", "error", err)
-				cortexContext = cortexadapter.CortexHint
-			} else {
-				cortexContext = cortexadapter.CortexHint
-				if extra := cortexadapter.FormatResults(results); extra != "" {
-					cortexContext += extra
+			cxModel := r.Cortex
+			go func() {
+				results, err := cxModel.Recall(ctx, userMsg, cortex.WithLimit(5))
+				tr.Mark("cortex.recall", "hits", len(results), "err", err != nil, "dur_ms_local", time.Since(cxStart).Milliseconds())
+				out := cortexadapter.CortexHint
+				if err != nil {
+					slog.Debug("cortex recall error", "error", err)
+				} else if extra := cortexadapter.FormatResults(results); extra != "" {
+					out += extra
 				}
-			}
+				cortexCh <- out
+			}()
 
 			// Deferred ingest fires on every goroutine exit path.
 			cx := r.Cortex
@@ -153,7 +158,18 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				tr.Mark("memory.search", "turn", turn, "hits", len(memEntries), "dur_ms_local", time.Since(memStart).Milliseconds())
 			}
 
-			// Inject Cortex context (recalled once before the loop).
+			// Inject Cortex context. On the first turn we need to wait for the
+			// background Recall (with a hard 800ms cap so a slow embedder can't
+			// stall the entire request). Subsequent turns reuse the result.
+			if cortexCh != nil && cortexContext == "" {
+				select {
+				case cortexContext = <-cortexCh:
+				case <-time.After(800 * time.Millisecond):
+					tr.Mark("cortex.recall.timeout", "turn", turn, "budget_ms", 800)
+					cortexContext = cortexadapter.CortexHint
+				}
+				cortexCh = nil
+			}
 			if cortexContext != "" {
 				systemPrompt += cortexContext
 			}

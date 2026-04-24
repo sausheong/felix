@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -209,9 +210,28 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				// First-run background pull of default local models (gemma4 + nomic-embed).
 				if cfg.Local.Enabled {
 					if pcfg := cfg.GetProvider("local"); pcfg.BaseURL != "" {
-						puller := local.NewInstaller(strings.TrimSuffix(pcfg.BaseURL, "/v1"))
+						ollamaURL := strings.TrimSuffix(pcfg.BaseURL, "/v1")
+						puller := local.NewInstaller(ollamaURL)
 						bootstrapTracker = local.NewTracker()
 						local.EnsureFirstRunModels(context.Background(), config.DefaultDataDir(), puller, bootstrapTracker.OnEvent)
+
+						// Pre-warm the default agent's local model so the first chat
+						// turn doesn't pay the ~10s cold-load latency. Runs in the
+						// background and silently logs failure (e.g. model still pulling).
+						if len(cfg.Agents.List) > 0 {
+							defaultModel := cfg.Agents.List[0].Model
+							go func() {
+								// Wait briefly so EnsureFirstRunModels can start; if the
+								// model isn't on disk yet, /api/generate will fail and we
+								// just log+move on.
+								time.Sleep(2 * time.Second)
+								warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
+								defer warmCancel()
+								if err := local.WarmModel(warmCtx, ollamaURL, defaultModel); err != nil {
+									slog.Debug("ollama warmup deferred", "model", defaultModel, "error", err)
+								}
+							}()
+						}
 					}
 				}
 			}
@@ -270,8 +290,33 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		cx, initErr = cortexadapter.Init(cfg.Cortex, cfg.Memory, defaultAgentModel, cfg.GetProvider)
 		if initErr != nil {
 			slog.Warn("failed to init cortex", "error", initErr)
+		} else if cx != nil {
+			// Pre-warm Cortex: a tiny background recall warms the embedder,
+			// chromem index, and any per-process caches so the first user
+			// request doesn't pay a ~4–11s cold-search penalty.
+			go func() {
+				warmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				start := time.Now()
+				_, err := cx.Recall(warmCtx, "hello", cortex.WithLimit(1))
+				if err != nil {
+					slog.Debug("cortex warmup error", "error", err)
+				} else {
+					slog.Info("cortex warmed", "dur_ms", time.Since(start).Milliseconds())
+				}
+			}()
 		}
 	}
+
+	// Pre-warm bash subprocess so the first tool.exec doesn't pay the macOS
+	// Gatekeeper / TCC initialization cost (~2s on a fresh install).
+	go func() {
+		start := time.Now()
+		c := exec.Command("bash", "-c", ":")
+		if err := c.Run(); err == nil {
+			slog.Debug("bash warmed", "dur_ms", time.Since(start).Milliseconds())
+		}
+	}()
 
 	// Init WebSocket handler
 	wsHandler := gateway.NewWebSocketHandler(providers, toolReg, sessionStore, cfg)
