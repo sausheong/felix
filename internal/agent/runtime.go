@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/cortex/connector/conversation"
@@ -67,9 +68,12 @@ type Runtime struct {
 // images is an optional slice of image attachments to include with the user message.
 func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageContent) (<-chan AgentEvent, error) {
 	events := make(chan AgentEvent, 100)
+	tr := TraceFrom(ctx)
+	tr.Mark("agent.run.start", "user_msg_len", len(userMsg), "images", len(images))
 
 	go func() {
 		defer close(events)
+		defer tr.Summary()
 
 		// Append user message to session (with optional images)
 		if len(images) > 0 {
@@ -91,7 +95,9 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 		if r.Cortex != nil {
 			thread = []conversation.Message{{Role: "user", Content: userMsg}}
 
+			cxStart := time.Now()
 			results, err := r.Cortex.Recall(ctx, userMsg, cortex.WithLimit(5))
+			tr.Mark("cortex.recall", "hits", len(results), "err", err != nil, "dur_ms_local", time.Since(cxStart).Milliseconds())
 			if err != nil {
 				slog.Debug("cortex recall error", "error", err)
 				cortexContext = cortexadapter.CortexHint
@@ -124,22 +130,27 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			}
 
 			// Assemble context with skills and memory
+			phaseStart := time.Now()
 			systemPrompt := assembleSystemPrompt(r.Workspace, r.SystemPrompt, r.AgentID, r.AgentName, r.Tools.Names())
 
 			// Inject relevant skills
 			if r.Skills != nil {
+				skillStart := time.Now()
 				matched := r.Skills.MatchSkills(userMsg, 3)
 				if extra := skill.FormatForPrompt(matched); extra != "" {
 					systemPrompt += extra
 				}
+				tr.Mark("skills.match", "turn", turn, "matched", len(matched), "dur_ms_local", time.Since(skillStart).Milliseconds())
 			}
 
 			// Inject relevant memory
 			if r.Memory != nil {
+				memStart := time.Now()
 				memEntries := r.Memory.Search(userMsg, 3)
 				if extra := memory.FormatForPrompt(memEntries); extra != "" {
 					systemPrompt += extra
 				}
+				tr.Mark("memory.search", "turn", turn, "hits", len(memEntries), "dur_ms_local", time.Since(memStart).Milliseconds())
 			}
 
 			// Inject Cortex context (recalled once before the loop).
@@ -154,6 +165,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			pruneToolResults(msgs, maxToolResultLen)
 
 			toolDefs := r.Tools.ToolDefs()
+			tr.Mark("context.assemble", "turn", turn, "msgs", len(msgs), "tools", len(toolDefs), "sysprompt_chars", len(systemPrompt), "dur_ms_local", time.Since(phaseStart).Milliseconds())
 
 			// Preventive compaction check.
 			if r.Compaction != nil && r.Model != "" {
@@ -190,6 +202,8 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			}
 
 			// Call LLM
+			llmStart := time.Now()
+			tr.Mark("llm.request_sent", "turn", turn, "model", r.Model)
 			stream, err := r.LLM.ChatStream(ctx, req)
 			if err != nil {
 				if compaction.IsContextOverflow(err) && r.Compaction != nil {
@@ -216,14 +230,23 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// Collect the response
 			var textContent strings.Builder
 			var toolCalls []llm.ToolCall
+			gotFirstToken := false
 
 			for event := range stream {
 				switch event.Type {
 				case llm.EventTextDelta:
+					if !gotFirstToken {
+						gotFirstToken = true
+						tr.Mark("llm.first_token", "turn", turn, "ttft_ms", time.Since(llmStart).Milliseconds())
+					}
 					textContent.WriteString(event.Text)
 					events <- AgentEvent{Type: EventTextDelta, Text: event.Text}
 
 				case llm.EventToolCallStart:
+					if !gotFirstToken {
+						gotFirstToken = true
+						tr.Mark("llm.first_token", "turn", turn, "ttft_ms", time.Since(llmStart).Milliseconds(), "kind", "tool_call")
+					}
 					events <- AgentEvent{Type: EventToolCallStart, ToolCall: event.ToolCall}
 
 				case llm.EventToolCallDone:
@@ -241,6 +264,10 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					return
 				}
 			}
+			tr.Mark("llm.stream_end", "turn", turn,
+				"total_ms", time.Since(llmStart).Milliseconds(),
+				"text_chars", textContent.Len(),
+				"tool_calls", len(toolCalls))
 
 			// Save assistant response to session
 			if textContent.Len() > 0 {
@@ -255,6 +282,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 
 			// If no tool calls, we're done
 			if len(toolCalls) == 0 {
+				tr.Mark("agent.done", "turn", turn, "reason", "no_tool_calls")
 				events <- AgentEvent{Type: EventDone}
 				return
 			}
@@ -280,10 +308,17 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 
 				slog.Debug("executing tool", "tool", tc.Name, "id", tc.ID, "input", string(tc.Input))
 
+				toolStart := time.Now()
 				result, err := r.Tools.Execute(ctx, tc.Name, tc.Input)
 				if err != nil {
 					result = tools.ToolResult{Error: err.Error()}
 				}
+				tr.Mark("tool.exec",
+					"turn", turn,
+					"tool", tc.Name,
+					"dur_ms_local", time.Since(toolStart).Milliseconds(),
+					"err", result.Error != "",
+					"output_chars", len(result.Output))
 
 				// Check for cancellation after tool execution
 				if ctx.Err() != nil {

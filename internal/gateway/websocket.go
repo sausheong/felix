@@ -333,6 +333,12 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 
 	runCtx, runCancel := context.WithCancel(context.Background())
 
+	// Performance trace — emits one slog.Info "perf" line per phase boundary
+	// (skills.match, llm.first_token, tool.exec, …) plus a final "perf summary".
+	trace := agent.NewTrace(agentCfg.ID, agentCfg.Model)
+	trace.Mark("ws.received", "msg_chars", len(params.Text))
+	runCtx = agent.WithTrace(runCtx, trace)
+
 	// Track this run so chat.abort and disconnect can cancel it
 	h.mu.Lock()
 	h.activeRuns[conn] = runCancel
