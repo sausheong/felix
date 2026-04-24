@@ -213,7 +213,7 @@ func TestPruneToolResults(t *testing.T) {
 
 	// Tool result should be truncated
 	assert.Less(t, len(msgs[1].Content), 20000)
-	assert.Contains(t, msgs[1].Content, "[output truncated")
+	assert.Contains(t, msgs[1].Content, truncationMarker)
 }
 
 func TestPruneToolResultsShort(t *testing.T) {
@@ -243,11 +243,11 @@ func TestPruneToolResultsNewlineBoundary(t *testing.T) {
 
 	// Should be truncated and contain the truncation marker
 	truncated := msgs[0].Content
-	assert.Contains(t, truncated, "[output truncated")
+	assert.Contains(t, truncated, truncationMarker)
 	assert.Less(t, len(truncated), len(content))
 
 	// The truncated content (before the suffix) should end at a newline boundary
-	suffixIdx := strings.Index(truncated, "\n\n[output truncated")
+	suffixIdx := strings.Index(truncated, "\n\n"+truncationMarker)
 	assert.Greater(t, suffixIdx, 0, "should contain truncation suffix")
 }
 

@@ -13,7 +13,14 @@ import (
 	"github.com/sausheong/felix/internal/session"
 )
 
-const maxToolResultLen = 10000 // truncate tool results longer than this
+const maxToolResultLen = 4000 // truncate tool results longer than this
+
+// compactMsgsTrigger forces preventive compaction when len(msgs) exceeds
+// this number. The token-window-based threshold rarely fires for local
+// models (gemma4 reports a 32K-token window so 60% ≈ 76K chars and our
+// typical prefill is 5-25K), so we need an absolute cap to bound prefill
+// growth and keep TTFT predictable.
+const compactMsgsTrigger = 20
 
 // detectImageMIME returns the actual MIME type based on magic bytes.
 // Falls back to the provided hint if the format is unrecognized.
@@ -291,12 +298,19 @@ func injectMissingToolResults(msgs []llm.Message) []llm.Message {
 // truncationMarker uniquely identifies content that pruneToolResults has
 // already shortened, so re-runs across turns become cheap no-ops instead
 // of re-scanning multi-hundred-KB tool outputs each time.
-const truncationMarker = "[output truncated — "
+const truncationMarker = "[truncated — "
 
 // pruneToolResults truncates oversized tool results in the message history
-// to prevent context window overflow. Only affects tool result messages
-// (identified by having a ToolCallID). Idempotent: messages already
-// truncated in a prior turn are skipped via marker detection.
+// to prevent context window overflow and bound prefill growth. Only affects
+// tool result messages (identified by having a ToolCallID). Idempotent:
+// messages already truncated in a prior turn are skipped via marker
+// detection.
+//
+// The retained slice is the FIRST maxLen chars (cut at the nearest newline
+// boundary) plus a compact marker telling the model the original size and
+// that it can re-run the tool to fetch more. We keep the head rather than
+// the tail because most tool outputs (file reads, command output) are
+// front-loaded with the most relevant info.
 func pruneToolResults(msgs []llm.Message, maxLen int) {
 	for i := range msgs {
 		if msgs[i].ToolCallID == "" || len(msgs[i].Content) <= maxLen {
@@ -309,10 +323,10 @@ func pruneToolResults(msgs []llm.Message, maxLen int) {
 		}
 		originalLen := len(msgs[i].Content)
 		truncated := msgs[i].Content[:maxLen]
-		// Try to cut at a newline boundary
 		if idx := strings.LastIndex(truncated, "\n"); idx > maxLen/2 {
 			truncated = truncated[:idx]
 		}
-		msgs[i].Content = fmt.Sprintf("%s\n\n%s%d chars total]", truncated, truncationMarker, originalLen)
+		msgs[i].Content = fmt.Sprintf("%s\n\n%s%d of %d chars; re-run the tool with offset/limit to see more]",
+			truncated, truncationMarker, len(truncated), originalLen)
 	}
 }

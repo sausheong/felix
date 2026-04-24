@@ -212,6 +212,12 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			tr.Mark("context.assemble", "turn", turn, "msgs", len(msgs), "tools", len(toolDefs), "sysprompt_chars", len(systemPrompt), "dur_ms_local", time.Since(phaseStart).Milliseconds())
 
 			// Preventive compaction check.
+			// Two triggers, either is sufficient:
+			//   - Token estimate exceeds threshold * model context window.
+			//   - Hard message-count cap (compactMsgsTrigger). For local
+			//     models the reported window is huge (32K tokens default)
+			//     so the threshold-based check almost never fires; the
+			//     count cap keeps prefill bounded for fast TTFT.
 			if r.Compaction != nil && r.Model != "" {
 				if r.calibrator == nil {
 					r.calibrator = tokens.NewCalibrator()
@@ -222,7 +228,9 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				if r.Compaction != nil && r.Compaction.Threshold > 0 {
 					threshold = r.Compaction.Threshold
 				}
-				if window > 0 && estimate > int(threshold*float64(window)) {
+				thresholdHit := window > 0 && estimate > int(threshold*float64(window))
+				countHit := len(msgs) > compactMsgsTrigger
+				if thresholdHit || countHit {
 					events <- AgentEvent{Type: EventCompactionStart}
 					res, _ := r.Compaction.MaybeCompact(ctx, r.Session, compaction.ReasonPreventive, "")
 					if res.Compacted {
