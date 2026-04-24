@@ -47,7 +47,7 @@ var toolHints = map[string]string{
 	"read_file":    "You can read files. You have vision capabilities — you can see and analyze images by using read_file on image files. Do not say you cannot see or analyze images.",
 	"write_file":   "You can create or overwrite files.",
 	"edit_file":    "You can make targeted edits to existing files.",
-	"bash":         "You can execute bash commands on the user's machine.",
+	"bash":         "You can execute bash commands on the user's machine. ALWAYS wrap file paths in double quotes when invoking bash (e.g. ls \"/path/with spaces/file.txt\") so paths with spaces or special characters survive shell tokenization.",
 	"web_fetch":    "You can fetch web pages using the web_fetch tool.",
 	"web_search":   "You can search the web using the web_search tool.",
 	"browser":      "You can automate a headless browser for interactive pages using the browser tool.",

@@ -79,6 +79,24 @@ cortex forget --entity <entity-id>
 - User asks "what do I know about X" or "who is connected to Y"
 - User wants to forget or clean up old knowledge
 
+## Install if missing
+
+### Check if installed
+
+```bash
+command -v cortex && cortex --version
+```
+
+### Install
+
+If `cortex` is not found, install before running any other command in this skill:
+
+- **From source (any platform with Go)**: `go install github.com/sausheong/cortex/cmd/cortex@latest` (binary lands in `$GOBIN` or `$GOPATH/bin` — make sure that directory is on `PATH`).
+- **macOS (Homebrew)**: `brew install sausheong/tap/cortex` (if available; otherwise use the `go install` route).
+- **Felix-bundled**: Felix may ship its own embedded Cortex; in that case use the in-process tools rather than the CLI.
+
+After installing, re-check with `cortex --version` before continuing. If installation fails, ask the user how they'd like to proceed.
+
 ## Notes
 
 - Cortex stores everything in a single `brain.db` SQLite file in the current directory
@@ -86,3 +104,4 @@ cortex forget --entity <entity-id>
 - Requires `OPENAI_API_KEY` for LLM extraction and semantic search (works without it but limited to deterministic extraction and keyword search)
 - Supports Anthropic (`LLM_PROVIDER=anthropic`) and OpenAI-compatible APIs (`OPENAI_BASE_URL`)
 - All data (emails, calendar events, PDFs) should be converted to text or supported file formats first, then ingested via `remember` or `sync`
+- **Always quote file/directory paths in bash** (e.g. `cortex sync "/path/with spaces/notes"`) so paths with spaces survive shell tokenization.

@@ -31,7 +31,28 @@ Do not use Pandoc when:
 
 ## Environment notes
 
-Pandoc is pre-installed and available at `/usr/bin/pandoc`. No LaTeX PDF engine is installed, so direct PDF generation (`-t pdf`) is not available. For PDF output, convert to HTML first and use other tools, or output to DOCX instead.
+Pandoc path varies by platform — common locations are `/usr/bin/pandoc`, `/usr/local/bin/pandoc`, and `/opt/homebrew/bin/pandoc`. Direct PDF generation requires a LaTeX engine (e.g. `tectonic`, `xelatex`, `wkhtmltopdf`) which is **not** installed by default. For PDF output, convert to HTML first and use another tool, or output to DOCX instead.
+
+### Check if installed
+
+```bash
+command -v pandoc && pandoc --version | head -1
+```
+
+### Install if missing
+
+If `pandoc` is not found, install it before running any other command in this skill:
+
+- **macOS (Homebrew)**: `brew install pandoc`
+- **Linux (Debian/Ubuntu)**: `sudo apt-get update && sudo apt-get install -y pandoc`
+- **Linux (Fedora/RHEL)**: `sudo dnf install -y pandoc`
+- **Linux (Arch)**: `sudo pacman -S --noconfirm pandoc`
+- **Windows (winget)**: `winget install --id JohnMacFarlane.Pandoc -e`
+- **Windows (scoop)**: `scoop install pandoc`
+
+After installing, re-check with `pandoc --version` before continuing. If installation fails, ask the user how they'd like to proceed.
+
+**Always quote file paths in bash** (e.g. `pandoc "/path/with spaces/in.md" -o "out.html"`) so paths with spaces survive shell tokenization.
 
 ## Core principles
 

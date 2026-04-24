@@ -32,6 +32,24 @@ environment when the hand starts. No manual OAuth setup is needed.
 If `gog` reports authentication errors, ask the user to reconnect Google
 Workspace in Settings and restart the hand.
 
+## Install if missing
+
+### Check if installed
+
+```bash
+command -v gog && gog --version
+```
+
+### Install
+
+If `gog` is not found, install before running any other command in this skill:
+
+- **macOS / Linux (Homebrew)**: `brew install steipete/tap/gogcli`
+- **From source (any platform with Go)**: `go install github.com/steipete/gogcli/cmd/gog@latest`
+- **Manual**: download a release binary from the gog homepage (https://gogcli.sh) and place it on `PATH`.
+
+After installing, re-check with `gog --version` before continuing. If installation fails, ask the user how they'd like to proceed.
+
 Common commands
 
 - Gmail search: `gog gmail search 'newer_than:7d' --max 10`

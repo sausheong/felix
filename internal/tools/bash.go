@@ -100,7 +100,7 @@ type bashInput struct {
 func (t *BashTool) Name() string { return "bash" }
 
 func (t *BashTool) Description() string {
-	return "Execute a bash command and return its output. The command runs in a shell with a configurable timeout (default 120 seconds)."
+	return "Execute a bash command and return its output. The command runs in a shell with a configurable timeout (default 120 seconds). IMPORTANT: always wrap file paths in double quotes (e.g. cat \"/path/with spaces/file.txt\") so paths containing spaces or special characters survive shell tokenization."
 }
 
 func (t *BashTool) Parameters() json.RawMessage {

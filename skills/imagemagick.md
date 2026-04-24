@@ -33,7 +33,30 @@ Do not use ImageMagick when:
 
 ## Environment notes
 
-ImageMagick is pre-installed and available as `magick` at `/usr/bin/magick`. The `identify` and `montage` subcommands are also available. PDF rasterization may be restricted by the local ImageMagick security policy.
+ImageMagick provides the `magick` binary (modern v7+); older installs may only have the legacy `convert` / `identify` / `montage` commands. Path varies by platform — common locations are `/usr/bin/`, `/usr/local/bin/`, and `/opt/homebrew/bin/`. PDF rasterization may be restricted by the local ImageMagick security policy.
+
+### Check if installed
+
+```bash
+command -v magick && magick -version | head -1
+```
+
+If `magick` is missing but `convert` exists, the install is a legacy v6 build — most commands here still work via `convert`, but prefer upgrading to v7.
+
+### Install if missing
+
+If neither `magick` nor `convert` is found, install before running any other command in this skill:
+
+- **macOS (Homebrew)**: `brew install imagemagick`
+- **Linux (Debian/Ubuntu)**: `sudo apt-get update && sudo apt-get install -y imagemagick`
+- **Linux (Fedora/RHEL)**: `sudo dnf install -y ImageMagick`
+- **Linux (Arch)**: `sudo pacman -S --noconfirm imagemagick`
+- **Windows (winget)**: `winget install --id ImageMagick.ImageMagick -e`
+- **Windows (scoop)**: `scoop install imagemagick`
+
+After installing, re-check with `magick -version` before continuing. If installation fails, ask the user how they'd like to proceed.
+
+**Always quote file paths in bash** (e.g. `magick "/path/with spaces/in.jpg" "out.png"`) so paths with spaces survive shell tokenization.
 
 ## Core principles
 

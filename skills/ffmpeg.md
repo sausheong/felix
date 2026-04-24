@@ -32,7 +32,28 @@ Do not use FFmpeg when:
 
 ## Environment notes
 
-FFmpeg and ffprobe are pre-installed and available at `/usr/bin/ffmpeg` and `/usr/bin/ffprobe`.
+FFmpeg ships with `ffmpeg` and `ffprobe`. The path varies by platform — common locations are `/usr/bin/`, `/usr/local/bin/`, and `/opt/homebrew/bin/` (Apple Silicon Homebrew). Resolve with `which ffmpeg`.
+
+### Check if installed
+
+```bash
+command -v ffmpeg && ffmpeg -version | head -1
+```
+
+### Install if missing
+
+If `ffmpeg` is not found, install it before running any other command in this skill:
+
+- **macOS (Homebrew)**: `brew install ffmpeg`
+- **Linux (Debian/Ubuntu)**: `sudo apt-get update && sudo apt-get install -y ffmpeg`
+- **Linux (Fedora/RHEL)**: `sudo dnf install -y ffmpeg` (may require RPM Fusion)
+- **Linux (Arch)**: `sudo pacman -S --noconfirm ffmpeg`
+- **Windows (winget)**: `winget install --id Gyan.FFmpeg -e`
+- **Windows (scoop)**: `scoop install ffmpeg`
+
+After installing, re-check with `ffmpeg -version` before continuing. If installation fails, ask the user how they'd like to proceed rather than guessing alternatives.
+
+**Always quote file paths in bash** (e.g. `ffmpeg -i "/path/with spaces/in.mp4" "out.mp4"`) so paths with spaces survive shell tokenization.
 
 ## Core principles
 
