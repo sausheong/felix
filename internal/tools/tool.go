@@ -13,6 +13,28 @@ import (
 	"github.com/sausheong/felix/internal/llm"
 )
 
+// expandHome rewrites a leading "~" or "~/" in p to the user's home directory.
+// Other tildes (mid-path, "~user/...") are left alone — Felix never escalates
+// privileges, so cross-user tilde expansion would silently fail anyway.
+//
+// The shell ($BASH/zsh) does this expansion before exec, which is why the
+// bash tool works without it. read/write/edit_file call os.Open directly so
+// they need to handle "~/" themselves.
+func expandHome(p string) string {
+	if p == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return p
+	}
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
+}
+
 // resolveExistingPath returns a path that actually exists on disk, recovering
 // from Unicode-whitespace mismatches between what the LLM supplies and what
 // the filesystem holds. Resolution order:

@@ -77,6 +77,7 @@ func (t *ReadFileTool) Execute(_ context.Context, input json.RawMessage) (ToolRe
 		return ToolResult{Error: "path is required"}, nil
 	}
 
+	in.Path = expandHome(in.Path)
 	in.Path = resolveExistingPath(in.Path)
 
 	if t.WorkDir != "" {

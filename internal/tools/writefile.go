@@ -51,6 +51,8 @@ func (t *WriteFileTool) Execute(_ context.Context, input json.RawMessage) (ToolR
 		return ToolResult{Error: "path is required"}, nil
 	}
 
+	in.Path = expandHome(in.Path)
+
 	if t.WorkDir != "" {
 		if err := validatePathInWorkDir(in.Path, t.WorkDir); err != nil {
 			return ToolResult{Error: err.Error()}, nil
