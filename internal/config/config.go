@@ -217,8 +217,25 @@ func Load(path string) (*Config, error) {
 	cfg.path = path
 
 	// Backfill compaction defaults if the user's config is silent.
-	if cfg.Agents.Defaults.Compaction.Model == "" {
-		cfg.Agents.Defaults.Compaction = DefaultConfig().Agents.Defaults.Compaction
+	// "All numeric fields zero" is our proxy for "no compaction block at
+	// all" — in that case copy the full default. Otherwise only backfill
+	// missing numeric fields and trust the user's Enabled. Model is allowed
+	// to remain empty; BuildManager auto-mirrors the default agent's model.
+	d := DefaultConfig().Agents.Defaults.Compaction
+	cur := cfg.Agents.Defaults.Compaction
+	if cur.Threshold == 0 && cur.PreserveTurns == 0 && cur.TimeoutSec == 0 {
+		cfg.Agents.Defaults.Compaction = d
+	} else {
+		if cur.Threshold == 0 {
+			cur.Threshold = d.Threshold
+		}
+		if cur.PreserveTurns == 0 {
+			cur.PreserveTurns = d.PreserveTurns
+		}
+		if cur.TimeoutSec == 0 {
+			cur.TimeoutSec = d.TimeoutSec
+		}
+		cfg.Agents.Defaults.Compaction = cur
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -252,8 +269,12 @@ func DefaultConfig() *Config {
 			},
 			Defaults: AgentsDefaults{
 				Compaction: CompactionConfig{
-					Enabled:       true,
-					Model:         "local/qwen2.5:3b-instruct",
+					Enabled: true,
+					// Empty → BuildManager auto-mirrors the default agent's
+					// model. The previous hardcoded "qwen2.5:3b-instruct"
+					// silently disabled compaction on stock installs since
+					// that model isn't bundled.
+					Model:         "",
 					Threshold:     0.6,
 					PreserveTurns: 4,
 					TimeoutSec:    60,

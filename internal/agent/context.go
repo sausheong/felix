@@ -288,19 +288,31 @@ func injectMissingToolResults(msgs []llm.Message) []llm.Message {
 	return msgs
 }
 
+// truncationMarker uniquely identifies content that pruneToolResults has
+// already shortened, so re-runs across turns become cheap no-ops instead
+// of re-scanning multi-hundred-KB tool outputs each time.
+const truncationMarker = "[output truncated — "
+
 // pruneToolResults truncates oversized tool results in the message history
 // to prevent context window overflow. Only affects tool result messages
-// (identified by having a ToolCallID).
+// (identified by having a ToolCallID). Idempotent: messages already
+// truncated in a prior turn are skipped via marker detection.
 func pruneToolResults(msgs []llm.Message, maxLen int) {
 	for i := range msgs {
-		if msgs[i].ToolCallID != "" && len(msgs[i].Content) > maxLen {
-			originalLen := len(msgs[i].Content)
-			truncated := msgs[i].Content[:maxLen]
-			// Try to cut at a newline boundary
-			if idx := strings.LastIndex(truncated, "\n"); idx > maxLen/2 {
-				truncated = truncated[:idx]
-			}
-			msgs[i].Content = fmt.Sprintf("%s\n\n[output truncated — %d chars total]", truncated, originalLen)
+		if msgs[i].ToolCallID == "" || len(msgs[i].Content) <= maxLen {
+			continue
 		}
+		// Already-pruned content carries the marker near the end; skip the
+		// expensive LastIndex scan over hundreds of KB.
+		if strings.Contains(msgs[i].Content, truncationMarker) {
+			continue
+		}
+		originalLen := len(msgs[i].Content)
+		truncated := msgs[i].Content[:maxLen]
+		// Try to cut at a newline boundary
+		if idx := strings.LastIndex(truncated, "\n"); idx > maxLen/2 {
+			truncated = truncated[:idx]
+		}
+		msgs[i].Content = fmt.Sprintf("%s\n\n%s%d chars total]", truncated, truncationMarker, originalLen)
 	}
 }

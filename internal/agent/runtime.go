@@ -135,6 +135,11 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			maxTurns = 25
 		}
 
+		// Cached per-request: skill / memory matches don't change between
+		// turns since they're keyed on userMsg.
+		var matchedSkills []skill.Skill
+		var matchedMemory []memory.Entry
+
 		for turn := 0; turn < maxTurns; turn++ {
 			// Check for cancellation at the top of each turn
 			if ctx.Err() != nil {
@@ -146,24 +151,33 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			phaseStart := time.Now()
 			systemPrompt := assembleSystemPrompt(r.Workspace, r.SystemPrompt, r.AgentID, r.AgentName, r.Tools.Names())
 
-			// Inject relevant skills
+			// Inject relevant skills. We only match once per request (turn 0)
+			// because the user message — what we match against — doesn't
+			// change across turns. Re-matching on every turn was costing
+			// 3–7s of prefill (skills add ~10 K chars to the system prompt).
 			if r.Skills != nil {
-				skillStart := time.Now()
-				matched := r.Skills.MatchSkills(userMsg, 3)
-				if extra := skill.FormatForPrompt(matched); extra != "" {
+				if turn == 0 {
+					skillStart := time.Now()
+					matchedSkills = r.Skills.MatchSkills(userMsg, 1)
+					tr.Mark("skills.match", "turn", turn, "matched", len(matchedSkills), "dur_ms_local", time.Since(skillStart).Milliseconds())
+				}
+				if extra := skill.FormatForPrompt(matchedSkills); extra != "" {
 					systemPrompt += extra
 				}
-				tr.Mark("skills.match", "turn", turn, "matched", len(matched), "dur_ms_local", time.Since(skillStart).Milliseconds())
 			}
 
-			// Inject relevant memory
+			// Inject relevant memory. Same per-request caching as skills:
+			// the query is the user message, which doesn't change between
+			// turns, so the search result doesn't either.
 			if r.Memory != nil {
-				memStart := time.Now()
-				memEntries := r.Memory.Search(userMsg, 3)
-				if extra := memory.FormatForPrompt(memEntries); extra != "" {
+				if turn == 0 {
+					memStart := time.Now()
+					matchedMemory = r.Memory.Search(userMsg, 3)
+					tr.Mark("memory.search", "turn", turn, "hits", len(matchedMemory), "dur_ms_local", time.Since(memStart).Milliseconds())
+				}
+				if extra := memory.FormatForPrompt(matchedMemory); extra != "" {
 					systemPrompt += extra
 				}
-				tr.Mark("memory.search", "turn", turn, "hits", len(memEntries), "dur_ms_local", time.Since(memStart).Milliseconds())
 			}
 
 			// Inject Cortex context. On the first turn we need to wait for the
@@ -233,7 +247,11 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 
 			// Call LLM
 			llmStart := time.Now()
-			tr.Mark("llm.request_sent", "turn", turn, "model", r.Model)
+			prefillChars := len(systemPrompt)
+			for _, m := range msgs {
+				prefillChars += len(m.Content)
+			}
+			tr.Mark("llm.request_sent", "turn", turn, "model", r.Model, "prefill_chars", prefillChars)
 			stream, err := r.LLM.ChatStream(ctx, req)
 			if err != nil {
 				if compaction.IsContextOverflow(err) && r.Compaction != nil {

@@ -19,7 +19,16 @@ func BuildManager(cfg *config.Config) *Manager {
 	if !c.Enabled {
 		return nil
 	}
-	provider, model := llm.ParseProviderModel(c.Model)
+	// Auto-mirror the default agent's model when compaction.model is empty.
+	// Avoids hardcoding a model name that may not be pulled (e.g. the old
+	// "qwen2.5:3b-instruct" default silently disabled compaction on stock
+	// installs).
+	modelStr := c.Model
+	if modelStr == "" && len(cfg.Agents.List) > 0 {
+		modelStr = cfg.Agents.List[0].Model
+		slog.Info("compaction model auto-mirrored from default agent", "model", modelStr)
+	}
+	provider, model := llm.ParseProviderModel(modelStr)
 	if provider == "" {
 		provider = "local"
 	}
