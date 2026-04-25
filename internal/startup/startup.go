@@ -688,8 +688,18 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 
 	cleanup := func() {
 		tools.ShutdownBrowsers()
-		if err := mcpMgr.Close(); err != nil {
-			slog.Warn("mcp: manager close returned error", "error", err)
+		// Bound MCP close so a slow/unreachable upstream can't hang the whole
+		// shutdown chain (which would also leave the bundled Ollama supervisor
+		// running, leaking processes across runs).
+		mcpDone := make(chan error, 1)
+		go func() { mcpDone <- mcpMgr.Close() }()
+		select {
+		case err := <-mcpDone:
+			if err != nil {
+				slog.Warn("mcp: manager close returned error", "error", err)
+			}
+		case <-time.After(3 * time.Second):
+			slog.Warn("mcp: manager close timed out, continuing shutdown")
 		}
 		cronScheduler.Stop()
 		for _, hb := range heartbeats {
