@@ -23,6 +23,7 @@ import (
 	"github.com/sausheong/felix/internal/heartbeat"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/local"
+	"github.com/sausheong/felix/internal/mcp"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
@@ -391,6 +392,22 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	}
 	tools.RegisterSendMessage(toolReg, sendMsgConfigFn)
 
+	// Initialize MCP manager once and register tools into the main registry.
+	mcpServerCfgs, err := cfg.ResolveMCPServers()
+	if err != nil {
+		return nil, fmt.Errorf("resolve mcp_servers: %w", err)
+	}
+	mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	mcpMgr, err := mcp.NewManager(mcpInitCtx, mcpServerCfgs)
+	mcpInitCancel()
+	if err != nil {
+		return nil, fmt.Errorf("init mcp manager: %w", err)
+	}
+	if err := mcp.RegisterTools(toolReg, mcpMgr); err != nil {
+		mcpMgr.Close()
+		return nil, fmt.Errorf("register mcp tools: %w", err)
+	}
+
 	// Init skill loader
 	skillLoader := skill.NewLoader()
 	skillDirs := []string{filepath.Join(dataDir, "skills")}
@@ -514,6 +531,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentID, "heartbeat")
 				hbToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(hbToolReg, agentWorkspace, execPolicy)
+				if err := mcp.RegisterTools(hbToolReg, mcpMgr); err != nil {
+					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
+				}
 				tools.RegisterSendMessage(hbToolReg, sendMsgConfigFn)
 
 				rt := &agent.Runtime{
@@ -561,6 +581,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentID, "cron_"+cronJob.Name)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, agentWorkspace, execPolicy)
+				if err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
+					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
+				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
 				rt := &agent.Runtime{
 					LLM:          provider,
@@ -605,6 +628,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				cronSess := session.NewSession(defaultCfg.ID, "cron_"+jobName)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, defaultCfg.Workspace, execPolicy)
+				if err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
+					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
+				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
 				rt := &agent.Runtime{
 					LLM:          p,
@@ -660,6 +686,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 
 	cleanup := func() {
 		tools.ShutdownBrowsers()
+		if err := mcpMgr.Close(); err != nil {
+			slog.Warn("mcp: manager close returned error", "error", err)
+		}
 		cronScheduler.Stop()
 		for _, hb := range heartbeats {
 			hb.Stop()
