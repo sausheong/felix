@@ -42,3 +42,8 @@ Felix.app
 
 # Bundled Ollama binaries fetched by 'make ollama-fetch'
 /bin/
+
+# Local secrets / experiments
+gt-harness.txt
+*.env
+internal/mcp/SDK_NOTES.md
