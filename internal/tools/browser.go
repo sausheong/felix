@@ -22,6 +22,11 @@ const (
 	waitForBudget        = 15 * time.Second
 	defaultSettleMs      = 1000
 	primaryNavigateLimit = 30 * time.Second
+	// elementWaitBudget bounds per-action WaitVisible/WaitReady calls so a
+	// single bad selector or a stuck readyState can't burn the entire
+	// browserTimeout (120s). With this cap, the agent gets a fast failure and
+	// has time left to retry with a different selector.
+	elementWaitBudget = 25 * time.Second
 
 	sessionIdleTimeout = 10 * time.Minute
 	sessionMaxCount    = 5
@@ -97,7 +102,9 @@ MULTI-STEP FLOWS — pass "session" (any string label like "amazon-checkout" or 
 
 ONE-SHOT calls — omit "session" and each call gets its own fresh browser.
 
-JS-HEAVY pages — the tool already waits for body-ready and network-idle automatically, but for SPAs that render content asynchronously the most reliable signal is "wait_for" (CSS selector that appears once content is rendered, e.g. "main article" or "#root .loaded"). "wait_ms" adds extra settle time in milliseconds after network-idle (default 1000).`
+JS-HEAVY pages — the tool already waits for body-ready and network-idle automatically, but for SPAs that render content asynchronously the most reliable signal is "wait_for" (CSS selector that appears once content is rendered, e.g. "main article" or "#root .loaded"). "wait_ms" adds extra settle time in milliseconds after network-idle (default 1000).
+
+SELECTORS — standard CSS only. Playwright/jQuery extensions are NOT supported: ":has-text(...)", "text=...", ">>" chains, "/...//xpath" all fail. To match by text, use attribute selectors ([aria-label="…"], [title="…"]), structural selectors (:nth-of-type, :nth-child), or "evaluate" with document.querySelector / XPath via document.evaluate.`
 }
 
 func (t *BrowserTool) Parameters() json.RawMessage {
@@ -537,6 +544,24 @@ func (t *BrowserTool) doNavigate(ctx context.Context, in browserInput) error {
 	return chromedp.Run(ctx, chromedp.Sleep(time.Duration(settleMs)*time.Millisecond))
 }
 
+// waitForElement runs a wait action (WaitVisible / WaitReady / etc.) under a
+// bounded sub-context so a single bad selector or stuck readyState can't burn
+// the entire browser call budget. Returns a friendly error on timeout that
+// names the most common causes — Playwright-style selectors and unrendered
+// SPA content — instead of the opaque "context deadline exceeded".
+func waitForElement(ctx context.Context, action, selector string, wait chromedp.Action) error {
+	waitCtx, cancel := context.WithTimeout(ctx, elementWaitBudget)
+	defer cancel()
+	if err := chromedp.Run(waitCtx, wait); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%s timed out waiting for selector %q after %ds. Common causes: invalid CSS selector (Playwright-style :has-text()/text=/>> are NOT supported — use attribute selectors or evaluate); element never appears (try a different selector or pass wait_for/wait_ms); page never finishes loading",
+				action, selector, int(elementWaitBudget.Seconds()))
+		}
+		return fmt.Errorf("%s failed on %q: %w", action, selector, err)
+	}
+	return nil
+}
+
 // halfDeadlineContext returns a context whose deadline is half of the parent's
 // remaining time, clamped to a minimum so it doesn't collapse to nothing on
 // already-near-expiry contexts. If the parent has no deadline, the minimum is
@@ -590,11 +615,10 @@ func (t *BrowserTool) click(ctx context.Context, in browserInput) (ToolResult, e
 		return ToolResult{Error: fmt.Sprintf("navigate failed: %v", err)}, nil
 	}
 
-	err := chromedp.Run(ctx,
-		chromedp.WaitVisible(in.Selector),
-		chromedp.Click(in.Selector),
-	)
-	if err != nil {
+	if err := waitForElement(ctx, "click", in.Selector, chromedp.WaitVisible(in.Selector)); err != nil {
+		return ToolResult{Error: err.Error()}, nil
+	}
+	if err := chromedp.Run(ctx, chromedp.Click(in.Selector)); err != nil {
 		return ToolResult{Error: fmt.Sprintf("click failed on %q: %v", in.Selector, err)}, nil
 	}
 
@@ -613,12 +637,13 @@ func (t *BrowserTool) typeText(ctx context.Context, in browserInput) (ToolResult
 		return ToolResult{Error: fmt.Sprintf("navigate failed: %v", err)}, nil
 	}
 
-	err := chromedp.Run(ctx,
-		chromedp.WaitVisible(in.Selector),
+	if err := waitForElement(ctx, "type", in.Selector, chromedp.WaitVisible(in.Selector)); err != nil {
+		return ToolResult{Error: err.Error()}, nil
+	}
+	if err := chromedp.Run(ctx,
 		chromedp.Clear(in.Selector),
 		chromedp.SendKeys(in.Selector, in.Text),
-	)
-	if err != nil {
+	); err != nil {
 		return ToolResult{Error: fmt.Sprintf("type failed on %q: %v", in.Selector, err)}, nil
 	}
 
@@ -635,12 +660,11 @@ func (t *BrowserTool) getText(ctx context.Context, in browserInput) (ToolResult,
 		return ToolResult{Error: fmt.Sprintf("navigate failed: %v", err)}, nil
 	}
 
+	if err := waitForElement(ctx, "get_text", selector, chromedp.WaitReady(selector)); err != nil {
+		return ToolResult{Error: err.Error()}, nil
+	}
 	var text string
-	err := chromedp.Run(ctx,
-		chromedp.WaitReady(selector),
-		chromedp.InnerHTML(selector, &text),
-	)
-	if err != nil {
+	if err := chromedp.Run(ctx, chromedp.InnerHTML(selector, &text)); err != nil {
 		return ToolResult{Error: fmt.Sprintf("get_text failed on %q: %v", selector, err)}, nil
 	}
 
