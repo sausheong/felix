@@ -368,7 +368,11 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	dataDir := config.DefaultDataDir()
 	os.MkdirAll(filepath.Join(dataDir, "sessions"), 0o755)
 	os.MkdirAll(filepath.Join(dataDir, "memory"), 0o755)
-	os.MkdirAll(filepath.Join(dataDir, "skills"), 0o755)
+	skillsDir := filepath.Join(dataDir, "skills")
+	os.MkdirAll(skillsDir, 0o755)
+	if _, err := skill.SeedBundledSkills(skillsDir); err != nil {
+		slog.Warn("failed to seed bundled skills", "error", err)
+	}
 
 	// Init components
 	providers := InitProviders(cfg)

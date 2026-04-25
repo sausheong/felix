@@ -262,10 +262,15 @@ func runChat(agentID, configPath, modelOverride string) error {
 		return fmt.Errorf("load session: %w", err)
 	}
 
-	// Init skills
+	// Init skills (seed bundled skills on first run)
+	skillsDir := filepath.Join(dataDir, "skills")
+	os.MkdirAll(skillsDir, 0o755)
+	if _, err := skill.SeedBundledSkills(skillsDir); err != nil {
+		slog.Warn("failed to seed bundled skills", "error", err)
+	}
 	skillLoader := skill.NewLoader()
 	skillLoader.LoadFrom(
-		filepath.Join(dataDir, "skills"),
+		skillsDir,
 		filepath.Join(agentCfg.Workspace, "skills"),
 	)
 

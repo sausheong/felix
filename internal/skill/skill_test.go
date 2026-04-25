@@ -267,3 +267,30 @@ func TestFormatIndexEmpty(t *testing.T) {
 	loader := NewLoader()
 	assert.Equal(t, "", loader.FormatIndex())
 }
+
+func TestSeedBundledSkills_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	written, err := SeedBundledSkills(dir)
+	require.NoError(t, err)
+
+	// At least the 5 starter skills should be written.
+	assert.GreaterOrEqual(t, len(written), 5)
+	for _, name := range written {
+		_, err := os.Stat(filepath.Join(dir, name))
+		assert.NoError(t, err, "expected %s to exist after seeding", name)
+	}
+}
+
+func TestSeedBundledSkills_NonEmptyDirSkipped(t *testing.T) {
+	dir := t.TempDir()
+	// Drop a single sentinel file so the dir is non-empty.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sentinel.md"), []byte("x"), 0o644))
+
+	written, err := SeedBundledSkills(dir)
+	require.NoError(t, err)
+	assert.Nil(t, written, "should skip seeding when directory is non-empty")
+
+	// Bundled files should NOT have appeared.
+	_, err = os.Stat(filepath.Join(dir, "pdftotext.md"))
+	assert.True(t, os.IsNotExist(err), "pdftotext.md should NOT have been written")
+}
