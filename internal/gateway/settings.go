@@ -486,6 +486,7 @@ html.dark .error-state { background: #450a0a; }
 				<button class="finger-tab" data-tab="models">Models</button>
 				<button class="finger-tab" data-tab="intelligence">Intelligence</button>
 				<button class="finger-tab" data-tab="security">Security</button>
+				<button class="finger-tab" data-tab="messaging">Messaging</button>
 				<button class="finger-tab" data-tab="gateway">Gateway</button>
 			</div>
 			<div class="finger-panel active" id="panel-agents"></div>
@@ -493,6 +494,7 @@ html.dark .error-state { background: #450a0a; }
 			<div class="finger-panel" id="panel-models"></div>
 			<div class="finger-panel" id="panel-intelligence"></div>
 			<div class="finger-panel" id="panel-security"></div>
+			<div class="finger-panel" id="panel-messaging"></div>
 			<div class="finger-panel" id="panel-gateway"></div>
 		</div>
 	</div>
@@ -604,6 +606,7 @@ html.dark .error-state { background: #450a0a; }
 		renderModels();
 		renderIntelligence();
 		renderSecurity();
+		renderMessaging();
 		renderGateway();
 	}
 
@@ -1062,6 +1065,42 @@ html.dark .error-state { background: #450a0a; }
 	}
 
 	// === Gateway Panel ===
+	// === Messaging Panel — outbound channels (Telegram today, more later) ===
+	function renderMessaging() {
+		var p = document.getElementById('panel-messaging');
+		p.innerHTML = '';
+
+		var tgSec = makeSection(p, 'Telegram (send-only)');
+
+		var help = document.createElement('p');
+		help.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; margin:0 0 0.75rem 0;';
+		help.innerHTML = 'Lets agents send messages to Telegram via the <code>telegram_send</code> tool. ' +
+			'Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> to get a token. ' +
+			'Find your chat ID by messaging the bot, then opening <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>. ' +
+			'After saving, restart Felix or wait for hot-reload — and add <code>telegram_send</code> to the allow list of any agent that should use it (Agents tab).';
+		tgSec.appendChild(help);
+
+		var tg = cfg.telegram || {};
+		makeField(tgSec, 'Enabled', 'toggle', !!tg.enabled, function(v) {
+			if (!cfg.telegram) cfg.telegram = {};
+			cfg.telegram.enabled = v;
+		});
+		makeField(tgSec, 'Bot Token', 'password', '', function(v) {
+			if (!v) return;
+			if (!cfg.telegram) cfg.telegram = {};
+			cfg.telegram.bot_token = v;
+		});
+		makeField(tgSec, 'Default Chat ID', 'text', tg.default_chat_id || '', function(v) {
+			if (!cfg.telegram) cfg.telegram = {};
+			cfg.telegram.default_chat_id = v;
+		});
+
+		var note = document.createElement('p');
+		note.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0.5rem 0 0 0;';
+		note.textContent = 'Default Chat ID is used when the agent omits chat_id. Accepts numeric IDs, @channelname, or negative group IDs (-100…). Send-only — Felix does not receive Telegram messages.';
+		tgSec.appendChild(note);
+	}
+
 	function renderGateway() {
 		var p = document.getElementById('panel-gateway');
 		p.innerHTML = '';
