@@ -245,3 +245,25 @@ func TestFormatForPromptEmpty(t *testing.T) {
 	result := FormatForPrompt(nil)
 	assert.Equal(t, "", result)
 }
+
+func TestFormatIndex(t *testing.T) {
+	loader := NewLoader()
+	loader.skills = []Skill{
+		{Name: "pdftotext", Description: "Extract plain text from PDF files"},
+		{Name: "ffmpeg", Description: "Process audio and video"},
+		{Name: "noDesc"}, // skill without description still listed
+	}
+
+	got := loader.FormatIndex()
+	assert.Contains(t, got, "## Skills Index")
+	assert.Contains(t, got, "**pdftotext**")
+	assert.Contains(t, got, "Extract plain text from PDF files")
+	assert.Contains(t, got, "**ffmpeg**")
+	assert.Contains(t, got, "Process audio and video")
+	assert.Contains(t, got, "**noDesc**")
+}
+
+func TestFormatIndexEmpty(t *testing.T) {
+	loader := NewLoader()
+	assert.Equal(t, "", loader.FormatIndex())
+}

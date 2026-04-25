@@ -283,3 +283,32 @@ func FormatForPrompt(skills []Skill) string {
 
 	return b.String()
 }
+
+// FormatIndex returns a markdown index of every loaded skill (name +
+// one-line description). Cheap to inject (~50 chars per skill) and gives
+// the agent awareness of every skill it has access to, even when no skill
+// matches the user's request closely. The full body of relevant skills is
+// still injected separately via MatchSkills + FormatForPrompt.
+func (l *Loader) FormatIndex() string {
+	l.mu.RLock()
+	skills := l.skills
+	l.mu.RUnlock()
+
+	if len(skills) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n## Skills Index\n\nThe following skills are loaded and available. Their full instructions are injected only when the user's request matches one of them; if a request relates to any of these but the full instructions are not present, ask the user to be more specific so the right skill can be loaded.\n\n")
+	for _, s := range skills {
+		b.WriteString("- **")
+		b.WriteString(s.Name)
+		b.WriteString("**")
+		if s.Description != "" {
+			b.WriteString(" — ")
+			b.WriteString(s.Description)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}

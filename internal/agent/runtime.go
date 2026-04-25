@@ -179,7 +179,13 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// because the user message — what we match against — doesn't
 			// change across turns. Re-matching on every turn was costing
 			// 3–7s of prefill (skills add ~10 K chars to the system prompt).
+			//
+			// FormatIndex is always-on (cheap) so the agent knows every
+			// skill name it has access to, even when none match the user's
+			// request closely. Full skill bodies are injected only for
+			// matched skills.
 			if r.Skills != nil {
+				systemPrompt += r.Skills.FormatIndex()
 				if turn == 0 {
 					skillStart := time.Now()
 					matchedSkills = r.Skills.MatchSkills(userMsg, 1)
