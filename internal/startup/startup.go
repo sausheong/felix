@@ -331,12 +331,21 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	agentRunner.SetCortex(cx)
 	tools.RegisterAskAgent(toolReg, agentRunner)
 
-	// Config hot-reload
+	// Config hot-reload — rebuild LLM provider clients from the new config
+	// and push them into both handlers. Without the provider rebuild, edits
+	// to API keys / base URLs in the Settings UI would silently no-op until
+	// the process is restarted (the cached clients still hold the stale
+	// credentials they were instantiated with at startup).
 	var configWatcher *config.Watcher
 	if cfg.Path() != "" {
 		watcher, err := config.NewWatcher(cfg.Path(), func(newCfg *config.Config) {
+			cfg.UpdateFrom(newCfg)
+			newProviders := InitProviders(newCfg)
 			wsHandler.UpdateConfig(newCfg)
-			slog.Info("config hot-reloaded")
+			wsHandler.UpdateProviders(newProviders)
+			agentRunner.UpdateConfig(newCfg)
+			agentRunner.UpdateProviders(newProviders)
+			slog.Info("config hot-reloaded", "providers", len(newProviders))
 		})
 		if err == nil {
 			watcher.Start()

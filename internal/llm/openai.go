@@ -7,9 +7,51 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 
 	openai "github.com/sashabaranov/go-openai"
 )
+
+// logOpenAIError unwraps the go-openai SDK error into a structured slog.WARN
+// record so we can see exactly why LiteLLM/OpenAI rejected the request — the
+// SDK's flat error string drops Param, Type, Code, and the raw response body
+// that often pinpoints which JSON field is invalid (e.g. "max_tokens" vs
+// "max_completion_tokens" on gpt-5 family).
+func logOpenAIError(err error, model string, msgCount, toolCount, maxTokens int, temp float32, hasStream bool) {
+	attrs := []any{
+		"model", model,
+		"msg_count", msgCount,
+		"tool_count", toolCount,
+		"max_completion_tokens", maxTokens,
+		"temperature", temp,
+		"stream", hasStream,
+		"err", err.Error(),
+	}
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) {
+		attrs = append(attrs,
+			"http_status", apiErr.HTTPStatusCode,
+			"api_type", apiErr.Type,
+			"api_code", fmt.Sprintf("%v", apiErr.Code),
+			"api_message", apiErr.Message,
+		)
+		if apiErr.Param != nil {
+			attrs = append(attrs, "api_param", *apiErr.Param)
+		}
+	}
+	var reqErr *openai.RequestError
+	if errors.As(err, &reqErr) {
+		body := reqErr.Body
+		if len(body) > 2000 {
+			body = body[:2000]
+		}
+		attrs = append(attrs,
+			"http_status", reqErr.HTTPStatusCode,
+			"body", string(body),
+		)
+	}
+	slog.Warn("openai chat error", attrs...)
+}
 
 // OpenAIProvider implements LLMProvider using the OpenAI Chat Completions API.
 type OpenAIProvider struct {
@@ -180,6 +222,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, openaiReq)
 	if err != nil {
+		logOpenAIError(err, model, len(msgs), len(tools), maxTokens, openaiReq.Temperature, true)
 		return nil, err
 	}
 
@@ -205,6 +248,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 				break
 			}
 			if err != nil {
+				logOpenAIError(err, model, len(msgs), len(tools), maxTokens, openaiReq.Temperature, true)
 				events <- ChatEvent{Type: EventError, Error: err}
 				return
 			}

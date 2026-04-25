@@ -92,6 +92,17 @@ func (h *WebSocketHandler) UpdateConfig(cfg *config.Config) {
 	h.compactionMgr = compaction.BuildManager(cfg)
 }
 
+// UpdateProviders swaps the LLM provider map atomically. Called by the config
+// watcher after the user edits provider credentials in the Settings UI so the
+// next chat turn sees the new API key / base URL without a restart. Without
+// this swap, the provider clients are frozen at startup time and any UI edit
+// is silently ignored until the process is bounced.
+func (h *WebSocketHandler) UpdateProviders(providers map[string]llm.LLMProvider) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.providers = providers
+}
+
 // SetJobScheduler sets the job scheduler for jobs.* RPC methods.
 func (h *WebSocketHandler) SetJobScheduler(js tools.JobScheduler) {
 	h.mu.Lock()
@@ -264,9 +275,12 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		return
 	}
 
-	// Resolve LLM provider
+	// Resolve LLM provider — read under RLock so a concurrent UpdateProviders
+	// (triggered by a Settings save / config hot-reload) can't tear the map.
 	providerName, modelName := llm.ParseProviderModel(agentCfg.Model)
+	h.mu.RLock()
 	provider, ok := h.providers[providerName]
+	h.mu.RUnlock()
 	if !ok {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
