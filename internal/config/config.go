@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"github.com/sausheong/felix/internal/mcp"
 )
 
 // Config is the top-level Felix configuration.
@@ -25,6 +27,7 @@ type Config struct {
 	Security  SecurityConfig           `json:"security"`
 	Local     LocalConfig              `json:"local"`
 	Telegram  TelegramConfig           `json:"telegram"`
+	MCPServers []MCPServerConfig       `json:"mcp_servers"`
 
 	mu   sync.RWMutex
 	path string
@@ -37,6 +40,28 @@ type TelegramConfig struct {
 	Enabled       bool   `json:"enabled"`         // master switch; tool is also disabled if BotToken is empty
 	BotToken      string `json:"bot_token"`       // from @BotFather
 	DefaultChatID string `json:"default_chat_id"` // optional; used when the agent omits chat_id
+}
+
+// MCPServerConfig declares one remote MCP server that Felix should connect to
+// at startup. Tools exposed by the server are registered into the agent's
+// tool registry as if they were core tools.
+type MCPServerConfig struct {
+	ID         string        `json:"id"`                    // unique within the list
+	URL        string        `json:"url"`                   // MCP Streamable-HTTP endpoint
+	Auth       MCPAuthConfig `json:"auth"`
+	Enabled    bool          `json:"enabled"`
+	ToolPrefix string        `json:"tool_prefix,omitempty"` // optional name prefix
+}
+
+// MCPAuthConfig describes how Felix authenticates to an MCP server. MVP
+// supports only OAuth2 client-credentials; additional kinds (e.g.
+// "bearer_static") will plug in via the Kind discriminator.
+type MCPAuthConfig struct {
+	Kind            string `json:"kind"`              // "oauth2_client_credentials"
+	TokenURL        string `json:"token_url"`
+	ClientID        string `json:"client_id"`
+	ClientSecretEnv string `json:"client_secret_env"` // env var NAME holding the secret
+	Scope           string `json:"scope"`
 }
 
 // ProviderConfig holds connection details for an LLM provider.
@@ -535,4 +560,43 @@ func removeTrailingCommas(s string) string {
 		out = append(out, runes[i])
 	}
 	return string(out)
+}
+
+// ResolveMCPServers returns one mcp.ManagerServerConfig per enabled MCPServers
+// entry, with the client secret resolved from the named environment variable.
+// Disabled servers are skipped silently. Returns an error if any enabled
+// server has missing required fields or its secret env var is unset.
+func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
+	out := make([]mcp.ManagerServerConfig, 0, len(c.MCPServers))
+	for _, s := range c.MCPServers {
+		if !s.Enabled {
+			continue
+		}
+		if s.ID == "" {
+			return nil, fmt.Errorf("mcp_servers: entry with empty id")
+		}
+		if s.URL == "" {
+			return nil, fmt.Errorf("mcp_servers[%s]: url is required", s.ID)
+		}
+		if s.Auth.Kind != "oauth2_client_credentials" {
+			return nil, fmt.Errorf("mcp_servers[%s]: unsupported auth.kind %q (only oauth2_client_credentials in MVP)", s.ID, s.Auth.Kind)
+		}
+		if s.Auth.TokenURL == "" || s.Auth.ClientID == "" || s.Auth.ClientSecretEnv == "" {
+			return nil, fmt.Errorf("mcp_servers[%s]: token_url, client_id, and client_secret_env are required", s.ID)
+		}
+		secret := os.Getenv(s.Auth.ClientSecretEnv)
+		if secret == "" {
+			return nil, fmt.Errorf("mcp_servers[%s]: env var %s is empty or unset", s.ID, s.Auth.ClientSecretEnv)
+		}
+		out = append(out, mcp.ManagerServerConfig{
+			ID:           s.ID,
+			URL:          s.URL,
+			TokenURL:     s.Auth.TokenURL,
+			ClientID:     s.Auth.ClientID,
+			ClientSecret: secret,
+			Scope:        s.Auth.Scope,
+			ToolPrefix:   s.ToolPrefix,
+		})
+	}
+	return out, nil
 }

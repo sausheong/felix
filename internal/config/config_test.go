@@ -214,3 +214,59 @@ func TestValidateBackfillsCortexProvider(t *testing.T) {
 		t.Errorf("Validate should backfill Cortex.LLMModel to \"gemma4\"; got %q", cfg.Cortex.LLMModel)
 	}
 }
+
+func TestResolveMCPServers_HappyPath(t *testing.T) {
+	t.Setenv("LTM_SECRET_FOR_TEST", "shhh")
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{
+			{
+				ID:      "ltm",
+				URL:     "https://example.com/mcp",
+				Enabled: true,
+				Auth: MCPAuthConfig{
+					Kind:            "oauth2_client_credentials",
+					TokenURL:        "https://example.com/oauth/token",
+					ClientID:        "client-x",
+					ClientSecretEnv: "LTM_SECRET_FOR_TEST",
+					Scope:           "ltm/api",
+				},
+				ToolPrefix: "ltm_",
+			},
+			{ID: "disabled-one", Enabled: false}, // skipped
+		},
+	}
+
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "ltm", got[0].ID)
+	assert.Equal(t, "shhh", got[0].ClientSecret)
+	assert.Equal(t, "ltm_", got[0].ToolPrefix)
+}
+
+func TestResolveMCPServers_MissingSecretEnv(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID: "ltm", URL: "https://x", Enabled: true,
+			Auth: MCPAuthConfig{
+				Kind: "oauth2_client_credentials", TokenURL: "https://t",
+				ClientID: "c", ClientSecretEnv: "DEFINITELY_NOT_SET_FELIX_TEST",
+			},
+		}},
+	}
+	_, err := cfg.ResolveMCPServers()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DEFINITELY_NOT_SET_FELIX_TEST")
+}
+
+func TestResolveMCPServers_UnsupportedAuthKind(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID: "ltm", URL: "https://x", Enabled: true,
+			Auth: MCPAuthConfig{Kind: "bearer_static"},
+		}},
+	}
+	_, err := cfg.ResolveMCPServers()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported auth.kind")
+}
