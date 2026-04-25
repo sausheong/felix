@@ -349,6 +349,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 				Memory:       memMgr,
 				Cortex:       cx,
 				Compaction:   compactionMgr,
+				IngestSource: "cron",
 			}
 			return cronRT.RunSync(ctx, prompt, nil)
 		}

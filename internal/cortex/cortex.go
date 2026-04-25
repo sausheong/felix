@@ -140,9 +140,16 @@ func Init(cfg config.CortexConfig, memCfg config.MemoryConfig, defaultAgentModel
 }
 
 // minIngestLen is the minimum combined length of user+assistant text
-// required to trigger ingestion. Short exchanges like "ok", "thanks",
-// greetings, and simple confirmations are skipped.
-const minIngestLen = 100
+// required to trigger ingestion. Short exchanges (one-line acknowledgements,
+// "OK", "thanks", brief confirmations) are skipped because they cost an
+// embed call apiece without producing recall-worthy content. Bumped from
+// 100 → 300 after observing low-value ingests crowding the graph.
+const minIngestLen = 300
+
+// minRecallLen is the minimum trimmed user message length to trigger Cortex
+// recall. Short messages either are trivial phrases (filtered separately) or
+// don't carry enough context for a useful semantic match.
+const minRecallLen = 12
 
 // maxIngestLen caps the total characters per ingest. nomic-embed-text has
 // an 8192-token context window (~30 KB chars). We reject larger threads
@@ -174,6 +181,24 @@ var trivialPhrases = map[string]bool{
 	"goodbye":      true,
 	"good morning": true,
 	"good night":   true,
+}
+
+// ShouldRecall returns true if the user message is substantial enough to
+// be worth a Cortex recall. Trivial phrases ("ok", "thanks", greetings) and
+// very short messages are skipped so they don't cost an embed call apiece.
+// Symmetric to ShouldIngest on the write side.
+func ShouldRecall(userMsg string) bool {
+	trimmed := strings.TrimSpace(userMsg)
+	if trimmed == "" {
+		return false
+	}
+	if trivialPhrases[strings.ToLower(trimmed)] {
+		return false
+	}
+	if len(trimmed) < minRecallLen {
+		return false
+	}
+	return true
 }
 
 // ShouldIngest returns true if the conversation thread contains enough

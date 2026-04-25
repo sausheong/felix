@@ -26,7 +26,7 @@ var ErrNotReady = errors.New("ollama did not become ready in time")
 type Options struct {
 	BinPath   string // absolute path to the ollama binary
 	ModelsDir string // OLLAMA_MODELS
-	KeepAlive string // OLLAMA_KEEP_ALIVE; empty → "5m"
+	KeepAlive string // OLLAMA_KEEP_ALIVE; empty → "24h"
 	PortLow   int    // first port to try; 0 → 18790
 	PortHigh  int    // last port to try inclusive; 0 → 18799
 }
@@ -53,7 +53,9 @@ type Supervisor struct {
 // New constructs a Supervisor with defaults applied.
 func New(opt Options) *Supervisor {
 	if opt.KeepAlive == "" {
-		opt.KeepAlive = "5m"
+		// Hold both chat and embedder models resident across calls so back-
+		// to-back chat / cortex turns don't pay model-load latency.
+		opt.KeepAlive = "24h"
 	}
 	if opt.PortLow == 0 {
 		opt.PortLow = 18790

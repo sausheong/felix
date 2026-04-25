@@ -61,6 +61,14 @@ type Runtime struct {
 	Cortex       *cortex.Cortex      // optional: Cortex knowledge graph for recall/ingest
 	Compaction   *compaction.Manager // optional; nil → no compaction
 
+	// IngestSource controls whether this run's thread is ingested into Cortex.
+	// "chat" (or empty for backward compatibility) ingests; "cron" / "heartbeat"
+	// / any other value skips ingest. Recall always runs regardless — only the
+	// write side is gated. Without this, scheduled runs flood the knowledge
+	// graph with the agent's own tool-use chatter and queue embed calls that
+	// block the next user-initiated chat.
+	IngestSource string
+
 	calibrator *tokens.Calibrator
 }
 
@@ -95,36 +103,52 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 		// waits for it (with a hard cap) right before invoking the LLM.
 		// On timeout the sub-context is cancelled so the goroutine doesn't
 		// keep tying up the embedder after the user wait has elapsed.
+		//
+		// Recall is skipped for trivial messages ("ok", "thanks", greetings,
+		// very short replies) since they will not match anything useful and
+		// each call costs an embed.
+		//
+		// Ingest is gated by IngestSource — only "chat" (or empty for
+		// backward compat) writes to the graph. Cron and heartbeat runs
+		// would otherwise flood the graph with agent self-talk.
 		var thread []conversation.Message
 		cortexContext := ""
 		var cortexCh chan string // receives the formatted hint+results
 		var cortexCancel context.CancelFunc
+		shouldIngest := r.IngestSource == "" || r.IngestSource == "chat"
 		if r.Cortex != nil {
 			thread = []conversation.Message{{Role: "user", Content: userMsg}}
-			cortexCh = make(chan string, 1)
-			var cortexCtx context.Context
-			cortexCtx, cortexCancel = context.WithCancel(ctx)
-			cxStart := time.Now()
-			cxModel := r.Cortex
-			go func() {
-				results, err := cxModel.Recall(cortexCtx, userMsg, cortex.WithLimit(5))
-				tr.Mark("cortex.recall", "hits", len(results), "err", err != nil, "dur_ms_local", time.Since(cxStart).Milliseconds())
-				out := cortexadapter.CortexHint
-				if err != nil {
-					slog.Debug("cortex recall error", "error", err)
-				} else if extra := cortexadapter.FormatResults(results); extra != "" {
-					out += extra
-				}
-				cortexCh <- out
-			}()
+			if cortexadapter.ShouldRecall(userMsg) {
+				cortexCh = make(chan string, 1)
+				var cortexCtx context.Context
+				cortexCtx, cortexCancel = context.WithCancel(ctx)
+				cxStart := time.Now()
+				cxModel := r.Cortex
+				go func() {
+					results, err := cxModel.Recall(cortexCtx, userMsg, cortex.WithLimit(5))
+					tr.Mark("cortex.recall", "hits", len(results), "err", err != nil, "dur_ms_local", time.Since(cxStart).Milliseconds())
+					out := cortexadapter.CortexHint
+					if err != nil {
+						slog.Debug("cortex recall error", "error", err)
+					} else if extra := cortexadapter.FormatResults(results); extra != "" {
+						out += extra
+					}
+					cortexCh <- out
+				}()
+			} else {
+				tr.Mark("cortex.recall.skipped", "reason", "trivial")
+				cortexContext = cortexadapter.CortexHint
+			}
 
-			// Deferred ingest fires on every goroutine exit path.
+			// Deferred ingest fires on every goroutine exit path. Skipped for
+			// non-chat runs (cron / heartbeat) so the graph stays focused on
+			// human-initiated conversations.
 			cx := r.Cortex
 			defer func() {
 				if cortexCancel != nil {
 					cortexCancel()
 				}
-				if len(thread) > 1 {
+				if shouldIngest && len(thread) > 1 {
 					cortexadapter.IngestThreadAsync(context.Background(), cx, thread)
 				}
 			}()

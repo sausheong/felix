@@ -72,18 +72,18 @@ func TestShouldIngestNoAssistantMessage(t *testing.T) {
 
 func TestShouldIngestValidTwoMessage(t *testing.T) {
 	thread := msgs(
-		"user", "What are the main principles of clean code architecture?",
-		"assistant", "Clean code follows separation of concerns, single responsibility, and dependency inversion.",
+		"user", "What are the main principles of clean code architecture, and how do they apply when building maintainable Go services?",
+		"assistant", "Clean code follows separation of concerns, single responsibility, and dependency inversion. In Go, prefer small interfaces consumed where they're used, keep packages focused, and avoid premature abstraction.",
 	)
 	assert.True(t, ShouldIngest(thread))
 }
 
 func TestShouldIngestValidWithToolCalls(t *testing.T) {
 	thread := msgs(
-		"user", "What files are in the project?",
+		"user", "What files are in the project root and what does the layout tell us about the architecture?",
 		"assistant", "[tool: bash]\n{\"command\":\"ls -la\"}",
-		"user", "main.go\ngo.mod\nREADME.md\ninternal/\ncmd/",
-		"assistant", "The project contains main.go, go.mod, README.md, and the internal/ and cmd/ directories.",
+		"user", "main.go\ngo.mod\nREADME.md\ninternal/\ncmd/\npkg/\nMakefile",
+		"assistant", "The project contains main.go, go.mod, README.md, plus the internal/, cmd/, and pkg/ directories. This is a standard Go layout: cmd/ holds entry points, internal/ holds private packages, and pkg/ exposes public APIs.",
 	)
 	assert.True(t, ShouldIngest(thread))
 }
@@ -91,4 +91,26 @@ func TestShouldIngestValidWithToolCalls(t *testing.T) {
 func TestShouldIngestTrivialCaseInsensitive(t *testing.T) {
 	thread := msgs("user", "THANKS", "assistant", "You are welcome! Glad I could help with that.")
 	assert.False(t, ShouldIngest(thread))
+}
+
+func TestShouldRecall(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"", false},
+		{"   ", false},
+		{"ok", false},
+		{"thanks", false},
+		{"Thanks", false},
+		{"hi", false},
+		{"yes", false},
+		{"hello world", false},                                                     // 11 chars, below threshold
+		{"what about Hormuz?", true},                                                // 18 chars, substantive
+		{"Tell me about the project structure for the new microservice we discussed", true},
+	}
+	for _, tc := range cases {
+		got := ShouldRecall(tc.msg)
+		assert.Equal(t, tc.want, got, "msg=%q", tc.msg)
+	}
 }

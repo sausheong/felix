@@ -50,6 +50,43 @@ func WarmModel(ctx context.Context, ollamaURL, modelName string) error {
 	return nil
 }
 
+// WarmEmbedder triggers a no-op embedding against the bundled Ollama so the
+// requested embedding model is loaded into VRAM before the first cortex
+// recall or memory search. Without this, the first user turn pays the
+// ~5–10s cold-load on top of the chat-model warmup.
+//
+// Uses /api/embeddings (Ollama's native endpoint) rather than the OpenAI-
+// compatible /v1/embeddings so we don't need to know the right wrapper path
+// for every Ollama version.
+func WarmEmbedder(ctx context.Context, ollamaURL, modelName string) error {
+	bare := stripProviderPrefix(modelName)
+	if bare == "" {
+		return fmt.Errorf("warmup: empty embedding model name")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":      bare,
+		"prompt":     "hi",
+		"keep_alive": "24h",
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ollamaURL+"/api/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 60 * time.Second}
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("embedder warmup: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("embedder warmup: ollama returned %s", resp.Status)
+	}
+	slog.Info("ollama embedder warmed", "model", bare, "dur_ms", time.Since(start).Milliseconds())
+	return nil
+}
+
 // stripProviderPrefix turns "local/gemma4" into "gemma4". Bare names pass
 // through unchanged.
 func stripProviderPrefix(model string) string {

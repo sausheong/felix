@@ -339,6 +339,23 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 								}
 							}()
 						}
+						// Pre-warm the embedder model too. Cortex recall and
+						// memory both hit it on the user's first chat turn —
+						// without warmup that turn pays a ~5–10s cold-load on
+						// top of the chat-model warmup. Runs concurrently with
+						// the chat-model warmup since they're different models
+						// and Ollama can hold two resident if RAM allows.
+						if cfg.Memory.Enabled && cfg.Memory.EmbeddingModel != "" {
+							embedModel := cfg.Memory.EmbeddingModel
+							go func() {
+								time.Sleep(2 * time.Second)
+								warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
+								defer warmCancel()
+								if err := local.WarmEmbedder(warmCtx, ollamaURL, embedModel); err != nil {
+									slog.Debug("ollama embedder warmup deferred", "model", embedModel, "error", err)
+								}
+							}()
+						}
 					}
 				}
 			}
@@ -513,6 +530,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Memory:       memMgr,
 					Cortex:       cx,
 					Compaction:   startupCompactionMgr,
+					IngestSource: "heartbeat",
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -558,6 +576,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Memory:       memMgr,
 					Cortex:       cx,
 					Compaction:   startupCompactionMgr,
+					IngestSource: "cron",
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -601,6 +620,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Memory:       memMgr,
 					Cortex:       cx,
 					Compaction:   startupCompactionMgr,
+					IngestSource: "cron",
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
