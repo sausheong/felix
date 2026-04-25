@@ -487,6 +487,7 @@ html.dark .error-state { background: #450a0a; }
 				<button class="finger-tab" data-tab="intelligence">Intelligence</button>
 				<button class="finger-tab" data-tab="security">Security</button>
 				<button class="finger-tab" data-tab="messaging">Messaging</button>
+				<button class="finger-tab" data-tab="mcp">MCP</button>
 				<button class="finger-tab" data-tab="gateway">Gateway</button>
 			</div>
 			<div class="finger-panel active" id="panel-agents"></div>
@@ -495,6 +496,7 @@ html.dark .error-state { background: #450a0a; }
 			<div class="finger-panel" id="panel-intelligence"></div>
 			<div class="finger-panel" id="panel-security"></div>
 			<div class="finger-panel" id="panel-messaging"></div>
+			<div class="finger-panel" id="panel-mcp"></div>
 			<div class="finger-panel" id="panel-gateway"></div>
 		</div>
 	</div>
@@ -607,6 +609,7 @@ html.dark .error-state { background: #450a0a; }
 		renderIntelligence();
 		renderSecurity();
 		renderMessaging();
+		renderMCP();
 		renderGateway();
 	}
 
@@ -1123,6 +1126,105 @@ html.dark .error-state { background: #450a0a; }
 		note.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0.5rem 0 0 0;';
 		note.innerHTML = 'Default Chat ID is used when the agent omits <code>chat_id</code>. Personal users: positive numeric ID (e.g. <code>123456789</code>). Groups/supergroups: negative ID (e.g. <code>-1001234567890</code>). Public channels/supergroups only: <code>@channelname</code>.';
 		tgSec.appendChild(note);
+	}
+
+	function renderMCP() {
+		var p = document.getElementById('panel-mcp');
+		p.innerHTML = '';
+		var sec = makeSection(p, 'MCP Servers');
+
+		var help = document.createElement('p');
+		help.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; margin:0 0 0.5rem 0;';
+		help.innerHTML = 'Remote Model Context Protocol servers Felix connects to at startup. ' +
+			'Each server\'s tools become available to agents alongside core tools (with the optional <code>tool_prefix</code> applied). ' +
+			'Currently supports OAuth2 client-credentials auth (e.g. AWS Bedrock AgentCore).';
+		sec.appendChild(help);
+
+		var caveat = document.createElement('p');
+		caveat.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 0; padding:0.5rem 0.75rem; background:var(--color-surface-muted, rgba(0,0,0,0.04)); border-radius:var(--radius);';
+		caveat.innerHTML =
+			'<strong>Important:</strong> the client secret is read from an environment variable at startup, not stored here. ' +
+			'Set <code>export &lt;SECRET_ENV_VAR&gt;=...</code> in the shell that runs Felix before starting the gateway. ' +
+			'Config changes require a process restart — hot reload of MCP servers is not yet supported.';
+		sec.appendChild(caveat);
+
+		var servers = cfg.mcp_servers || [];
+		var list = document.createElement('div');
+		list.className = 'dynamic-list';
+		sec.appendChild(list);
+
+		for (var i = 0; i < servers.length; i++) {
+			(function(idx) {
+				var s = servers[idx];
+				if (!s.auth) s.auth = {kind: 'oauth2_client_credentials'};
+				var item = document.createElement('div');
+				item.className = 'dynamic-item';
+
+				var rm = document.createElement('button');
+				rm.className = 'remove-btn';
+				rm.innerHTML = '&times;';
+				rm.onclick = function() { cfg.mcp_servers.splice(idx, 1); render(); };
+				item.appendChild(rm);
+
+				var row1 = makeRow(item);
+				makeField(row1, 'ID', 'text', s.id || '', function(v) { cfg.mcp_servers[idx].id = v; });
+				makeField(row1, 'Tool Prefix', 'text', s.tool_prefix || '', function(v) { cfg.mcp_servers[idx].tool_prefix = v; });
+
+				makeField(item, 'URL', 'text', s.url || '', function(v) { cfg.mcp_servers[idx].url = v; });
+
+				makeField(item, 'Enabled', 'toggle', !!s.enabled, function(v) { cfg.mcp_servers[idx].enabled = v; });
+
+				var authHdr = document.createElement('div');
+				authHdr.style.cssText = 'font-weight:600; font-size:0.85rem; margin:0.75rem 0 0.25rem 0;';
+				authHdr.textContent = 'OAuth2 Client Credentials';
+				item.appendChild(authHdr);
+
+				makeField(item, 'Token URL', 'text', s.auth.token_url || '', function(v) {
+					cfg.mcp_servers[idx].auth.token_url = v;
+				});
+
+				var row2 = makeRow(item);
+				makeField(row2, 'Client ID', 'text', s.auth.client_id || '', function(v) {
+					cfg.mcp_servers[idx].auth.client_id = v;
+				});
+				makeField(row2, 'Scope', 'text', s.auth.scope || '', function(v) {
+					cfg.mcp_servers[idx].auth.scope = v;
+				});
+
+				makeField(item, 'Client Secret Env Var', 'text', s.auth.client_secret_env || '', function(v) {
+					cfg.mcp_servers[idx].auth.client_secret_env = v;
+				});
+
+				var hint = document.createElement('p');
+				hint.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+				hint.innerHTML = 'Name of the environment variable holding the secret (the secret value itself is never stored in config).';
+				item.appendChild(hint);
+
+				list.appendChild(item);
+			})(i);
+		}
+
+		var addBtn = document.createElement('button');
+		addBtn.className = 'add-btn';
+		addBtn.textContent = '+ Add MCP Server';
+		addBtn.onclick = function() {
+			if (!cfg.mcp_servers) cfg.mcp_servers = [];
+			cfg.mcp_servers.push({
+				id: '',
+				url: '',
+				enabled: true,
+				tool_prefix: '',
+				auth: {
+					kind: 'oauth2_client_credentials',
+					token_url: '',
+					client_id: '',
+					client_secret_env: '',
+					scope: ''
+				}
+			});
+			render();
+		};
+		sec.appendChild(addBtn);
 	}
 
 	function renderGateway() {
