@@ -24,9 +24,18 @@ type Config struct {
 	Cortex    CortexConfig             `json:"cortex"`
 	Security  SecurityConfig           `json:"security"`
 	Local     LocalConfig              `json:"local"`
+	Telegram  TelegramConfig           `json:"telegram"`
 
 	mu   sync.RWMutex
 	path string
+}
+
+// TelegramConfig enables outbound Telegram messages via the telegram_send tool.
+// Felix does NOT receive Telegram messages — this is send-only.
+type TelegramConfig struct {
+	Enabled       bool   `json:"enabled"`         // master switch; tool is also disabled if BotToken is empty
+	BotToken      string `json:"bot_token"`       // from @BotFather
+	DefaultChatID string `json:"default_chat_id"` // optional; used when the agent omits chat_id
 }
 
 // ProviderConfig holds connection details for an LLM provider.

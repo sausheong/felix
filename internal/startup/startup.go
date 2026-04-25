@@ -254,6 +254,14 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		Allowlist: cfg.Security.ExecApprovals.Allowlist,
 	}
 	tools.RegisterCoreTools(toolReg, "", execPolicy)
+	telegramReg := tools.TelegramRegistration{
+		Enabled:       cfg.Telegram.Enabled,
+		BotToken:      cfg.Telegram.BotToken,
+		DefaultChatID: cfg.Telegram.DefaultChatID,
+	}
+	if tools.RegisterTelegram(toolReg, telegramReg) {
+		slog.Info("registered telegram_send tool")
+	}
 
 	// Init skill loader
 	skillLoader := skill.NewLoader()
@@ -387,6 +395,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentID, "heartbeat")
 				hbToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(hbToolReg, agentWorkspace, execPolicy)
+				tools.RegisterTelegram(hbToolReg, telegramReg)
 
 				rt := &agent.Runtime{
 					LLM:          provider,
@@ -432,6 +441,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentID, "cron_"+cronJob.Name)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, agentWorkspace, execPolicy)
+				tools.RegisterTelegram(cronToolReg, telegramReg)
 				rt := &agent.Runtime{
 					LLM:          provider,
 					Tools:        cronToolReg,
@@ -473,6 +483,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				cronSess := session.NewSession(defaultCfg.ID, "cron_"+jobName)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, defaultCfg.Workspace, execPolicy)
+				tools.RegisterTelegram(cronToolReg, telegramReg)
 				rt := &agent.Runtime{
 					LLM:          p,
 					Tools:        cronToolReg,
