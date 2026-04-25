@@ -1075,10 +1075,34 @@ html.dark .error-state { background: #450a0a; }
 		var help = document.createElement('p');
 		help.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; margin:0 0 0.75rem 0;';
 		help.innerHTML = 'Lets agents send messages to Telegram via the <code>send_message</code> tool (channel: telegram). ' +
-			'Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> to get a token. ' +
-			'Find your chat ID by messaging the bot, then opening <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>. ' +
-			'After saving, restart Felix or wait for hot-reload — and add <code>send_message</code> to the allow list of any agent that should use it (Agents tab).';
+			'Send-only — Felix does not receive Telegram messages. ' +
+			'After saving, configuration is hot-reloaded — then add <code>send_message</code> to the allow list of any agent that should use it (Agents tab).';
 		tgSec.appendChild(help);
+
+		var setupHdr = document.createElement('div');
+		setupHdr.style.cssText = 'font-weight:600; font-size:0.85rem; margin:0.5rem 0 0.25rem 0;';
+		setupHdr.textContent = 'Setup';
+		tgSec.appendChild(setupHdr);
+
+		var setup = document.createElement('ol');
+		setup.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 1.25rem; padding:0; line-height:1.5;';
+		setup.innerHTML =
+			'<li>Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> (<code>/newbot</code>) and copy the token into Bot Token below.</li>' +
+			'<li>Get a recipient chat ID — three options:' +
+				'<ul style="margin:0.25rem 0 0.25rem 1.25rem; padding:0;">' +
+				'<li>Easiest: open Telegram, message <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a> — it replies with your numeric chat ID.</li>' +
+				'<li>Or: have the recipient message your bot at least once, then open <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> in a browser and copy <code>result[].message.chat.id</code>.</li>' +
+				'<li>Or: forward a message from the recipient to <a href="https://t.me/getidsbot" target="_blank" rel="noopener">@getidsbot</a>.</li>' +
+				'</ul></li>' +
+			'<li>Paste the chat ID into Default Chat ID below — the agent uses it whenever it omits an explicit recipient.</li>';
+		tgSec.appendChild(setup);
+
+		var caveat = document.createElement('p');
+		caveat.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 0; padding:0.5rem 0.75rem; background:var(--color-surface-muted, rgba(0,0,0,0.04)); border-radius:var(--radius);';
+		caveat.innerHTML =
+			'<strong>Important:</strong> a Telegram bot cannot send the first message to a personal user — the user must <code>/start</code> the bot (or send any message) at least once first. Otherwise Telegram returns "Forbidden: bot can\'t initiate conversation with a user." ' +
+			'Also: <code>@username</code> as a chat ID works only for <strong>public channels and supergroups</strong> the bot is in — not for personal users. For people, always use the numeric ID.';
+		tgSec.appendChild(caveat);
 
 		var tg = cfg.telegram || {};
 		makeField(tgSec, 'Enabled', 'toggle', !!tg.enabled, function(v) {
@@ -1097,7 +1121,7 @@ html.dark .error-state { background: #450a0a; }
 
 		var note = document.createElement('p');
 		note.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0.5rem 0 0 0;';
-		note.textContent = 'Default Chat ID is used when the agent omits chat_id. Accepts numeric IDs, @channelname, or negative group IDs (-100…). Send-only — Felix does not receive Telegram messages.';
+		note.innerHTML = 'Default Chat ID is used when the agent omits <code>chat_id</code>. Personal users: positive numeric ID (e.g. <code>123456789</code>). Groups/supergroups: negative ID (e.g. <code>-1001234567890</code>). Public channels/supergroups only: <code>@channelname</code>.';
 		tgSec.appendChild(note);
 	}
 

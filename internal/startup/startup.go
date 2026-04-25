@@ -4,6 +4,7 @@ package startup
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -90,14 +91,29 @@ func InitProviders(cfg *config.Config) map[string]llm.LLMProvider {
 }
 
 // CronSchedulerAdapter adapts cron.Scheduler to the tools.JobScheduler interface.
+//
+// JobsFile (optional) enables on-disk persistence of dynamically-added jobs.
+// Without it, tool-added jobs only live for the current process — a gateway
+// restart wipes them. With it, every mutation is flushed to disk and the file
+// is replayed at startup via Restore().
 type CronSchedulerAdapter struct {
 	Scheduler    *cron.Scheduler
 	Ctx          context.Context
 	AgentFactory func(name string) func(context.Context, string) (string, error)
 	OutputFn     cron.OutputFunc
+	JobsFile     string
 }
 
-func (a *CronSchedulerAdapter) AddJob(name, schedule, prompt string) error {
+// persistedJob is the on-disk shape. We don't persist AgentFn/OutputFn — they
+// are reconstructed from AgentFactory/OutputFn at Restore time.
+type persistedJob struct {
+	Name     string `json:"name"`
+	Schedule string `json:"schedule"`
+	Prompt   string `json:"prompt"`
+	Paused   bool   `json:"paused"`
+}
+
+func (a *CronSchedulerAdapter) addJobInternal(name, schedule, prompt string, persist bool) error {
 	var agentFn func(context.Context, string) (string, error)
 	if a.AgentFactory != nil {
 		agentFn = a.AgentFactory(name)
@@ -119,11 +135,22 @@ func (a *CronSchedulerAdapter) AddJob(name, schedule, prompt string) error {
 		return err
 	}
 	a.Scheduler.Start(a.Ctx)
+	if persist {
+		a.persist()
+	}
 	return nil
 }
 
+func (a *CronSchedulerAdapter) AddJob(name, schedule, prompt string) error {
+	return a.addJobInternal(name, schedule, prompt, true)
+}
+
 func (a *CronSchedulerAdapter) RemoveJob(name string) error {
-	return a.Scheduler.Remove(name)
+	if err := a.Scheduler.Remove(name); err != nil {
+		return err
+	}
+	a.persist()
+	return nil
 }
 
 func (a *CronSchedulerAdapter) ListJobs() []tools.JobInfo {
@@ -141,15 +168,95 @@ func (a *CronSchedulerAdapter) ListJobs() []tools.JobInfo {
 }
 
 func (a *CronSchedulerAdapter) PauseJob(name string) error {
-	return a.Scheduler.Pause(name)
+	if err := a.Scheduler.Pause(name); err != nil {
+		return err
+	}
+	a.persist()
+	return nil
 }
 
 func (a *CronSchedulerAdapter) ResumeJob(name string) error {
-	return a.Scheduler.Resume(name)
+	if err := a.Scheduler.Resume(name); err != nil {
+		return err
+	}
+	a.persist()
+	return nil
 }
 
 func (a *CronSchedulerAdapter) UpdateJobSchedule(name, schedule string) error {
-	return a.Scheduler.UpdateSchedule(name, schedule)
+	if err := a.Scheduler.UpdateSchedule(name, schedule); err != nil {
+		return err
+	}
+	a.persist()
+	return nil
+}
+
+// persist writes the current scheduler state to JobsFile via a write-rename
+// dance so a crash mid-write can't corrupt the file. No-op when JobsFile is "".
+func (a *CronSchedulerAdapter) persist() {
+	if a.JobsFile == "" {
+		return
+	}
+	jobs := a.Scheduler.Jobs()
+	out := make([]persistedJob, 0, len(jobs))
+	for _, j := range jobs {
+		out = append(out, persistedJob{
+			Name:     j.Name,
+			Schedule: j.Schedule,
+			Prompt:   j.Prompt,
+			Paused:   j.Paused,
+		})
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		slog.Warn("cron persist marshal failed", "error", err)
+		return
+	}
+	tmp := a.JobsFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		slog.Warn("cron persist write failed", "path", tmp, "error", err)
+		return
+	}
+	if err := os.Rename(tmp, a.JobsFile); err != nil {
+		slog.Warn("cron persist rename failed", "path", a.JobsFile, "error", err)
+	}
+}
+
+// Restore reloads jobs from JobsFile and re-adds them via the adapter so each
+// gets a fresh AgentFn from AgentFactory. Missing file is not an error.
+// Schedule-parse errors on a single entry are logged and skipped, not fatal.
+func (a *CronSchedulerAdapter) Restore() error {
+	if a.JobsFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(a.JobsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var stored []persistedJob
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return fmt.Errorf("parse %s: %w", a.JobsFile, err)
+	}
+	for _, p := range stored {
+		// Skip persistence on each individual restore so we don't rewrite the
+		// file N times during startup; we'll flush once at the end.
+		if err := a.addJobInternal(p.Name, p.Schedule, p.Prompt, false); err != nil {
+			slog.Warn("cron restore: skipped invalid job", "name", p.Name, "error", err)
+			continue
+		}
+		if p.Paused {
+			if err := a.Scheduler.Pause(p.Name); err != nil {
+				slog.Warn("cron restore: failed to pause", "name", p.Name, "error", err)
+			}
+		}
+	}
+	if len(stored) > 0 {
+		slog.Info("cron jobs restored", "count", len(stored), "path", a.JobsFile)
+	}
+	return nil
 }
 
 // Options configures gateway startup behavior. Reserved for future use.
@@ -467,6 +574,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	cronAdapter := &CronSchedulerAdapter{
 		Scheduler: cronScheduler,
 		Ctx:       ctx,
+		JobsFile:  filepath.Join(dataDir, "cron-jobs.json"),
 		AgentFactory: func(jobName string) func(context.Context, string) (string, error) {
 			return func(ctx context.Context, prompt string) (string, error) {
 				defaultCfg := cfg.Agents.List[0]
@@ -500,6 +608,13 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	}
 	tools.RegisterCron(toolReg, cronAdapter)
 	wsHandler.SetJobScheduler(cronAdapter)
+
+	// Restore dynamic jobs persisted from a prior run. Static jobs from
+	// felix.json5 were already added above; Restore re-adds tool-created jobs
+	// that would otherwise be lost on restart.
+	if err := cronAdapter.Restore(); err != nil {
+		slog.Warn("failed to restore cron jobs from disk", "error", err)
+	}
 
 	if len(cronScheduler.Jobs()) > 0 {
 		cronScheduler.Start(ctx)
