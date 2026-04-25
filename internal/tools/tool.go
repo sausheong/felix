@@ -299,7 +299,3 @@ func RegisterCron(reg *Registry, scheduler JobScheduler) {
 	reg.Register(&CronTool{Scheduler: scheduler})
 }
 
-// RegisterAskAgent registers the ask_agent tool with the given runner.
-func RegisterAskAgent(reg *Registry, runner AgentRunner) {
-	reg.Register(&AskAgentTool{Runner: runner})
-}

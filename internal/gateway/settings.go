@@ -1074,10 +1074,10 @@ html.dark .error-state { background: #450a0a; }
 
 		var help = document.createElement('p');
 		help.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; margin:0 0 0.75rem 0;';
-		help.innerHTML = 'Lets agents send messages to Telegram via the <code>telegram_send</code> tool. ' +
+		help.innerHTML = 'Lets agents send messages to Telegram via the <code>send_message</code> tool (channel: telegram). ' +
 			'Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> to get a token. ' +
 			'Find your chat ID by messaging the bot, then opening <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>. ' +
-			'After saving, restart Felix or wait for hot-reload — and add <code>telegram_send</code> to the allow list of any agent that should use it (Agents tab).';
+			'After saving, restart Felix or wait for hot-reload — and add <code>send_message</code> to the allow list of any agent that should use it (Agents tab).';
 		tgSec.appendChild(help);
 
 		var tg = cfg.telegram || {};

@@ -53,7 +53,6 @@ var toolHints = map[string]string{
 	"browser":      "You can automate a headless browser for interactive pages using the browser tool.",
 	"send_message": "You can send messages to other users or channels using the send_message tool.",
 	"cron":         "You can schedule recurring tasks using the cron tool.",
-	"ask_agent":    "You can delegate tasks to other agents using the ask_agent tool.",
 }
 
 // buildDefaultIdentity constructs the default identity prompt tailored to

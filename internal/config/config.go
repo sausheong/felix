@@ -30,7 +30,8 @@ type Config struct {
 	path string
 }
 
-// TelegramConfig enables outbound Telegram messages via the telegram_send tool.
+// TelegramConfig enables outbound Telegram messages via the send_message tool's
+// telegram channel.
 // Felix does NOT receive Telegram messages — this is send-only.
 type TelegramConfig struct {
 	Enabled       bool   `json:"enabled"`         // master switch; tool is also disabled if BotToken is empty

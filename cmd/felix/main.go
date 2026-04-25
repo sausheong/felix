@@ -308,17 +308,15 @@ func runChat(agentID, configPath, modelOverride string) error {
 		Allowlist: cfg.Security.ExecApprovals.Allowlist,
 	}
 	tools.RegisterCoreTools(toolReg, agentCfg.Workspace, execPolicy)
+	tools.RegisterSendMessage(toolReg, func() tools.SendMessageRegistration {
+		return tools.SendMessageRegistration{
+			TelegramEnabled:       cfg.Telegram.Enabled,
+			TelegramBotToken:      cfg.Telegram.BotToken,
+			TelegramDefaultChatID: cfg.Telegram.DefaultChatID,
+		}
+	})
 
 	ctx := context.Background()
-
-	// Register ask_agent tool for inter-agent delegation.
-	// Build a full providers map so delegated agents can use different models.
-	allProviders := startup.InitProviders(cfg)
-	chatAgentRunner := gateway.NewAgentRunner(allProviders, cfg, sessionStore)
-	chatAgentRunner.SetSkills(skillLoader)
-	chatAgentRunner.SetMemory(memMgr)
-	chatAgentRunner.SetCortex(cx)
-	tools.RegisterAskAgent(toolReg, chatAgentRunner)
 
 	// Init cron scheduler for chat mode so the agent can use the cron tool
 	cronScheduler := cron.NewScheduler()
@@ -839,12 +837,11 @@ func formatToolCallHeader(name string, input json.RawMessage) string {
 	case "send_message":
 		ch := get("channel")
 		id := get("chat_id")
-		if ch != "" && id != "" {
-			return fmt.Sprintf("→ %s/%s", ch, id)
+		if ch == "" {
+			ch = "telegram"
 		}
-	case "ask_agent":
-		if a := get("agent_id"); a != "" {
-			return fmt.Sprintf("→ %s", a)
+		if id != "" {
+			return fmt.Sprintf("→ %s/%s", ch, id)
 		}
 	}
 	return ""

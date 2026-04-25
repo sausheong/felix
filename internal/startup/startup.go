@@ -254,14 +254,18 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		Allowlist: cfg.Security.ExecApprovals.Allowlist,
 	}
 	tools.RegisterCoreTools(toolReg, "", execPolicy)
-	telegramReg := tools.TelegramRegistration{
-		Enabled:       cfg.Telegram.Enabled,
-		BotToken:      cfg.Telegram.BotToken,
-		DefaultChatID: cfg.Telegram.DefaultChatID,
+	// send_message is registered unconditionally so it shows in the Settings →
+	// Agents tool picker even before any messaging channel is configured. The
+	// closure reads from cfg on every call, so config edits in Settings take
+	// effect on the next invocation without a process restart.
+	sendMsgConfigFn := func() tools.SendMessageRegistration {
+		return tools.SendMessageRegistration{
+			TelegramEnabled:       cfg.Telegram.Enabled,
+			TelegramBotToken:      cfg.Telegram.BotToken,
+			TelegramDefaultChatID: cfg.Telegram.DefaultChatID,
+		}
 	}
-	if tools.RegisterTelegram(toolReg, telegramReg) {
-		slog.Info("registered telegram_send tool")
-	}
+	tools.RegisterSendMessage(toolReg, sendMsgConfigFn)
 
 	// Init skill loader
 	skillLoader := skill.NewLoader()
@@ -332,17 +336,10 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	wsHandler.SetMemory(memMgr)
 	wsHandler.SetCortex(cx)
 
-	// Register ask_agent tool for inter-agent delegation
-	agentRunner := gateway.NewAgentRunner(providers, cfg, sessionStore)
-	agentRunner.SetSkills(skillLoader)
-	agentRunner.SetMemory(memMgr)
-	agentRunner.SetCortex(cx)
-	tools.RegisterAskAgent(toolReg, agentRunner)
-
 	// Config hot-reload — rebuild LLM provider clients from the new config
-	// and push them into both handlers. Without the provider rebuild, edits
-	// to API keys / base URLs in the Settings UI would silently no-op until
-	// the process is restarted (the cached clients still hold the stale
+	// and push them into the WebSocket handler. Without the provider rebuild,
+	// edits to API keys / base URLs in the Settings UI would silently no-op
+	// until the process is restarted (the cached clients still hold the stale
 	// credentials they were instantiated with at startup).
 	var configWatcher *config.Watcher
 	if cfg.Path() != "" {
@@ -351,8 +348,6 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			newProviders := InitProviders(newCfg)
 			wsHandler.UpdateConfig(newCfg)
 			wsHandler.UpdateProviders(newProviders)
-			agentRunner.UpdateConfig(newCfg)
-			agentRunner.UpdateProviders(newProviders)
 			slog.Info("config hot-reloaded", "providers", len(newProviders))
 		})
 		if err == nil {
@@ -395,7 +390,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentID, "heartbeat")
 				hbToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(hbToolReg, agentWorkspace, execPolicy)
-				tools.RegisterTelegram(hbToolReg, telegramReg)
+				tools.RegisterSendMessage(hbToolReg, sendMsgConfigFn)
 
 				rt := &agent.Runtime{
 					LLM:          provider,
@@ -441,7 +436,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentID, "cron_"+cronJob.Name)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, agentWorkspace, execPolicy)
-				tools.RegisterTelegram(cronToolReg, telegramReg)
+				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
 				rt := &agent.Runtime{
 					LLM:          provider,
 					Tools:        cronToolReg,
@@ -483,7 +478,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				cronSess := session.NewSession(defaultCfg.ID, "cron_"+jobName)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, defaultCfg.Workspace, execPolicy)
-				tools.RegisterTelegram(cronToolReg, telegramReg)
+				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
 				rt := &agent.Runtime{
 					LLM:          p,
 					Tools:        cronToolReg,
