@@ -518,6 +518,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	})
 
 	cleanup := func() {
+		tools.ShutdownBrowsers()
 		cronScheduler.Stop()
 		for _, hb := range heartbeats {
 			hb.Stop()

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -79,4 +80,46 @@ func TestBrowserEvaluateMissingScript(t *testing.T) {
 	result, err := tool.evaluate(context.Background(), browserInput{Action: "evaluate"})
 	require.NoError(t, err)
 	assert.Contains(t, result.Error, "script is required")
+}
+
+func TestBrowserCloseRequiresSession(t *testing.T) {
+	tool := &BrowserTool{}
+	input, _ := json.Marshal(browserInput{Action: "close"})
+
+	result, err := tool.Execute(context.Background(), input)
+	require.NoError(t, err)
+	assert.Contains(t, result.Error, "session is required")
+}
+
+func TestBrowserCloseUnknownSession(t *testing.T) {
+	tool := &BrowserTool{}
+	input, _ := json.Marshal(browserInput{Action: "close", Session: "nope"})
+
+	result, err := tool.Execute(context.Background(), input)
+	require.NoError(t, err)
+	assert.Empty(t, result.Error)
+	assert.Contains(t, result.Output, `No active session "nope"`)
+}
+
+// TestBrowserSessionLimit verifies the in-memory bookkeeping refuses a 6th
+// session without ever launching Chrome by pre-populating sentinel entries.
+func TestBrowserSessionLimit(t *testing.T) {
+	tool := &BrowserTool{}
+	tool.sessions = make(map[string]*browserSession)
+	for i := 0; i < sessionMaxCount; i++ {
+		tool.sessions[fmt.Sprintf("s%d", i)] = &browserSession{taskCancel: func() {}, allocCancel: func() {}}
+	}
+	_, err := tool.getOrCreateSession("overflow")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "session limit reached")
+}
+
+func TestBrowserCloseSessionCleansMap(t *testing.T) {
+	tool := &BrowserTool{}
+	tool.sessions = map[string]*browserSession{
+		"a": {taskCancel: func() {}, allocCancel: func() {}},
+	}
+	require.True(t, tool.closeSession("a"))
+	assert.NotContains(t, tool.sessions, "a")
+	require.False(t, tool.closeSession("a"))
 }

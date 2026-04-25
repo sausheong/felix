@@ -252,7 +252,7 @@ func RegisterCoreTools(reg *Registry, workDir string, execPolicy *ExecPolicy) {
 	reg.Register(&BashTool{WorkDir: workDir, ExecPolicy: execPolicy})
 	reg.Register(&WebFetchTool{})
 	reg.Register(&WebSearchTool{})
-	reg.Register(&BrowserTool{})
+	reg.Register(newBrowserTool())
 }
 
 // validatePathInWorkDir ensures that the resolved path is within the workspace.
