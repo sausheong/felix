@@ -187,3 +187,23 @@ New Go module dependencies:
 None blocking. To revisit during implementation:
 - Exact mapping of MCP `CallToolResult.content` (which can include text, images, embedded resources) into `tools.ToolResult` (which has `Output string` plus `Images []llm.ImageContent`).
 - Whether `tool_prefix` defaults should be derived from server `id` automatically when collisions occur.
+
+---
+
+## Stage 2 MVP — what shipped (2026-04-25)
+
+The MVP plan (`docs/superpowers/plans/2026-04-25-mcp-stage2-mvp-subsystem.md`) shipped the config-driven subsystem plus one enhancement:
+
+**Shipped:**
+- `mcp_servers[]` config schema with `oauth2_client_credentials` auth + `client_secret_env` secret source.
+- `mcp.Manager` connects one session per enabled server at startup; unreachable servers are logged and skipped.
+- `mcpToolAdapter` implements `tools.Tool`; `mcp.RegisterTools` registers adapters into the agent's `tools.Registry` with per-server `tool_prefix` and hard-fail collision detection.
+- Wiring at all 6 tool-registry construction sites (chat main + chat cron, gateway main + heartbeat + 2 cron sites). One Manager is shared across all sites for the process lifetime.
+- **Auto-allowlist (added during MVP execution):** `RegisterTools` returns the names it registered; `Config.ApplyMCPToolNamesToAllowlists` augments every agent's `Tools.Allow` list (in-memory only) so MCP tools are usable without manual config edits. Agents with empty `Allow` (allow-all) are left alone. "Removal on disconnect" is implicit — at next restart with no MCP servers, the on-disk allowlists take effect verbatim.
+
+**Deferred to a follow-up plan:**
+- fsnotify-driven hot reload of `mcp_servers` (config changes still require process restart).
+- `client_secret_file` auth source (`client_secret_env` only in MVP).
+- Background reconnect loop (the SDK transport's `MaxRetries` handles transient HTTP failures; servers that fail at startup are logged + skipped; recovery requires a restart).
+
+**End-to-end verified:** chat agent with `anthropic/claude-haiku-4-5` saw the `ltm_target-ltm___whoami` tool in its registry, invoked it, and received the whoami JSON from the live AgentCore gateway through the wired Manager. 11 tools total: 9 core + 2 MCP.
