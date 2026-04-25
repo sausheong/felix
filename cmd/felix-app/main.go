@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"fyne.io/systray"
 
@@ -183,6 +184,14 @@ func onReady() {
 				}
 				slog.Info("gateway restarted", "port", port)
 			case <-mQuit.ClickedCh:
+				// Hard deadline so a hung cleanup step (slow MCP server,
+				// stuck cortex/Ollama, etc.) can't trap the user. macOS's
+				// "Quit" should always quit within seconds.
+				go func() {
+					time.Sleep(5 * time.Second)
+					slog.Error("cleanup exceeded 5s, force-exiting")
+					os.Exit(1)
+				}()
 				result.Cleanup()
 				systray.Quit()
 				return
