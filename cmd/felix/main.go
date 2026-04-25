@@ -29,6 +29,7 @@ import (
 	"github.com/sausheong/felix/internal/cron"
 	"github.com/sausheong/felix/internal/gateway"
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/mcp"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
@@ -317,6 +318,22 @@ func runChat(agentID, configPath, modelOverride string) error {
 		}
 	})
 
+	// Connect to configured MCP servers and register their tools alongside core tools.
+	mcpServerCfgs, err := cfg.ResolveMCPServers()
+	if err != nil {
+		return fmt.Errorf("resolve mcp_servers: %w", err)
+	}
+	mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	mcpMgr, err := mcp.NewManager(mcpInitCtx, mcpServerCfgs)
+	mcpInitCancel()
+	if err != nil {
+		return fmt.Errorf("init mcp manager: %w", err)
+	}
+	defer mcpMgr.Close()
+	if err := mcp.RegisterTools(toolReg, mcpMgr); err != nil {
+		return fmt.Errorf("register mcp tools: %w", err)
+	}
+
 	ctx := context.Background()
 
 	// Init cron scheduler for chat mode so the agent can use the cron tool
@@ -336,6 +353,9 @@ func runChat(agentID, configPath, modelOverride string) error {
 			cronSess := session.NewSession(agentID, "cron_"+jobName)
 			cronToolReg := tools.NewRegistry()
 			tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace, execPolicy)
+			if err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
+				return "", fmt.Errorf("register mcp tools for cron: %w", err)
+			}
 			cronRT := &agent.Runtime{
 				LLM:          provider,
 				Tools:        cronToolReg,
