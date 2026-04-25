@@ -31,6 +31,12 @@ type Config struct {
 
 	mu   sync.RWMutex
 	path string
+
+	// mcpAutoAddedNames tracks which tool names ApplyMCPToolNamesToAllowlists
+	// added to agent allowlists at startup. Used by StripMCPAutoAdded so the
+	// UI's save-config endpoint can write back to disk WITHOUT persisting the
+	// runtime-only augmentation. Not JSON-serialized.
+	mcpAutoAddedNames []string
 }
 
 // TelegramConfig enables outbound Telegram messages via the send_message tool's
@@ -649,5 +655,40 @@ func (c *Config) ApplyMCPToolNamesToAllowlists(names []string) {
 				existing[n] = true
 			}
 		}
+	}
+	// Snapshot so StripMCPAutoAdded can undo this mutation when the UI's
+	// SaveConfig endpoint writes back to disk.
+	c.mcpAutoAddedNames = append(c.mcpAutoAddedNames[:0], names...)
+}
+
+// StripMCPAutoAdded removes from `other`'s agent allowlists any tool names
+// that were auto-added to THIS Config by ApplyMCPToolNamesToAllowlists.
+// Used by the UI's SaveConfig handler so saving a config edited via the
+// browser does not persist the runtime-only MCP allowlist augmentation
+// into felix.json5 (which would leave ghost entries when MCP servers are
+// later removed).
+func (c *Config) StripMCPAutoAdded(other *Config) {
+	c.mu.RLock()
+	names := c.mcpAutoAddedNames
+	c.mu.RUnlock()
+	if len(names) == 0 {
+		return
+	}
+	nameSet := make(map[string]bool, len(names))
+	for _, n := range names {
+		nameSet[n] = true
+	}
+	for i := range other.Agents.List {
+		allow := other.Agents.List[i].Tools.Allow
+		if len(allow) == 0 {
+			continue
+		}
+		kept := make([]string, 0, len(allow))
+		for _, n := range allow {
+			if !nameSet[n] {
+				kept = append(kept, n)
+			}
+		}
+		other.Agents.List[i].Tools.Allow = kept
 	}
 }

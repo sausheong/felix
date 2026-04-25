@@ -75,6 +75,11 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 			// Copy path from current config so Save writes to the right file.
 			newCfg.SetPath(cfg.Path())
 
+			// Strip MCP tool names that were auto-added to agent allowlists at
+			// startup so they don't get baked into the on-disk config (which
+			// would leave ghost entries when MCP servers are later removed).
+			cfg.StripMCPAutoAdded(&newCfg)
+
 			if err := newCfg.Save(); err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)

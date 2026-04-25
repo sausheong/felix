@@ -344,3 +344,46 @@ func TestApplyMCPToolNamesToAllowlists_Empty(t *testing.T) {
 	cfg.ApplyMCPToolNamesToAllowlists(nil)
 	assert.ElementsMatch(t, []string{"bash"}, cfg.Agents.List[0].Tools.Allow)
 }
+
+func TestStripMCPAutoAdded(t *testing.T) {
+	// Setup: a runtime cfg that has had ApplyMCPToolNamesToAllowlists called
+	// on it, so its in-memory state and snapshot reflect the augmentation.
+	runtime := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "with-allow", Tools: ToolPolicy{Allow: []string{"bash"}}},
+				{ID: "wide-open", Tools: ToolPolicy{Allow: nil}},
+			},
+		},
+	}
+	runtime.ApplyMCPToolNamesToAllowlists([]string{"ltm_x", "ltm_y"})
+	assert.ElementsMatch(t, []string{"bash", "ltm_x", "ltm_y"}, runtime.Agents.List[0].Tools.Allow)
+
+	// Simulate UI save: the browser POSTed back the in-memory cfg verbatim.
+	// Strip should remove ltm_x / ltm_y so they are NOT persisted to disk.
+	incoming := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "with-allow", Tools: ToolPolicy{Allow: []string{"bash", "ltm_x", "ltm_y"}}},
+				{ID: "wide-open", Tools: ToolPolicy{Allow: []string{}}},
+				// User added a new agent through the UI; it should also be cleaned.
+				{ID: "newcomer", Tools: ToolPolicy{Allow: []string{"web_fetch", "ltm_x"}}},
+			},
+		},
+	}
+	runtime.StripMCPAutoAdded(incoming)
+	assert.ElementsMatch(t, []string{"bash"}, incoming.Agents.List[0].Tools.Allow)
+	assert.Empty(t, incoming.Agents.List[1].Tools.Allow)
+	assert.ElementsMatch(t, []string{"web_fetch"}, incoming.Agents.List[2].Tools.Allow)
+}
+
+func TestStripMCPAutoAdded_NoSnapshot(t *testing.T) {
+	// A Config that never had ApplyMCPToolNamesToAllowlists called on it
+	// should leave `other` completely untouched.
+	runtime := &Config{}
+	incoming := &Config{
+		Agents: AgentsConfig{List: []AgentConfig{{ID: "x", Tools: ToolPolicy{Allow: []string{"bash", "ltm_x"}}}}},
+	}
+	runtime.StripMCPAutoAdded(incoming)
+	assert.ElementsMatch(t, []string{"bash", "ltm_x"}, incoming.Agents.List[0].Tools.Allow)
+}
