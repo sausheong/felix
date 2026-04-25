@@ -89,7 +89,26 @@ type browserInput struct {
 func (t *BrowserTool) Name() string { return "browser" }
 
 func (t *BrowserTool) Description() string {
-	return `Control a headless Chrome browser. Supports these actions:
+	return `Control a headless Chrome browser.
+
+CRITICAL — RULE OF SESSIONS:
+Each tool call uses an isolated, fresh browser by default. State (current URL, cookies, scroll, SPA hydration) does NOT carry over between calls.
+
+If you intend to call this tool MORE THAN ONCE for the same page or flow, you MUST pass "session": "<any-label>" on EVERY call. Pick a label like "hormuz" or "github-login" and reuse it. Otherwise the second call starts on about:blank and your screenshot is blank, your get_text is empty, your click finds nothing.
+
+WORKED EXAMPLE — visit a page and screenshot it:
+  WRONG (two ephemeral browsers):
+    1) {"action":"navigate","url":"https://example.com"}
+    2) {"action":"screenshot"}                              ← blank, screenshots about:blank
+  RIGHT (one browser, two calls):
+    1) {"action":"navigate","url":"https://example.com","session":"ex"}
+    2) {"action":"screenshot","session":"ex"}
+    3) {"action":"close","session":"ex"}                    ← optional; auto-closes after 10 min idle
+
+ONE-SHOT pattern (no session) — pass "url" on every action so each call navigates first inside its own ephemeral browser:
+    {"action":"screenshot","url":"https://example.com"}    ← navigates THEN screenshots, single call
+
+ACTIONS:
 - "navigate": Go to a URL. Requires "url".
 - "click": Click an element. Requires "selector". Optional "url" to navigate first.
 - "type": Type text into an input field. Requires "selector" and "text". Optional "url".
@@ -98,11 +117,7 @@ func (t *BrowserTool) Description() string {
 - "evaluate": Execute JavaScript in the page. Requires "script". Optional "url".
 - "close": Close a persistent session. Requires "session".
 
-MULTI-STEP FLOWS — pass "session" (any string label like "amazon-checkout" or "github-login") on every call in the flow. The browser tab persists across calls with the same session name, so cookies, login state, scroll position, and SPA state are all preserved. Call action "close" with the session name when done. Sessions auto-close after 10 minutes of inactivity, with a maximum of 5 concurrent sessions.
-
-ONE-SHOT calls — omit "session" and each call gets its own fresh browser.
-
-JS-HEAVY pages — the tool already waits for body-ready and network-idle automatically, but for SPAs that render content asynchronously the most reliable signal is "wait_for" (CSS selector that appears once content is rendered, e.g. "main article" or "#root .loaded"). "wait_ms" adds extra settle time in milliseconds after network-idle (default 1000).
+JS-HEAVY pages — the tool already waits for body-ready and network-idle automatically, but for SPAs that render content asynchronously the most reliable signal is "wait_for" (CSS selector that appears once content is rendered, e.g. "main article" or "#root .loaded"). "wait_ms" adds extra settle time in milliseconds after network-idle (default 1000). Sessions auto-close after 10 minutes of inactivity (max 5 concurrent).
 
 SELECTORS — standard CSS only. Playwright/jQuery extensions are NOT supported: ":has-text(...)", "text=...", ">>" chains, "/...//xpath" all fail. To match by text, use attribute selectors ([aria-label="…"], [title="…"]), structural selectors (:nth-of-type, :nth-child), or "evaluate" with document.querySelector / XPath via document.evaluate.`
 }
@@ -248,6 +263,23 @@ func (t *BrowserTool) Execute(ctx context.Context, input json.RawMessage) (ToolR
 	case "evaluate":
 		if in.Script == "" {
 			return ToolResult{Error: "script is required for evaluate action"}, nil
+		}
+	}
+
+	// Catch the about:blank trap: any post-navigation action (screenshot,
+	// get_text, evaluate, click, type) called WITHOUT a URL AND WITHOUT a
+	// session will land in a fresh browser on about:blank — producing a
+	// blank screenshot, empty text, or a no-op script. Each tool call uses
+	// its own browser; state does not survive between calls unless "session"
+	// is supplied. Fail fast with an actionable hint instead of silently
+	// returning useless output.
+	if in.URL == "" && in.Session == "" {
+		switch in.Action {
+		case "screenshot", "get_text", "evaluate", "click", "type":
+			return ToolResult{Error: fmt.Sprintf(
+				"%s called without 'url' or 'session'. Each browser call uses a fresh browser starting on about:blank, so state does NOT carry over between calls. Either: (a) pass 'url' to navigate first, or (b) pass the same 'session: \"<name>\"' on every call in a multi-step flow (navigate, then act, then close).",
+				in.Action,
+			)}, nil
 		}
 	}
 

@@ -82,6 +82,54 @@ func TestBrowserEvaluateMissingScript(t *testing.T) {
 	assert.Contains(t, result.Error, "script is required")
 }
 
+// Verify the about:blank trap detection: post-navigation actions called
+// without url AND without session must fail fast with an actionable hint
+// rather than silently producing blank output.
+func TestBrowserAboutBlankTrap(t *testing.T) {
+	tool := &BrowserTool{}
+	for _, action := range []string{"screenshot", "get_text", "evaluate", "click", "type"} {
+		in := browserInput{Action: action}
+		switch action {
+		case "click":
+			in.Selector = "#x"
+		case "type":
+			in.Selector = "#x"
+			in.Text = "hi"
+		case "evaluate":
+			in.Script = "1+1"
+		}
+		body, _ := json.Marshal(in)
+		result, err := tool.Execute(context.Background(), body)
+		require.NoError(t, err)
+		assert.Contains(t, result.Error, action, "action name should appear in error")
+		assert.Contains(t, result.Error, "url", "error should mention url")
+		assert.Contains(t, result.Error, "session", "error should mention session")
+	}
+}
+
+// With a session set, the trap detection does NOT fire — calls are valid
+// because state from a prior navigate in the same session may exist.
+// (This still launches Chrome via getOrCreateSession, so we only check
+// that the blank-trap message is absent from any error returned.)
+func TestBrowserAboutBlankTrapBypassedBySession(t *testing.T) {
+	tool := &BrowserTool{}
+	// Use a small per-call timeout so even if Chrome launches we abort fast.
+	body, _ := json.Marshal(browserInput{Action: "screenshot", Session: "test-session", Timeout: 1})
+	result, _ := tool.Execute(context.Background(), body)
+	assert.NotContains(t, result.Error, "fresh browser starting on about:blank")
+}
+
+// Same: with a URL set, the trap detection does NOT fire — the URL is
+// validated, not the about:blank case.
+func TestBrowserAboutBlankTrapBypassedByURL(t *testing.T) {
+	tool := &BrowserTool{}
+	body, _ := json.Marshal(browserInput{Action: "screenshot", URL: "ftp://nope"})
+	result, _ := tool.Execute(context.Background(), body)
+	// Should hit the URL-prefix check, not the about:blank check.
+	assert.Contains(t, result.Error, "http://")
+	assert.NotContains(t, result.Error, "fresh browser")
+}
+
 func TestBrowserCloseRequiresSession(t *testing.T) {
 	tool := &BrowserTool{}
 	input, _ := json.Marshal(browserInput{Action: "close"})
