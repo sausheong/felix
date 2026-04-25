@@ -244,19 +244,66 @@ func TestResolveMCPServers_HappyPath(t *testing.T) {
 	assert.Equal(t, "ltm_", got[0].ToolPrefix)
 }
 
-func TestResolveMCPServers_MissingSecretEnv(t *testing.T) {
+func TestResolveMCPServers_LiteralSecretInConfig(t *testing.T) {
 	cfg := &Config{
 		MCPServers: []MCPServerConfig{{
 			ID: "ltm", URL: "https://x", Enabled: true,
 			Auth: MCPAuthConfig{
 				Kind: "oauth2_client_credentials", TokenURL: "https://t",
-				ClientID: "c", ClientSecretEnv: "DEFINITELY_NOT_SET_FELIX_TEST",
+				ClientID: "c", ClientSecret: "literal-secret",
 			},
 		}},
 	}
-	_, err := cfg.ResolveMCPServers()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "DEFINITELY_NOT_SET_FELIX_TEST")
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "literal-secret", got[0].ClientSecret)
+}
+
+func TestResolveMCPServers_LiteralBeatsEnv(t *testing.T) {
+	t.Setenv("SECRET_THAT_SHOULD_NOT_WIN", "from-env")
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID: "ltm", URL: "https://x", Enabled: true,
+			Auth: MCPAuthConfig{
+				Kind: "oauth2_client_credentials", TokenURL: "https://t",
+				ClientID: "c",
+				ClientSecret:    "from-config",
+				ClientSecretEnv: "SECRET_THAT_SHOULD_NOT_WIN",
+			},
+		}},
+	}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "from-config", got[0].ClientSecret)
+}
+
+func TestResolveMCPServers_MissingSecretSkipsServer(t *testing.T) {
+	// Missing-secret used to be a hard error. We now log+skip instead so a
+	// single misconfigured MCP entry can't take down the whole gateway.
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{
+			{
+				ID: "ltm-bad", URL: "https://x", Enabled: true,
+				Auth: MCPAuthConfig{
+					Kind: "oauth2_client_credentials", TokenURL: "https://t",
+					ClientID: "c", ClientSecretEnv: "DEFINITELY_NOT_SET_FELIX_TEST",
+				},
+			},
+			{
+				ID: "ltm-good", URL: "https://y", Enabled: true,
+				Auth: MCPAuthConfig{
+					Kind: "oauth2_client_credentials", TokenURL: "https://t",
+					ClientID: "c", ClientSecret: "ok",
+				},
+			},
+		},
+	}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err) // skip, not error
+	require.Len(t, got, 1)
+	assert.Equal(t, "ltm-good", got[0].ID)
 }
 
 func TestResolveMCPServers_UnsupportedAuthKind(t *testing.T) {

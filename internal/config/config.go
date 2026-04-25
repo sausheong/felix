@@ -56,11 +56,17 @@ type MCPServerConfig struct {
 // MCPAuthConfig describes how Felix authenticates to an MCP server. MVP
 // supports only OAuth2 client-credentials; additional kinds (e.g.
 // "bearer_static") will plug in via the Kind discriminator.
+//
+// The client secret can be supplied directly via ClientSecret (matches the
+// existing Felix convention for telegram.bot_token and providers.api_key)
+// or via ClientSecretEnv (env var name) for operators who prefer to keep
+// secrets out of config files. ClientSecret wins when both are set.
 type MCPAuthConfig struct {
-	Kind            string `json:"kind"`              // "oauth2_client_credentials"
+	Kind            string `json:"kind"`                          // "oauth2_client_credentials"
 	TokenURL        string `json:"token_url"`
 	ClientID        string `json:"client_id"`
-	ClientSecretEnv string `json:"client_secret_env"` // env var NAME holding the secret
+	ClientSecret    string `json:"client_secret,omitempty"`       // literal secret value
+	ClientSecretEnv string `json:"client_secret_env,omitempty"`   // env var NAME holding the secret (alternative)
 	Scope           string `json:"scope"`
 }
 
@@ -563,9 +569,15 @@ func removeTrailingCommas(s string) string {
 }
 
 // ResolveMCPServers returns one mcp.ManagerServerConfig per enabled MCPServers
-// entry, with the client secret resolved from the named environment variable.
+// entry, with the client secret resolved from either the literal config value
+// (Auth.ClientSecret) or the named environment variable (Auth.ClientSecretEnv),
+// preferring the literal when both are set.
+//
 // Disabled servers are skipped silently. Returns an error if any enabled
-// server has missing required fields or its secret env var is unset.
+// server has missing required fields. Missing-secret on an otherwise-valid
+// enabled server is logged and skipped (not a hard fail) so a misconfigured
+// MCP entry doesn't take down the whole gateway — matches how Manager handles
+// unreachable servers.
 func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 	out := make([]mcp.ManagerServerConfig, 0, len(c.MCPServers))
 	for _, s := range c.MCPServers {
@@ -581,12 +593,19 @@ func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 		if s.Auth.Kind != "oauth2_client_credentials" {
 			return nil, fmt.Errorf("mcp_servers[%s]: unsupported auth.kind %q (only oauth2_client_credentials in MVP)", s.ID, s.Auth.Kind)
 		}
-		if s.Auth.TokenURL == "" || s.Auth.ClientID == "" || s.Auth.ClientSecretEnv == "" {
-			return nil, fmt.Errorf("mcp_servers[%s]: token_url, client_id, and client_secret_env are required", s.ID)
+		if s.Auth.TokenURL == "" || s.Auth.ClientID == "" {
+			return nil, fmt.Errorf("mcp_servers[%s]: token_url and client_id are required", s.ID)
 		}
-		secret := os.Getenv(s.Auth.ClientSecretEnv)
+		secret := s.Auth.ClientSecret
+		if secret == "" && s.Auth.ClientSecretEnv != "" {
+			secret = os.Getenv(s.Auth.ClientSecretEnv)
+		}
 		if secret == "" {
-			return nil, fmt.Errorf("mcp_servers[%s]: env var %s is empty or unset", s.ID, s.Auth.ClientSecretEnv)
+			slog.Warn("mcp_servers: skipping server with no resolvable client secret",
+				"id", s.ID,
+				"hint", "set auth.client_secret in config, or auth.client_secret_env to a populated env var",
+			)
+			continue
 		}
 		out = append(out, mcp.ManagerServerConfig{
 			ID:           s.ID,

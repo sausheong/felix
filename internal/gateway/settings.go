@@ -1191,13 +1191,14 @@ html.dark .error-state { background: #450a0a; }
 					cfg.mcp_servers[idx].auth.scope = v;
 				});
 
-				makeField(item, 'Client Secret Env Var', 'text', s.auth.client_secret_env || '', function(v) {
-					cfg.mcp_servers[idx].auth.client_secret_env = v;
+				makeField(item, 'Client Secret', 'password', s.auth.client_secret || '', function(v) {
+					if (!v) return;
+					cfg.mcp_servers[idx].auth.client_secret = v;
 				});
 
 				var hint = document.createElement('p');
 				hint.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
-				hint.innerHTML = 'Name of the environment variable holding the secret (the secret value itself is never stored in config).';
+				hint.innerHTML = 'Stored in config alongside other secrets (e.g. <code>telegram.bot_token</code>). Power users can leave this blank and set <code>auth.client_secret_env</code> in the JSON5 file instead to source from an environment variable.';
 				item.appendChild(hint);
 
 				list.appendChild(item);
@@ -1218,7 +1219,7 @@ html.dark .error-state { background: #450a0a; }
 					kind: 'oauth2_client_credentials',
 					token_url: '',
 					client_id: '',
-					client_secret_env: '',
+					client_secret: '',
 					scope: ''
 				}
 			});
