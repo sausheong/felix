@@ -270,3 +270,30 @@ func TestResolveMCPServers_UnsupportedAuthKind(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported auth.kind")
 }
+
+func TestApplyMCPToolNamesToAllowlists(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "with-allowlist", Tools: ToolPolicy{Allow: []string{"bash", "read_file"}}},
+				{ID: "wide-open", Tools: ToolPolicy{Allow: nil}},
+				{ID: "empty-allow", Tools: ToolPolicy{Allow: []string{}}},
+				{ID: "already-has-one", Tools: ToolPolicy{Allow: []string{"bash", "ltm_search"}}},
+			},
+		},
+	}
+	cfg.ApplyMCPToolNamesToAllowlists([]string{"ltm_search", "ltm_store"})
+
+	assert.ElementsMatch(t, []string{"bash", "read_file", "ltm_search", "ltm_store"}, cfg.Agents.List[0].Tools.Allow)
+	assert.Empty(t, cfg.Agents.List[1].Tools.Allow, "wide-open agent (nil Allow) should be left alone")
+	assert.Empty(t, cfg.Agents.List[2].Tools.Allow, "empty-allow agent should be left alone")
+	assert.ElementsMatch(t, []string{"bash", "ltm_search", "ltm_store"}, cfg.Agents.List[3].Tools.Allow, "duplicate ltm_search should not appear twice")
+}
+
+func TestApplyMCPToolNamesToAllowlists_Empty(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{List: []AgentConfig{{ID: "x", Tools: ToolPolicy{Allow: []string{"bash"}}}}},
+	}
+	cfg.ApplyMCPToolNamesToAllowlists(nil)
+	assert.ElementsMatch(t, []string{"bash"}, cfg.Agents.List[0].Tools.Allow)
+}

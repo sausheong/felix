@@ -28,10 +28,10 @@ func TestRegisterTools_AddsPrefixedAdapters(t *testing.T) {
 	defer mgr.Close()
 
 	reg := tools.NewRegistry()
-	require.NoError(t, RegisterTools(reg, mgr))
-
-	names := reg.Names()
+	names, err := RegisterTools(reg, mgr)
+	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"ltm_search", "ltm_store"}, names)
+	assert.ElementsMatch(t, []string{"ltm_search", "ltm_store"}, reg.Names())
 }
 
 func TestRegisterTools_NoPrefix_NoCollision(t *testing.T) {
@@ -49,7 +49,9 @@ func TestRegisterTools_NoPrefix_NoCollision(t *testing.T) {
 	defer mgr.Close()
 
 	reg := tools.NewRegistry()
-	require.NoError(t, RegisterTools(reg, mgr))
+	names, err := RegisterTools(reg, mgr)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"remote_only"}, names)
 	assert.ElementsMatch(t, []string{"remote_only"}, reg.Names())
 }
 
@@ -70,8 +72,9 @@ func TestRegisterTools_CollisionFails(t *testing.T) {
 	reg := tools.NewRegistry()
 	tools.RegisterCoreTools(reg, "", nil) // installs real bash; collision ahead
 
-	err = RegisterTools(reg, mgr)
+	names, err := RegisterTools(reg, mgr)
 	require.Error(t, err)
+	assert.Nil(t, names)
 	assert.Contains(t, err.Error(), "bash")
 	assert.Contains(t, err.Error(), "collision")
 }

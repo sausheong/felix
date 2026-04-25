@@ -330,9 +330,11 @@ func runChat(agentID, configPath, modelOverride string) error {
 		return fmt.Errorf("init mcp manager: %w", err)
 	}
 	defer mcpMgr.Close()
-	if err := mcp.RegisterTools(toolReg, mcpMgr); err != nil {
+	mcpNames, err := mcp.RegisterTools(toolReg, mcpMgr)
+	if err != nil {
 		return fmt.Errorf("register mcp tools: %w", err)
 	}
+	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
 
 	ctx := context.Background()
 
@@ -353,7 +355,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 			cronSess := session.NewSession(agentID, "cron_"+jobName)
 			cronToolReg := tools.NewRegistry()
 			tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace, execPolicy)
-			if err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
+			if _, err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
 				return "", fmt.Errorf("register mcp tools for cron: %w", err)
 			}
 			cronRT := &agent.Runtime{

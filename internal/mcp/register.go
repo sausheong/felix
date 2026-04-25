@@ -14,23 +14,25 @@ import (
 //
 // Uses a fresh background context for tools/list with no per-call timeout —
 // the overall startup deadline (held by the caller) governs total time.
-func RegisterTools(reg *tools.Registry, mgr *Manager) error {
+func RegisterTools(reg *tools.Registry, mgr *Manager) ([]string, error) {
 	if mgr == nil {
-		return nil
+		return nil, nil
 	}
 	ctx := context.Background()
+	var registered []string
 	for _, s := range mgr.Servers() {
 		toolList, err := s.Client.ListTools(ctx)
 		if err != nil {
-			return fmt.Errorf("mcp[%s]: list tools: %w", s.ID, err)
+			return nil, fmt.Errorf("mcp[%s]: list tools: %w", s.ID, err)
 		}
 		for _, t := range toolList {
 			fullName := s.ToolPrefix + t.Name
 			if _, exists := reg.Get(fullName); exists {
-				return fmt.Errorf("mcp[%s]: tool name collision on %q — set tool_prefix in mcp_servers config", s.ID, fullName)
+				return nil, fmt.Errorf("mcp[%s]: tool name collision on %q — set tool_prefix in mcp_servers config", s.ID, fullName)
 			}
 			reg.Register(newToolAdapter(fullName, t.Name, t.Description, t.InputSchema, s.Client))
+			registered = append(registered, fullName)
 		}
 	}
-	return nil
+	return registered, nil
 }

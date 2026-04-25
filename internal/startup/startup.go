@@ -403,10 +403,12 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	if err != nil {
 		return nil, fmt.Errorf("init mcp manager: %w", err)
 	}
-	if err := mcp.RegisterTools(toolReg, mcpMgr); err != nil {
+	mcpNames, err := mcp.RegisterTools(toolReg, mcpMgr)
+	if err != nil {
 		mcpMgr.Close()
 		return nil, fmt.Errorf("register mcp tools: %w", err)
 	}
+	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
 
 	// Init skill loader
 	skillLoader := skill.NewLoader()
@@ -531,7 +533,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentID, "heartbeat")
 				hbToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(hbToolReg, agentWorkspace, execPolicy)
-				if err := mcp.RegisterTools(hbToolReg, mcpMgr); err != nil {
+				if _, err := mcp.RegisterTools(hbToolReg, mcpMgr); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(hbToolReg, sendMsgConfigFn)
@@ -581,7 +583,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentID, "cron_"+cronJob.Name)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, agentWorkspace, execPolicy)
-				if err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
+				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
@@ -628,7 +630,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				cronSess := session.NewSession(defaultCfg.ID, "cron_"+jobName)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, defaultCfg.Workspace, execPolicy)
-				if err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
+				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)

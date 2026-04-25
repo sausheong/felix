@@ -600,3 +600,35 @@ func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 	}
 	return out, nil
 }
+
+// ApplyMCPToolNamesToAllowlists augments each configured agent's Tools.Allow
+// list with the supplied MCP tool names. Agents with an empty Allow list are
+// left alone (empty = allow all per FilteredRegistry policy). Duplicate names
+// are skipped. Modifies the in-memory Config only — not persisted to disk.
+//
+// Called once at startup AFTER mcp.RegisterTools returns. The mutation is
+// ephemeral: on the next process start with no MCP servers configured, the
+// allowlists revert to whatever's on disk.
+func (c *Config) ApplyMCPToolNamesToAllowlists(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.Agents.List {
+		agent := &c.Agents.List[i]
+		if len(agent.Tools.Allow) == 0 {
+			continue // empty Allow = allow all; no augmentation needed
+		}
+		existing := make(map[string]bool, len(agent.Tools.Allow))
+		for _, n := range agent.Tools.Allow {
+			existing[n] = true
+		}
+		for _, n := range names {
+			if !existing[n] {
+				agent.Tools.Allow = append(agent.Tools.Allow, n)
+				existing[n] = true
+			}
+		}
+	}
+}
