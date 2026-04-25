@@ -10,7 +10,7 @@ APP_SIGN_ID      := Developer ID Application: Sau Sheong Chang (83N864XA6Z)
 PKG_SIGN_ID      := Developer ID Installer: Sau Sheong Chang (83N864XA6Z)
 KEYCHAIN_PROFILE := felix-notary
 
-.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release installer installer-windows sign ollama-fetch
+.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release installer installer-windows sign ollama-fetch _payload-secret-scan _payload-secret-scan-windows
 
 ## build: compile the binary
 build:
@@ -214,6 +214,9 @@ build-release: ollama-fetch
 
 ## installer: build a macOS PKG installer with bundled skills and provider setup
 installer: build-app
+	# Wipe any stale staging area BEFORE building so an aborted previous run
+	# (or files dropped in by hand for testing) can't leak into the .pkg.
+	rm -rf installer/payload
 	mkdir -p installer/payload/Applications
 	mkdir -p installer/payload/usr/local/share/felix/skills
 	cp -r Felix.app installer/payload/Applications/Felix.app
@@ -222,6 +225,7 @@ installer: build-app
 	  cp bin/ollama-darwin-arm64 installer/payload/Applications/Felix.app/Contents/Resources/bin/ollama; \
 	fi
 	cp skills/*.md installer/payload/usr/local/share/felix/skills/
+	@$(MAKE) --no-print-directory _payload-secret-scan
 	pkgbuild \
 		--root installer/payload \
 		--component-plist installer/Felix-component.plist \
@@ -251,6 +255,8 @@ installer-windows: ollama-fetch
 	@if [ ! -f bin/ollama-windows-amd64.exe ]; then \
 	  echo "ERROR: bin/ollama-windows-amd64.exe missing — run 'make ollama-fetch' first"; exit 1; \
 	fi
+	# Wipe stale staging area BEFORE building so leftover files can't ship.
+	rm -rf installer/windows/payload
 	@echo "==> Cross-compiling Felix binaries for windows/amd64..."
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
 		go build -trimpath -ldflags "$(LDFLAGS)" \
@@ -262,6 +268,7 @@ installer-windows: ollama-fetch
 	mkdir -p installer/windows/payload/bin installer/windows/payload/skills
 	cp bin/ollama-windows-amd64.exe installer/windows/payload/bin/ollama.exe
 	cp skills/*.md installer/windows/payload/skills/
+	@$(MAKE) --no-print-directory _payload-secret-scan-windows
 	@if [ ! -f installer/windows/Felix.ico ] && command -v magick >/dev/null 2>&1; then \
 	  echo "==> Generating Felix.ico from cmd/felix-app/icon.png..."; \
 	  magick cmd/felix-app/icon.png -define icon:auto-resize=256,128,64,48,32,16 installer/windows/Felix.ico; \
@@ -280,6 +287,9 @@ sign: build-app
 	codesign --deep --force --options runtime \
 		--sign "$(APP_SIGN_ID)" \
 		Felix.app
+	# Wipe any stale staging area BEFORE assembling so an aborted previous run
+	# (or files dropped in by hand for testing) can't leak into the signed pkg.
+	rm -rf installer/payload
 	# Assemble payload with signed app
 	mkdir -p installer/payload/Applications
 	mkdir -p installer/payload/usr/local/share/felix/skills
@@ -289,6 +299,7 @@ sign: build-app
 	  cp bin/ollama-darwin-arm64 installer/payload/Applications/Felix.app/Contents/Resources/bin/ollama; \
 	fi
 	cp skills/*.md installer/payload/usr/local/share/felix/skills/
+	@$(MAKE) --no-print-directory _payload-secret-scan
 	pkgbuild \
 		--root installer/payload \
 		--component-plist installer/Felix-component.plist \
@@ -312,6 +323,54 @@ sign: build-app
 	# Staple
 	xcrun stapler staple Felix-$(VERSION)-signed.pkg
 	@echo "Signed installer: Felix-$(VERSION)-signed.pkg"
+
+## _payload-secret-scan: refuse to ship if the staged payload contains user
+## config or anything that looks like an API key. Internal target invoked by
+## `installer` and `sign` after staging completes; not meant to be run on its
+## own. Belt-and-braces against the day someone copies their personal
+## ~/.felix/felix.json5 into installer/payload/ for testing and forgets to
+## clean it up — the build aborts loudly instead of shipping their key.
+_payload-secret-scan:
+	@bad=$$(find installer/payload \( -name 'felix.json' -o -name 'felix.json5' \
+	    -o -name '.env' -o -name '.env.*' -o -name '*.pem' -o -name '*.key' \
+	    -o -name 'id_rsa*' -o -name 'id_ed25519*' \) 2>/dev/null); \
+	if [ -n "$$bad" ]; then \
+	  echo "ERROR: payload contains forbidden file(s):"; \
+	  echo "$$bad" | sed 's/^/  /'; \
+	  echo "Remove them before building the installer."; \
+	  exit 1; \
+	fi; \
+	keyhit=$$(grep -rIl -E '(sk-[A-Za-z0-9_-]{20,}|"api_key"[[:space:]]*:[[:space:]]*"[^"]+")' \
+	    installer/payload 2>/dev/null); \
+	if [ -n "$$keyhit" ]; then \
+	  echo "ERROR: payload contains files matching API-key patterns:"; \
+	  echo "$$keyhit" | sed 's/^/  /'; \
+	  echo "Inspect and remove before shipping."; \
+	  exit 1; \
+	fi; \
+	echo "payload secret-scan: OK"
+
+## _payload-secret-scan-windows: same idea as _payload-secret-scan but
+## targets the Windows installer's staging directory.
+_payload-secret-scan-windows:
+	@bad=$$(find installer/windows/payload \( -name 'felix.json' -o -name 'felix.json5' \
+	    -o -name '.env' -o -name '.env.*' -o -name '*.pem' -o -name '*.key' \
+	    -o -name 'id_rsa*' -o -name 'id_ed25519*' \) 2>/dev/null); \
+	if [ -n "$$bad" ]; then \
+	  echo "ERROR: payload contains forbidden file(s):"; \
+	  echo "$$bad" | sed 's/^/  /'; \
+	  echo "Remove them before building the installer."; \
+	  exit 1; \
+	fi; \
+	keyhit=$$(grep -rIl -E '(sk-[A-Za-z0-9_-]{20,}|"api_key"[[:space:]]*:[[:space:]]*"[^"]+")' \
+	    installer/windows/payload 2>/dev/null); \
+	if [ -n "$$keyhit" ]; then \
+	  echo "ERROR: payload contains files matching API-key patterns:"; \
+	  echo "$$keyhit" | sed 's/^/  /'; \
+	  echo "Inspect and remove before shipping."; \
+	  exit 1; \
+	fi; \
+	echo "windows payload secret-scan: OK"
 
 ## clean: remove build artifacts
 clean:
