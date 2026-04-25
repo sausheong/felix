@@ -1148,9 +1148,9 @@ html.dark .error-state { background: #450a0a; }
 		var caveat = document.createElement('p');
 		caveat.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 0; padding:0.5rem 0.75rem; background:var(--color-surface-muted, rgba(0,0,0,0.04)); border-radius:var(--radius);';
 		caveat.innerHTML =
-			'<strong>Important:</strong> the client secret is read from an environment variable at startup, not stored here. ' +
-			'Set <code>export &lt;SECRET_ENV_VAR&gt;=...</code> in the shell that runs Felix before starting the gateway. ' +
-			'Config changes require a process restart — hot reload of MCP servers is not yet supported.';
+			'<strong>Note:</strong> the client secret is stored in <code>~/.felix/felix.json5</code> alongside other secrets ' +
+			'(<code>telegram.bot_token</code>, <code>providers.*.api_key</code>). MCP config changes require a process ' +
+			'restart — hot reload of MCP servers is not yet supported.';
 		sec.appendChild(caveat);
 
 		var servers = cfg.mcp_servers || [];
