@@ -64,5 +64,9 @@ func (s *Summarizer) Summarize(ctx context.Context, entries []session.SessionEnt
 	if out == "" {
 		return "", ErrEmptySummary
 	}
+	out = FormatCompactSummary(out)
+	if out == "" {
+		return "", ErrEmptySummary
+	}
 	return out, nil
 }
