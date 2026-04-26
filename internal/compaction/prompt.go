@@ -9,10 +9,21 @@ import (
 )
 
 const summarizationPromptHeader = `You are summarizing an AI assistant's conversation so it can continue past
-the context window. Preserve: facts established, decisions made, file paths,
-code snippets discussed, error messages encountered, ongoing tasks, the
-user's stated preferences and constraints. Drop: chitchat, intermediate
-tool exploration, retried-then-abandoned approaches.
+the context window.
+
+Preserve: facts established, decisions made, file paths, code snippets
+discussed, ongoing tasks, the user's stated preferences and constraints.
+
+Errors are tricky. Preserve an error only if it is still unresolved at the
+end of the transcript and the next turn must act on it. If an error was
+followed by a successful retry, a workaround, a different tool, a corrected
+parameter, or simply moved past, drop the error and record only the
+resolution (e.g. "queried contacts via column X"). Stale errors carried
+forward as "facts" mislead the next turn into re-litigating problems that
+were already solved — do not include them.
+
+Drop: chitchat, intermediate tool exploration, retried-then-abandoned
+approaches.
 
 Output only the summary. No preamble. No "Here is the summary:". No closing
 remarks.`

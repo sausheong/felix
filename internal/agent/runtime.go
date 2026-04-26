@@ -248,7 +248,14 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			//     models the reported window is huge (32K tokens default)
 			//     so the threshold-based check almost never fires; the
 			//     count cap keeps prefill bounded for fast TTFT.
-			if r.Compaction != nil && r.Model != "" {
+			//
+			// Only fires at turn==0 (start of a new user-initiated run).
+			// Compacting mid-loop — between a tool_call and the assistant's
+			// final reply — rewrites history under the model and tends to
+			// confuse small local models that conflate the freshly-injected
+			// summary with the in-flight tool result. The reactive overflow
+			// handler below still covers all turns.
+			if turn == 0 && r.Compaction != nil && r.Model != "" {
 				if r.calibrator == nil {
 					r.calibrator = tokens.NewCalibrator()
 				}
