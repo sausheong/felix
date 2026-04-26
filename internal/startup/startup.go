@@ -302,6 +302,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				BinPath:   bin,
 				ModelsDir: modelsDir,
 				KeepAlive: cfg.Local.KeepAlive,
+				PIDFile:   filepath.Join(config.DefaultDataDir(), "ollama.pid"),
 			})
 			startCtx, startCancel := context.WithTimeout(context.Background(), 70*time.Second)
 			if err := localSup.Start(startCtx); err != nil {

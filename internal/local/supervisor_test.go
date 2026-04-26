@@ -6,9 +6,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -217,6 +220,108 @@ PY
 	assert.GreaterOrEqual(t, elapsed, 500*time.Millisecond, "should wait the grace before escalating")
 	assert.Less(t, elapsed, 3*time.Second, "should escalate to SIGKILL promptly")
 	assert.False(t, s.Healthy())
+}
+
+func TestReapStaleChild_KillsLeftoverWithMatchingBin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ps-based reap is POSIX-only")
+	}
+	// Use /bin/sleep directly so argv[0] is a known absolute path that ps
+	// will report verbatim. A shebang script wouldn't work — the kernel
+	// reports the interpreter (/bin/sh) as argv[0], not the script.
+	sleeper, err := exec.LookPath("sleep")
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	cmd := exec.Command(sleeper, "60")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+	// Reap zombies in the background — without Wait, a killed child sticks
+	// around as a zombie that still satisfies kill(pid, 0).
+	waited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(waited)
+	}()
+
+	pidFile := filepath.Join(dir, "ollama.pid")
+	require.NoError(t, os.WriteFile(pidFile, fmt.Appendf(nil, "%d %s\n", cmd.Process.Pid, sleeper), 0o644))
+
+	s := New(Options{BinPath: sleeper, ModelsDir: dir, PIDFile: pidFile})
+	s.reapGrace = 200 * time.Millisecond
+	s.reapStaleChild()
+
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orphan process was not killed by reapStaleChild")
+	}
+}
+
+func TestReapStaleChild_NoFileNoOp(t *testing.T) {
+	dir := t.TempDir()
+	s := New(Options{BinPath: "/nope", ModelsDir: dir, PIDFile: filepath.Join(dir, "ollama.pid")})
+	// Should not panic or error when the file does not exist.
+	s.reapStaleChild()
+}
+
+func TestReapStaleChild_DeadPIDNoOp(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "ollama.pid")
+	// PID 1 is launchd/init — alive but won't match our binPath, so the
+	// command-match guard should prevent any kill attempt. Use a clearly
+	// dead PID instead so we exercise the alive-probe path.
+	require.NoError(t, os.WriteFile(pidFile, []byte("999999 /any/path\n"), 0o644))
+	s := New(Options{BinPath: "/any/path", ModelsDir: dir, PIDFile: pidFile})
+	s.reapStaleChild() // should silently no-op
+}
+
+func TestReapStaleChild_MismatchedBinDoesNotKill(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ps-based reap is POSIX-only")
+	}
+	sleeper, err := exec.LookPath("sleep")
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	cmd := exec.Command(sleeper, "60")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+	pidFile := filepath.Join(dir, "ollama.pid")
+	// Saved binary path differs from what's actually running under that PID
+	// (/bin/sleep). The command-match guard must refuse to kill it.
+	require.NoError(t, os.WriteFile(pidFile, fmt.Appendf(nil, "%d /opt/Felix.app/Contents/Resources/bin/ollama\n", cmd.Process.Pid), 0o644))
+
+	s := New(Options{BinPath: "/opt/Felix.app/Contents/Resources/bin/ollama", ModelsDir: dir, PIDFile: pidFile})
+	s.reapStaleChild()
+
+	// Process should still be alive — sanity check refused the kill.
+	time.Sleep(200 * time.Millisecond)
+	assert.NoError(t, cmd.Process.Signal(syscall.Signal(0)), "unrelated process must not be killed")
+}
+
+func TestStartWritesPIDFileAndStopRemoves(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeOllama(t, dir)
+	pidFile := filepath.Join(dir, "ollama.pid")
+	s := New(Options{BinPath: bin, ModelsDir: dir, PIDFile: pidFile})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	// PID file exists and contains a parseable PID + binPath.
+	data, err := os.ReadFile(pidFile)
+	require.NoError(t, err)
+	parts := strings.Fields(strings.TrimSpace(string(data)))
+	require.Len(t, parts, 2)
+	assert.Equal(t, bin, parts[1])
+
+	require.NoError(t, s.Stop())
+	_, err = os.Stat(pidFile)
+	assert.True(t, os.IsNotExist(err), "pid file should be removed after Stop")
 }
 
 func TestSupervisorCrashLeavesUnhealthy(t *testing.T) {
