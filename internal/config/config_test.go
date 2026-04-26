@@ -220,16 +220,19 @@ func TestResolveMCPServers_HappyPath(t *testing.T) {
 	cfg := &Config{
 		MCPServers: []MCPServerConfig{
 			{
-				ID:      "ltm",
-				URL:     "https://example.com/mcp",
-				Enabled: true,
-				Auth: MCPAuthConfig{
-					Kind:            "oauth2_client_credentials",
-					TokenURL:        "https://example.com/oauth/token",
-					ClientID:        "client-x",
-					ClientSecretEnv: "LTM_SECRET_FOR_TEST",
-					Scope:           "ltm/api",
+				ID:        "ltm",
+				Transport: "http",
+				HTTP: &MCPHTTPBlock{
+					URL: "https://example.com/mcp",
+					Auth: MCPAuthConfig{
+						Kind:            "oauth2_client_credentials",
+						TokenURL:        "https://example.com/oauth/token",
+						ClientID:        "client-x",
+						ClientSecretEnv: "LTM_SECRET_FOR_TEST",
+						Scope:           "ltm/api",
+					},
 				},
+				Enabled:    true,
 				ToolPrefix: "ltm_",
 			},
 			{ID: "disabled-one", Enabled: false}, // skipped
@@ -240,43 +243,51 @@ func TestResolveMCPServers_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, "ltm", got[0].ID)
-	assert.Equal(t, "shhh", got[0].ClientSecret)
+	assert.Equal(t, "http", got[0].Transport)
+	require.NotNil(t, got[0].HTTP)
+	assert.Equal(t, "shhh", got[0].HTTP.Auth.ClientSecret)
 	assert.Equal(t, "ltm_", got[0].ToolPrefix)
 }
 
 func TestResolveMCPServers_LiteralSecretInConfig(t *testing.T) {
 	cfg := &Config{
 		MCPServers: []MCPServerConfig{{
-			ID: "ltm", URL: "https://x", Enabled: true,
-			Auth: MCPAuthConfig{
-				Kind: "oauth2_client_credentials", TokenURL: "https://t",
-				ClientID: "c", ClientSecret: "literal-secret",
+			ID: "ltm", Transport: "http", Enabled: true,
+			HTTP: &MCPHTTPBlock{
+				URL: "https://x",
+				Auth: MCPAuthConfig{
+					Kind: "oauth2_client_credentials", TokenURL: "https://t",
+					ClientID: "c", ClientSecret: "literal-secret",
+				},
 			},
 		}},
 	}
 	got, err := cfg.ResolveMCPServers()
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, "literal-secret", got[0].ClientSecret)
+	assert.Equal(t, "literal-secret", got[0].HTTP.Auth.ClientSecret)
 }
 
 func TestResolveMCPServers_LiteralBeatsEnv(t *testing.T) {
 	t.Setenv("SECRET_THAT_SHOULD_NOT_WIN", "from-env")
 	cfg := &Config{
 		MCPServers: []MCPServerConfig{{
-			ID: "ltm", URL: "https://x", Enabled: true,
-			Auth: MCPAuthConfig{
-				Kind: "oauth2_client_credentials", TokenURL: "https://t",
-				ClientID: "c",
-				ClientSecret:    "from-config",
-				ClientSecretEnv: "SECRET_THAT_SHOULD_NOT_WIN",
+			ID: "ltm", Transport: "http", Enabled: true,
+			HTTP: &MCPHTTPBlock{
+				URL: "https://x",
+				Auth: MCPAuthConfig{
+					Kind: "oauth2_client_credentials", TokenURL: "https://t",
+					ClientID: "c",
+					ClientSecret:    "from-config",
+					ClientSecretEnv: "SECRET_THAT_SHOULD_NOT_WIN",
+				},
 			},
 		}},
 	}
 	got, err := cfg.ResolveMCPServers()
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, "from-config", got[0].ClientSecret)
+	assert.Equal(t, "from-config", got[0].HTTP.Auth.ClientSecret)
 }
 
 func TestResolveMCPServers_MissingSecretSkipsServer(t *testing.T) {
@@ -285,17 +296,23 @@ func TestResolveMCPServers_MissingSecretSkipsServer(t *testing.T) {
 	cfg := &Config{
 		MCPServers: []MCPServerConfig{
 			{
-				ID: "ltm-bad", URL: "https://x", Enabled: true,
-				Auth: MCPAuthConfig{
-					Kind: "oauth2_client_credentials", TokenURL: "https://t",
-					ClientID: "c", ClientSecretEnv: "DEFINITELY_NOT_SET_FELIX_TEST",
+				ID: "ltm-bad", Transport: "http", Enabled: true,
+				HTTP: &MCPHTTPBlock{
+					URL: "https://x",
+					Auth: MCPAuthConfig{
+						Kind: "oauth2_client_credentials", TokenURL: "https://t",
+						ClientID: "c", ClientSecretEnv: "DEFINITELY_NOT_SET_FELIX_TEST",
+					},
 				},
 			},
 			{
-				ID: "ltm-good", URL: "https://y", Enabled: true,
-				Auth: MCPAuthConfig{
-					Kind: "oauth2_client_credentials", TokenURL: "https://t",
-					ClientID: "c", ClientSecret: "ok",
+				ID: "ltm-good", Transport: "http", Enabled: true,
+				HTTP: &MCPHTTPBlock{
+					URL: "https://y",
+					Auth: MCPAuthConfig{
+						Kind: "oauth2_client_credentials", TokenURL: "https://t",
+						ClientID: "c", ClientSecret: "ok",
+					},
 				},
 			},
 		},
@@ -309,13 +326,217 @@ func TestResolveMCPServers_MissingSecretSkipsServer(t *testing.T) {
 func TestResolveMCPServers_UnsupportedAuthKind(t *testing.T) {
 	cfg := &Config{
 		MCPServers: []MCPServerConfig{{
-			ID: "ltm", URL: "https://x", Enabled: true,
-			Auth: MCPAuthConfig{Kind: "bearer_static"},
+			ID: "ltm", Transport: "http", Enabled: true,
+			HTTP: &MCPHTTPBlock{
+				URL:  "https://x",
+				Auth: MCPAuthConfig{Kind: "weird-scheme"},
+			},
 		}},
 	}
 	_, err := cfg.ResolveMCPServers()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported auth.kind")
+}
+
+// --- New coverage: bearer, stdio, legacy flat HTTP, default transport. ---
+
+func TestResolveMCPServers_BearerLiteral(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID: "anthropic", Transport: "http", Enabled: true,
+			HTTP: &MCPHTTPBlock{
+				URL:  "https://mcp.anthropic.com/v1/x",
+				Auth: MCPAuthConfig{Kind: "bearer", Token: "sk-ant-literal"},
+			},
+		}},
+	}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "bearer", got[0].HTTP.Auth.Kind)
+	assert.Equal(t, "sk-ant-literal", got[0].HTTP.Auth.BearerToken)
+}
+
+func TestResolveMCPServers_BearerEnv(t *testing.T) {
+	t.Setenv("BEARER_FOR_TEST", "from-env-tok")
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID: "x", Transport: "http", Enabled: true,
+			HTTP: &MCPHTTPBlock{
+				URL:  "https://x",
+				Auth: MCPAuthConfig{Kind: "bearer", TokenEnv: "BEARER_FOR_TEST"},
+			},
+		}},
+	}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "from-env-tok", got[0].HTTP.Auth.BearerToken)
+}
+
+func TestResolveMCPServers_BearerMissingTokenSkips(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{
+			{
+				ID: "no-token", Transport: "http", Enabled: true,
+				HTTP: &MCPHTTPBlock{
+					URL:  "https://x",
+					Auth: MCPAuthConfig{Kind: "bearer", TokenEnv: "DEFINITELY_NOT_SET_BEARER_TEST"},
+				},
+			},
+			{
+				ID: "ok", Transport: "http", Enabled: true,
+				HTTP: &MCPHTTPBlock{
+					URL:  "https://y",
+					Auth: MCPAuthConfig{Kind: "bearer", Token: "tok"},
+				},
+			},
+		},
+	}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "ok", got[0].ID)
+}
+
+func TestResolveMCPServers_NoneAuth(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID: "local-mcp", Transport: "http", Enabled: true,
+			HTTP: &MCPHTTPBlock{
+				URL:  "http://127.0.0.1:9999/mcp",
+				Auth: MCPAuthConfig{Kind: "none"},
+			},
+		}},
+	}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "none", got[0].HTTP.Auth.Kind)
+}
+
+func TestResolveMCPServers_Stdio(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID: "github", Transport: "stdio", Enabled: true,
+			Stdio: &MCPStdioBlock{
+				Command: "npx",
+				Args:    []string{"-y", "@modelcontextprotocol/server-github"},
+				Env:     map[string]string{"GITHUB_TOKEN": "ghp_xxx"},
+			},
+			ToolPrefix: "gh_",
+		}},
+	}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "stdio", got[0].Transport)
+	require.NotNil(t, got[0].Stdio)
+	assert.Equal(t, "npx", got[0].Stdio.Command)
+	assert.Equal(t, []string{"-y", "@modelcontextprotocol/server-github"}, got[0].Stdio.Args)
+	assert.Equal(t, "ghp_xxx", got[0].Stdio.Env["GITHUB_TOKEN"])
+	assert.Equal(t, "gh_", got[0].ToolPrefix)
+}
+
+func TestResolveMCPServers_StdioMissingCommand(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID: "broken", Transport: "stdio", Enabled: true,
+			Stdio: &MCPStdioBlock{Args: []string{"x"}},
+		}},
+	}
+	_, err := cfg.ResolveMCPServers()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stdio.command")
+}
+
+func TestResolveMCPServers_LegacyFlatHTTP(t *testing.T) {
+	// An entry without `transport` and with top-level URL/Auth must still
+	// resolve — backward-compat for users on disk before this change.
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID:      "ltm-legacy",
+			URL:     "https://legacy.example.com/mcp",
+			Enabled: true,
+			Auth: MCPAuthConfig{
+				Kind: "oauth2_client_credentials", TokenURL: "https://t",
+				ClientID: "c", ClientSecret: "legacy-sec",
+				Scope: "x",
+			},
+		}},
+	}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "http", got[0].Transport)
+	require.NotNil(t, got[0].HTTP)
+	assert.Equal(t, "https://legacy.example.com/mcp", got[0].HTTP.URL)
+	assert.Equal(t, "legacy-sec", got[0].HTTP.Auth.ClientSecret)
+}
+
+func TestResolveMCPServers_NestedWinsOverFlat(t *testing.T) {
+	// Both nested and flat populated → nested wins.
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID:        "x",
+			Transport: "http",
+			Enabled:   true,
+			URL:       "https://flat.example.com",
+			Auth: MCPAuthConfig{
+				Kind: "oauth2_client_credentials", TokenURL: "https://t",
+				ClientID: "c", ClientSecret: "flat-sec",
+			},
+			HTTP: &MCPHTTPBlock{
+				URL: "https://nested.example.com",
+				Auth: MCPAuthConfig{
+					Kind: "oauth2_client_credentials", TokenURL: "https://t",
+					ClientID: "c", ClientSecret: "nested-sec",
+				},
+			},
+		}},
+	}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "https://nested.example.com", got[0].HTTP.URL)
+	assert.Equal(t, "nested-sec", got[0].HTTP.Auth.ClientSecret)
+}
+
+func TestResolveMCPServers_UnknownTransport(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{
+			ID: "x", Transport: "carrier-pigeon", Enabled: true,
+		}},
+	}
+	_, err := cfg.ResolveMCPServers()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported transport")
+}
+
+func TestResolveMCPServers_RoundTripJSON_Stdio(t *testing.T) {
+	// Round-trip: serialise a stdio entry to JSON and back, confirm it
+	// resolves identically. Catches missing JSON tags / casing drift.
+	original := MCPServerConfig{
+		ID: "rt", Transport: "stdio", Enabled: true,
+		Stdio: &MCPStdioBlock{
+			Command: "echo",
+			Args:    []string{"hi"},
+			Env:     map[string]string{"K": "V"},
+		},
+	}
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var parsed MCPServerConfig
+	require.NoError(t, json.Unmarshal(data, &parsed))
+
+	cfg := &Config{MCPServers: []MCPServerConfig{parsed}}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "echo", got[0].Stdio.Command)
+	assert.Equal(t, []string{"hi"}, got[0].Stdio.Args)
+	assert.Equal(t, "V", got[0].Stdio.Env["K"])
 }
 
 func TestApplyMCPToolNamesToAllowlists(t *testing.T) {

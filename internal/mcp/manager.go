@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 )
 
 // ServerEntry is a connected MCP server known to the Manager. Exposed so
@@ -23,21 +24,17 @@ type Manager struct {
 }
 
 // NewManager opens a session against each ManagerServerConfig in cfgs.
-// Returns an error only on construction failures the caller can do nothing
-// about (currently: none — every per-server failure is non-fatal).
+// Dispatches on cfg.Transport: "http" uses ConnectHTTP with an auth-aware
+// *http.Client, "stdio" uses ConnectStdio with a spawned subprocess. An
+// unknown transport (or a per-server connect failure) is logged and the
+// entry skipped — Manager construction never fails.
 func NewManager(ctx context.Context, cfgs []ManagerServerConfig) (*Manager, error) {
 	m := &Manager{}
 	for _, cfg := range cfgs {
-		httpClient := NewClientCredentialsHTTPClient(ClientCredentialsConfig{
-			TokenURL:     cfg.TokenURL,
-			ClientID:     cfg.ClientID,
-			ClientSecret: cfg.ClientSecret,
-			Scope:        cfg.Scope,
-		})
-		client, err := Connect(ctx, cfg.URL, httpClient)
+		client, err := connectOne(ctx, cfg)
 		if err != nil {
 			slog.Warn("mcp: failed to connect to server, skipping",
-				"id", cfg.ID, "url", cfg.URL, "error", err)
+				"id", cfg.ID, "transport", cfg.Transport, "error", err)
 			continue
 		}
 		m.servers = append(m.servers, &ServerEntry{
@@ -45,9 +42,48 @@ func NewManager(ctx context.Context, cfgs []ManagerServerConfig) (*Manager, erro
 			Client:     client,
 			ToolPrefix: cfg.ToolPrefix,
 		})
-		slog.Info("mcp: connected to server", "id", cfg.ID, "url", cfg.URL)
+		slog.Info("mcp: connected to server", "id", cfg.ID, "transport", cfg.Transport)
 	}
 	return m, nil
+}
+
+func connectOne(ctx context.Context, cfg ManagerServerConfig) (*Client, error) {
+	switch cfg.Transport {
+	case "http", "":
+		if cfg.HTTP == nil {
+			return nil, fmt.Errorf("http transport requires HTTP block")
+		}
+		httpClient, err := buildHTTPClient(cfg.HTTP.Auth)
+		if err != nil {
+			return nil, fmt.Errorf("build http client: %w", err)
+		}
+		return ConnectHTTP(ctx, cfg.HTTP.URL, httpClient)
+	case "stdio":
+		if cfg.Stdio == nil {
+			return nil, fmt.Errorf("stdio transport requires Stdio block")
+		}
+		return ConnectStdio(ctx, cfg.ID, cfg.Stdio.Command, cfg.Stdio.Args, cfg.Stdio.Env)
+	default:
+		return nil, fmt.Errorf("unknown transport %q", cfg.Transport)
+	}
+}
+
+func buildHTTPClient(auth HTTPAuthConfig) (*http.Client, error) {
+	switch auth.Kind {
+	case "oauth2_client_credentials":
+		return NewClientCredentialsHTTPClient(ClientCredentialsConfig{
+			TokenURL:     auth.TokenURL,
+			ClientID:     auth.ClientID,
+			ClientSecret: auth.ClientSecret,
+			Scope:        auth.Scope,
+		}), nil
+	case "bearer":
+		return NewBearerHTTPClient(auth.BearerToken), nil
+	case "none", "":
+		return http.DefaultClient, nil
+	default:
+		return nil, fmt.Errorf("unsupported http auth kind %q", auth.Kind)
+	}
 }
 
 // Servers returns the connected server entries.

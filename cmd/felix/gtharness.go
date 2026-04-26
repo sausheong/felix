@@ -58,7 +58,7 @@ func runGtHarness(ctx context.Context, out io.Writer, envFile, callTool, callArg
 	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	client, err := mcp.Connect(connectCtx, env["MCP_SERVER_URL"], httpClient)
+	client, err := mcp.ConnectHTTP(connectCtx, env["MCP_SERVER_URL"], httpClient)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}

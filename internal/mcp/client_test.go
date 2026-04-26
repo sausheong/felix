@@ -71,7 +71,7 @@ func TestClient_ListTools(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c, err := Connect(ctx, srv.URL, http.DefaultClient)
+	c, err := ConnectHTTP(ctx, srv.URL, http.DefaultClient)
 	require.NoError(t, err)
 	defer c.Close()
 
@@ -87,7 +87,7 @@ func TestClient_ConnectFails_OnBadURL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := Connect(ctx, "http://127.0.0.1:1/definitely-closed", http.DefaultClient)
+	_, err := ConnectHTTP(ctx, "http://127.0.0.1:1/definitely-closed", http.DefaultClient)
 	require.Error(t, err)
 	assert.True(t,
 		strings.Contains(err.Error(), "connect") ||

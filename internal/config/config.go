@@ -48,32 +48,60 @@ type TelegramConfig struct {
 	DefaultChatID string `json:"default_chat_id"` // optional; used when the agent omits chat_id
 }
 
-// MCPServerConfig declares one remote MCP server that Felix should connect to
-// at startup. Tools exposed by the server are registered into the agent's
-// tool registry as if they were core tools.
+// MCPServerConfig declares one MCP server that Felix should connect to at
+// startup. Tools exposed by the server are registered into the agent's tool
+// registry as if they were core tools.
+//
+// Transport-discriminated. New entries should set `transport` ("http" |
+// "stdio") and populate the matching nested block (HTTP or Stdio). The
+// legacy flat HTTP layout (top-level URL+Auth) is still accepted for
+// backward compatibility — Felix never silently rewrites felix.json5.
 type MCPServerConfig struct {
-	ID         string        `json:"id"`                    // unique within the list
-	URL        string        `json:"url"`                   // MCP Streamable-HTTP endpoint
-	Auth       MCPAuthConfig `json:"auth"`
-	Enabled    bool          `json:"enabled"`
-	ToolPrefix string        `json:"tool_prefix,omitempty"` // optional name prefix
+	ID         string         `json:"id"`                    // unique within the list
+	Transport  string         `json:"transport,omitempty"`   // "http" (default) | "stdio"
+	HTTP       *MCPHTTPBlock  `json:"http,omitempty"`        // populated when Transport == "http"
+	Stdio      *MCPStdioBlock `json:"stdio,omitempty"`       // populated when Transport == "stdio"
+	URL        string         `json:"url,omitempty"`         // legacy flat HTTP — accepted on read, never written
+	Auth       MCPAuthConfig  `json:"auth,omitempty"`        // legacy flat HTTP — accepted on read, never written
+	Enabled    bool           `json:"enabled"`
+	ToolPrefix string         `json:"tool_prefix,omitempty"` // optional name prefix
 }
 
-// MCPAuthConfig describes how Felix authenticates to an MCP server. MVP
-// supports only OAuth2 client-credentials; additional kinds (e.g.
-// "bearer_static") will plug in via the Kind discriminator.
-//
-// The client secret can be supplied directly via ClientSecret (matches the
-// existing Felix convention for telegram.bot_token and providers.api_key)
-// or via ClientSecretEnv (env var name) for operators who prefer to keep
-// secrets out of config files. ClientSecret wins when both are set.
+// MCPHTTPBlock is the nested HTTP-transport configuration.
+type MCPHTTPBlock struct {
+	URL  string        `json:"url"`
+	Auth MCPAuthConfig `json:"auth"`
+}
+
+// MCPStdioBlock is the nested stdio-transport configuration. Env entries
+// are merged onto os.Environ() at spawn time so the child inherits PATH
+// (and any other parent env vars) unless explicitly overridden.
+type MCPStdioBlock struct {
+	Command string            `json:"command"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+}
+
+// MCPAuthConfig describes how Felix authenticates to an HTTP MCP server.
+// Supported Kinds:
+//   - "oauth2_client_credentials": client-credentials grant; uses TokenURL,
+//     ClientID, and one of ClientSecret/ClientSecretEnv (literal wins).
+//   - "bearer": static bearer token; uses one of Token/TokenEnv (literal
+//     wins).
+//   - "none": no Authorization header.
 type MCPAuthConfig struct {
-	Kind            string `json:"kind"`                          // "oauth2_client_credentials"
-	TokenURL        string `json:"token_url"`
-	ClientID        string `json:"client_id"`
-	ClientSecret    string `json:"client_secret,omitempty"`       // literal secret value
-	ClientSecretEnv string `json:"client_secret_env,omitempty"`   // env var NAME holding the secret (alternative)
-	Scope           string `json:"scope"`
+	Kind string `json:"kind"`
+
+	// oauth2_client_credentials
+	TokenURL        string `json:"token_url,omitempty"`
+	ClientID        string `json:"client_id,omitempty"`
+	ClientSecret    string `json:"client_secret,omitempty"`     // literal secret value
+	ClientSecretEnv string `json:"client_secret_env,omitempty"` // env var NAME holding the secret
+	Scope           string `json:"scope,omitempty"`
+
+	// bearer
+	Token    string `json:"token,omitempty"`     // literal bearer token
+	TokenEnv string `json:"token_env,omitempty"` // env var NAME holding the token
 }
 
 // ProviderConfig holds connection details for an LLM provider.
@@ -574,16 +602,21 @@ func removeTrailingCommas(s string) string {
 	return string(out)
 }
 
-// ResolveMCPServers returns one mcp.ManagerServerConfig per enabled MCPServers
-// entry, with the client secret resolved from either the literal config value
-// (Auth.ClientSecret) or the named environment variable (Auth.ClientSecretEnv),
-// preferring the literal when both are set.
+// ResolveMCPServers returns one mcp.ManagerServerConfig per enabled
+// MCPServers entry. The transport (http vs stdio) is selected from the
+// Transport discriminator (default "http"), and per-transport secrets are
+// resolved from either the literal config field or its named env-var
+// fallback (literal wins).
 //
-// Disabled servers are skipped silently. Returns an error if any enabled
-// server has missing required fields. Missing-secret on an otherwise-valid
-// enabled server is logged and skipped (not a hard fail) so a misconfigured
-// MCP entry doesn't take down the whole gateway — matches how Manager handles
-// unreachable servers.
+// Disabled servers are skipped silently. Returns an error for hard
+// validation failures (missing id, unsupported auth kind, missing required
+// nested fields). Missing-secret on an otherwise-valid enabled server is
+// logged and skipped — matches how Manager handles unreachable servers and
+// keeps a single misconfigured entry from taking down the gateway.
+//
+// For HTTP transport, the nested `http` block wins over the legacy flat
+// URL+Auth fields. The legacy flat layout is accepted on read but never
+// written back; UI saves emit the nested form.
 func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 	out := make([]mcp.ManagerServerConfig, 0, len(c.MCPServers))
 	for _, s := range c.MCPServers {
@@ -593,37 +626,120 @@ func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 		if s.ID == "" {
 			return nil, fmt.Errorf("mcp_servers: entry with empty id")
 		}
-		if s.URL == "" {
-			return nil, fmt.Errorf("mcp_servers[%s]: url is required", s.ID)
+
+		transport := s.Transport
+		if transport == "" {
+			transport = "http"
 		}
-		if s.Auth.Kind != "oauth2_client_credentials" {
-			return nil, fmt.Errorf("mcp_servers[%s]: unsupported auth.kind %q (only oauth2_client_credentials in MVP)", s.ID, s.Auth.Kind)
+
+		switch transport {
+		case "http":
+			httpBlock, skip, err := resolveHTTPBlock(s)
+			if err != nil {
+				return nil, err
+			}
+			if skip {
+				continue
+			}
+			out = append(out, mcp.ManagerServerConfig{
+				ID:         s.ID,
+				ToolPrefix: s.ToolPrefix,
+				Transport:  "http",
+				HTTP:       httpBlock,
+			})
+
+		case "stdio":
+			if s.Stdio == nil || s.Stdio.Command == "" {
+				return nil, fmt.Errorf("mcp_servers[%s]: stdio transport requires stdio.command", s.ID)
+			}
+			out = append(out, mcp.ManagerServerConfig{
+				ID:         s.ID,
+				ToolPrefix: s.ToolPrefix,
+				Transport:  "stdio",
+				Stdio: &mcp.StdioServerConfig{
+					Command: s.Stdio.Command,
+					Args:    s.Stdio.Args,
+					Env:     s.Stdio.Env,
+				},
+			})
+
+		default:
+			return nil, fmt.Errorf("mcp_servers[%s]: unsupported transport %q", s.ID, transport)
 		}
-		if s.Auth.TokenURL == "" || s.Auth.ClientID == "" {
-			return nil, fmt.Errorf("mcp_servers[%s]: token_url and client_id are required", s.ID)
+	}
+	return out, nil
+}
+
+// resolveHTTPBlock picks between the nested HTTP block and the legacy flat
+// URL+Auth layout, validates required fields, and resolves auth secrets.
+// Returns (block, skip, err): skip=true means the entry should be silently
+// dropped (e.g. missing-secret on a bearer/oauth2 server).
+func resolveHTTPBlock(s MCPServerConfig) (*mcp.HTTPServerConfig, bool, error) {
+	url := ""
+	auth := MCPAuthConfig{}
+	switch {
+	case s.HTTP != nil:
+		url = s.HTTP.URL
+		auth = s.HTTP.Auth
+	case s.URL != "" || s.Auth.Kind != "":
+		// Legacy flat layout. Logged at debug only — the user hasn't done
+		// anything wrong; this is a backward-compat path.
+		slog.Debug("mcp_servers: using legacy flat HTTP layout", "id", s.ID)
+		url = s.URL
+		auth = s.Auth
+	default:
+		return nil, false, fmt.Errorf("mcp_servers[%s]: http transport requires either http block or legacy url field", s.ID)
+	}
+	if url == "" {
+		return nil, false, fmt.Errorf("mcp_servers[%s]: http.url is required", s.ID)
+	}
+
+	resolved := mcp.HTTPAuthConfig{Kind: auth.Kind}
+	switch auth.Kind {
+	case "oauth2_client_credentials":
+		if auth.TokenURL == "" || auth.ClientID == "" {
+			return nil, false, fmt.Errorf("mcp_servers[%s]: oauth2_client_credentials requires token_url and client_id", s.ID)
 		}
-		secret := s.Auth.ClientSecret
-		if secret == "" && s.Auth.ClientSecretEnv != "" {
-			secret = os.Getenv(s.Auth.ClientSecretEnv)
+		secret := auth.ClientSecret
+		if secret == "" && auth.ClientSecretEnv != "" {
+			secret = os.Getenv(auth.ClientSecretEnv)
 		}
 		if secret == "" {
 			slog.Warn("mcp_servers: skipping server with no resolvable client secret",
 				"id", s.ID,
 				"hint", "set auth.client_secret in config, or auth.client_secret_env to a populated env var",
 			)
-			continue
+			return nil, true, nil
 		}
-		out = append(out, mcp.ManagerServerConfig{
-			ID:           s.ID,
-			URL:          s.URL,
-			TokenURL:     s.Auth.TokenURL,
-			ClientID:     s.Auth.ClientID,
-			ClientSecret: secret,
-			Scope:        s.Auth.Scope,
-			ToolPrefix:   s.ToolPrefix,
-		})
+		resolved.TokenURL = auth.TokenURL
+		resolved.ClientID = auth.ClientID
+		resolved.ClientSecret = secret
+		resolved.Scope = auth.Scope
+
+	case "bearer":
+		token := auth.Token
+		if token == "" && auth.TokenEnv != "" {
+			token = os.Getenv(auth.TokenEnv)
+		}
+		if token == "" {
+			slog.Warn("mcp_servers: skipping bearer server with no resolvable token",
+				"id", s.ID,
+				"hint", "set auth.token in config, or auth.token_env to a populated env var",
+			)
+			return nil, true, nil
+		}
+		resolved.BearerToken = token
+
+	case "none", "":
+		// no auth header; nothing to resolve. Normalise empty Kind to "none"
+		// so Manager dispatch doesn't have to handle "" specially.
+		resolved.Kind = "none"
+
+	default:
+		return nil, false, fmt.Errorf("mcp_servers[%s]: unsupported auth.kind %q", s.ID, auth.Kind)
 	}
-	return out, nil
+
+	return &mcp.HTTPServerConfig{URL: url, Auth: resolved}, false, nil
 }
 
 // ApplyMCPToolNamesToAllowlists augments each configured agent's Tools.Allow

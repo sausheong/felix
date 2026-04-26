@@ -57,7 +57,7 @@ func TestAdapter_Execute(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c, err := Connect(ctx, srv.URL, http.DefaultClient)
+	c, err := ConnectHTTP(ctx, srv.URL, http.DefaultClient)
 	require.NoError(t, err)
 	defer c.Close()
 

@@ -73,8 +73,20 @@ func TestManager_OpensAllEnabledServers(t *testing.T) {
 	defer cancel()
 
 	mgr, err := NewManager(ctx, []ManagerServerConfig{
-		{ID: "a", URL: srvA.URL, TokenURL: tok.URL, ClientID: "cid", ClientSecret: "sec", ToolPrefix: "a_"},
-		{ID: "b", URL: srvB.URL, TokenURL: tok.URL, ClientID: "cid", ClientSecret: "sec"},
+		{ID: "a", Transport: "http", ToolPrefix: "a_", HTTP: &HTTPServerConfig{
+			URL: srvA.URL,
+			Auth: HTTPAuthConfig{
+				Kind: "oauth2_client_credentials", TokenURL: tok.URL,
+				ClientID: "cid", ClientSecret: "sec",
+			},
+		}},
+		{ID: "b", Transport: "http", HTTP: &HTTPServerConfig{
+			URL: srvB.URL,
+			Auth: HTTPAuthConfig{
+				Kind: "oauth2_client_credentials", TokenURL: tok.URL,
+				ClientID: "cid", ClientSecret: "sec",
+			},
+		}},
 	})
 	require.NoError(t, err)
 	defer mgr.Close()
@@ -98,8 +110,20 @@ func TestManager_SkipsUnreachableServer(t *testing.T) {
 	defer cancel()
 
 	mgr, err := NewManager(ctx, []ManagerServerConfig{
-		{ID: "ok", URL: srvOK.URL, TokenURL: tok.URL, ClientID: "c", ClientSecret: "s"},
-		{ID: "dead", URL: "http://127.0.0.1:1/closed", TokenURL: tok.URL, ClientID: "c", ClientSecret: "s"},
+		{ID: "ok", Transport: "http", HTTP: &HTTPServerConfig{
+			URL: srvOK.URL,
+			Auth: HTTPAuthConfig{
+				Kind: "oauth2_client_credentials", TokenURL: tok.URL,
+				ClientID: "c", ClientSecret: "s",
+			},
+		}},
+		{ID: "dead", Transport: "http", HTTP: &HTTPServerConfig{
+			URL: "http://127.0.0.1:1/closed",
+			Auth: HTTPAuthConfig{
+				Kind: "oauth2_client_credentials", TokenURL: tok.URL,
+				ClientID: "c", ClientSecret: "s",
+			},
+		}},
 	})
 	require.NoError(t, err) // no hard failure; dead server is logged and skipped
 	defer mgr.Close()

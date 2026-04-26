@@ -22,7 +22,7 @@ func TestRegisterTools_AddsPrefixedAdapters(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c, err := Connect(ctx, srv.URL, http.DefaultClient)
+	c, err := ConnectHTTP(ctx, srv.URL, http.DefaultClient)
 	require.NoError(t, err)
 	mgr := &Manager{servers: []*ServerEntry{{ID: "ltm", Client: c, ToolPrefix: "ltm_"}}}
 	defer mgr.Close()
@@ -43,7 +43,7 @@ func TestRegisterTools_NoPrefix_NoCollision(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c, err := Connect(ctx, srv.URL, http.DefaultClient)
+	c, err := ConnectHTTP(ctx, srv.URL, http.DefaultClient)
 	require.NoError(t, err)
 	mgr := &Manager{servers: []*ServerEntry{{ID: "x", Client: c, ToolPrefix: ""}}}
 	defer mgr.Close()
@@ -64,7 +64,7 @@ func TestRegisterTools_CollisionFails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c, err := Connect(ctx, srv.URL, http.DefaultClient)
+	c, err := ConnectHTTP(ctx, srv.URL, http.DefaultClient)
 	require.NoError(t, err)
 	mgr := &Manager{servers: []*ServerEntry{{ID: "x", Client: c, ToolPrefix: ""}}}
 	defer mgr.Close()

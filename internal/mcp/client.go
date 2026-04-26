@@ -30,10 +30,10 @@ type Client struct {
 	session *mcpsdk.ClientSession
 }
 
-// Connect opens an MCP session against serverURL using the supplied HTTP
-// client (which is expected to inject auth). The returned *Client must be
-// Close()d when done.
-func Connect(ctx context.Context, serverURL string, httpClient *http.Client) (*Client, error) {
+// ConnectHTTP opens an MCP session against serverURL over the Streamable
+// HTTP transport, using the supplied HTTP client (which is expected to
+// inject auth). The returned *Client must be Close()d when done.
+func ConnectHTTP(ctx context.Context, serverURL string, httpClient *http.Client) (*Client, error) {
 	transport := &mcpsdk.StreamableClientTransport{
 		Endpoint:   serverURL,
 		HTTPClient: httpClient,

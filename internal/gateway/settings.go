@@ -1140,17 +1140,18 @@ html.dark .error-state { background: #450a0a; }
 
 		var help = document.createElement('p');
 		help.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; margin:0 0 0.5rem 0;';
-		help.innerHTML = 'Remote Model Context Protocol servers Felix connects to at startup. ' +
+		help.innerHTML = 'Model Context Protocol servers Felix connects to at startup. ' +
 			'Each server\'s tools become available to agents alongside core tools (with the optional <code>tool_prefix</code> applied). ' +
-			'Currently supports OAuth2 client-credentials auth (e.g. AWS Bedrock AgentCore).';
+			'Two transports: <strong>HTTP</strong> (Streamable HTTP, e.g. AWS Bedrock AgentCore) and <strong>stdio</strong> ' +
+			'(spawn a local subprocess, e.g. <code>npx @modelcontextprotocol/server-github</code>).';
 		sec.appendChild(help);
 
 		var caveat = document.createElement('p');
 		caveat.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 0; padding:0.5rem 0.75rem; background:var(--color-surface-muted, rgba(0,0,0,0.04)); border-radius:var(--radius);';
 		caveat.innerHTML =
-			'<strong>Note:</strong> the client secret is stored in <code>~/.felix/felix.json5</code> alongside other secrets ' +
-			'(<code>telegram.bot_token</code>, <code>providers.*.api_key</code>). MCP config changes require a process ' +
-			'restart — hot reload of MCP servers is not yet supported.';
+			'<strong>Note:</strong> secrets (HTTP client secret, bearer token) are stored in <code>~/.felix/felix.json5</code> ' +
+			'alongside other secrets (<code>telegram.bot_token</code>, <code>providers.*.api_key</code>). MCP config changes ' +
+			'require a process restart — hot reload of MCP servers is not yet supported.';
 		sec.appendChild(caveat);
 
 		var servers = cfg.mcp_servers || [];
@@ -1158,10 +1159,31 @@ html.dark .error-state { background: #450a0a; }
 		list.className = 'dynamic-list';
 		sec.appendChild(list);
 
+		// Migrate any legacy flat HTTP entries into the nested http block on
+		// first render. Invisible to the user; subsequent saves emit only the
+		// nested form. This is the user-initiated migration path — opening
+		// the Settings UI is itself the user action.
+		for (var mi = 0; mi < servers.length; mi++) {
+			var ms = servers[mi];
+			if (!ms.transport && (ms.url || (ms.auth && ms.auth.kind))) {
+				ms.transport = 'http';
+				ms.http = {url: ms.url || '', auth: ms.auth || {}};
+				delete ms.url;
+				delete ms.auth;
+			}
+		}
+
 		for (var i = 0; i < servers.length; i++) {
 			(function(idx) {
 				var s = servers[idx];
-				if (!s.auth) s.auth = {kind: 'oauth2_client_credentials'};
+				if (!s.transport) s.transport = 'http';
+				if (s.transport === 'http') {
+					if (!s.http) s.http = {url: '', auth: {kind: 'oauth2_client_credentials'}};
+					if (!s.http.auth) s.http.auth = {kind: 'oauth2_client_credentials'};
+				} else if (s.transport === 'stdio') {
+					if (!s.stdio) s.stdio = {command: '', args: [], env: {}};
+				}
+
 				var item = document.createElement('div');
 				item.className = 'dynamic-item';
 
@@ -1175,36 +1197,30 @@ html.dark .error-state { background: #450a0a; }
 				makeField(row1, 'ID', 'text', s.id || '', function(v) { cfg.mcp_servers[idx].id = v; });
 				makeField(row1, 'Tool Prefix', 'text', s.tool_prefix || '', function(v) { cfg.mcp_servers[idx].tool_prefix = v; });
 
-				makeField(item, 'URL', 'text', s.url || '', function(v) { cfg.mcp_servers[idx].url = v; });
+				makeField(item, 'Transport', 'select', {
+					value: s.transport,
+					options: [
+						{value: 'http', label: 'HTTP (Streamable)'},
+						{value: 'stdio', label: 'stdio (subprocess)'}
+					]
+				}, function(v) {
+					cfg.mcp_servers[idx].transport = v;
+					if (v === 'stdio' && !cfg.mcp_servers[idx].stdio) {
+						cfg.mcp_servers[idx].stdio = {command: '', args: [], env: {}};
+					}
+					if (v === 'http' && !cfg.mcp_servers[idx].http) {
+						cfg.mcp_servers[idx].http = {url: '', auth: {kind: 'oauth2_client_credentials'}};
+					}
+					render();
+				});
 
 				makeField(item, 'Enabled', 'toggle', !!s.enabled, function(v) { cfg.mcp_servers[idx].enabled = v; });
 
-				var authHdr = document.createElement('div');
-				authHdr.style.cssText = 'font-weight:600; font-size:0.85rem; margin:0.75rem 0 0.25rem 0;';
-				authHdr.textContent = 'OAuth2 Client Credentials';
-				item.appendChild(authHdr);
-
-				makeField(item, 'Token URL', 'text', s.auth.token_url || '', function(v) {
-					cfg.mcp_servers[idx].auth.token_url = v;
-				});
-
-				var row2 = makeRow(item);
-				makeField(row2, 'Client ID', 'text', s.auth.client_id || '', function(v) {
-					cfg.mcp_servers[idx].auth.client_id = v;
-				});
-				makeField(row2, 'Scope', 'text', s.auth.scope || '', function(v) {
-					cfg.mcp_servers[idx].auth.scope = v;
-				});
-
-				makeField(item, 'Client Secret', 'password', s.auth.client_secret || '', function(v) {
-					if (!v) return;
-					cfg.mcp_servers[idx].auth.client_secret = v;
-				});
-
-				var hint = document.createElement('p');
-				hint.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
-				hint.innerHTML = 'Stored in config alongside other secrets (e.g. <code>telegram.bot_token</code>). Power users can leave this blank and set <code>auth.client_secret_env</code> in the JSON5 file instead to source from an environment variable.';
-				item.appendChild(hint);
+				if (s.transport === 'http') {
+					renderHTTPBlock(item, idx, s);
+				} else if (s.transport === 'stdio') {
+					renderStdioBlock(item, idx, s);
+				}
 
 				list.appendChild(item);
 			})(i);
@@ -1217,20 +1233,118 @@ html.dark .error-state { background: #450a0a; }
 			if (!cfg.mcp_servers) cfg.mcp_servers = [];
 			cfg.mcp_servers.push({
 				id: '',
-				url: '',
+				transport: 'http',
+				http: {
+					url: '',
+					auth: {
+						kind: 'oauth2_client_credentials',
+						token_url: '',
+						client_id: '',
+						client_secret: '',
+						scope: ''
+					}
+				},
 				enabled: true,
-				tool_prefix: '',
-				auth: {
-					kind: 'oauth2_client_credentials',
-					token_url: '',
-					client_id: '',
-					client_secret: '',
-					scope: ''
-				}
+				tool_prefix: ''
 			});
 			render();
 		};
 		sec.appendChild(addBtn);
+	}
+
+	function renderHTTPBlock(item, idx, s) {
+		makeField(item, 'URL', 'text', s.http.url || '', function(v) { cfg.mcp_servers[idx].http.url = v; });
+
+		var authHdr = document.createElement('div');
+		authHdr.style.cssText = 'font-weight:600; font-size:0.85rem; margin:0.75rem 0 0.25rem 0;';
+		authHdr.textContent = 'Authentication';
+		item.appendChild(authHdr);
+
+		makeField(item, 'Auth Kind', 'select', {
+			value: s.http.auth.kind || 'oauth2_client_credentials',
+			options: [
+				{value: 'oauth2_client_credentials', label: 'OAuth2 Client Credentials'},
+				{value: 'bearer', label: 'Bearer Token'},
+				{value: 'none', label: 'None'}
+			]
+		}, function(v) {
+			cfg.mcp_servers[idx].http.auth = {kind: v};
+			render();
+		});
+
+		var kind = s.http.auth.kind || 'oauth2_client_credentials';
+		if (kind === 'oauth2_client_credentials') {
+			makeField(item, 'Token URL', 'text', s.http.auth.token_url || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.token_url = v;
+			});
+			var row = makeRow(item);
+			makeField(row, 'Client ID', 'text', s.http.auth.client_id || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.client_id = v;
+			});
+			makeField(row, 'Scope', 'text', s.http.auth.scope || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.scope = v;
+			});
+			makeField(item, 'Client Secret', 'password', s.http.auth.client_secret || '', function(v) {
+				if (!v) return;
+				cfg.mcp_servers[idx].http.auth.client_secret = v;
+			});
+			var hint = document.createElement('p');
+			hint.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+			hint.innerHTML = 'Stored in <code>felix.json5</code>. To source from an env var instead, leave blank and set <code>auth.client_secret_env</code> in the JSON5 file.';
+			item.appendChild(hint);
+		} else if (kind === 'bearer') {
+			makeField(item, 'Bearer Token', 'password', s.http.auth.token || '', function(v) {
+				if (!v) return;
+				cfg.mcp_servers[idx].http.auth.token = v;
+			});
+			var hintB = document.createElement('p');
+			hintB.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+			hintB.innerHTML = 'Sent as <code>Authorization: Bearer &lt;token&gt;</code>. Stored in <code>felix.json5</code>; to source from an env var instead, leave blank and set <code>auth.token_env</code> in the JSON5 file.';
+			item.appendChild(hintB);
+		} else if (kind === 'none') {
+			var hintN = document.createElement('p');
+			hintN.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+			hintN.textContent = 'No Authorization header sent. Useful only for unauthenticated local HTTP MCP servers.';
+			item.appendChild(hintN);
+		}
+	}
+
+	function renderStdioBlock(item, idx, s) {
+		makeField(item, 'Command', 'text', s.stdio.command || '', function(v) {
+			cfg.mcp_servers[idx].stdio.command = v;
+		});
+
+		var argsTxt = (s.stdio.args || []).join('\n');
+		makeField(item, 'Arguments (one per line)', 'textarea', argsTxt, function(v) {
+			var lines = (v || '').split('\n').map(function(x) { return x.trim(); }).filter(function(x) { return x.length > 0; });
+			cfg.mcp_servers[idx].stdio.args = lines;
+		});
+
+		var envTxt = '';
+		if (s.stdio.env) {
+			var keys = Object.keys(s.stdio.env);
+			for (var k = 0; k < keys.length; k++) {
+				envTxt += keys[k] + '=' + s.stdio.env[keys[k]] + '\n';
+			}
+			envTxt = envTxt.replace(/\n$/, '');
+		}
+		makeField(item, 'Environment (KEY=VALUE per line)', 'textarea', envTxt, function(v) {
+			var env = {};
+			var lines = (v || '').split('\n');
+			for (var li = 0; li < lines.length; li++) {
+				var line = lines[li].trim();
+				if (!line || line.charAt(0) === '#') continue;
+				var eq = line.indexOf('=');
+				if (eq < 0) continue;
+				env[line.slice(0, eq).trim()] = line.slice(eq + 1);
+			}
+			cfg.mcp_servers[idx].stdio.env = env;
+		});
+
+		var hintS = document.createElement('p');
+		hintS.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+		hintS.innerHTML = 'The command is launched on Felix startup. Env vars are merged onto Felix\'s own environment (PATH inherited). Common examples: <code>npx -y @modelcontextprotocol/server-filesystem /tmp</code>, <code>uvx mcp-server-git</code>.';
+		item.appendChild(hintS);
 	}
 
 	function renderGateway() {

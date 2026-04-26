@@ -694,7 +694,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		tools.ShutdownBrowsers()
 		// Bound MCP close so a slow/unreachable upstream can't hang the whole
 		// shutdown chain (which would also leave the bundled Ollama supervisor
-		// running, leaking processes across runs).
+		// running, leaking processes across runs). 8s budget covers the SDK's
+		// 5s stdin-close → SIGTERM grace period for stdio child processes,
+		// plus ~3s headroom for the JSON-RPC shutdown handshake.
 		mcpDone := make(chan error, 1)
 		go func() { mcpDone <- mcpMgr.Close() }()
 		select {
@@ -702,7 +704,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			if err != nil {
 				slog.Warn("mcp: manager close returned error", "error", err)
 			}
-		case <-time.After(3 * time.Second):
+		case <-time.After(8 * time.Second):
 			slog.Warn("mcp: manager close timed out, continuing shutdown")
 		}
 		cronScheduler.Stop()
