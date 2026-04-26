@@ -1,6 +1,8 @@
 package compaction
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -8,6 +10,34 @@ import (
 
 	"github.com/sausheong/felix/internal/session"
 )
+
+// maxTranscriptToolResultLen caps each tool result inside the
+// summarizer transcript. The agent runtime's pruneToolResults already
+// caps results at 4000 chars before they hit the LLM at request time;
+// this cap is a separate, slightly looser cap (10000) for the
+// summarizer path because compaction quality benefits from seeing more
+// context per result, but 20K-char tool outputs (common with file
+// reads and web fetches) would otherwise dominate the prompt.
+const maxTranscriptToolResultLen = 10000
+
+// transcriptDelimiterSuffix returns 8 hex chars (4 random bytes) used
+// as a per-call suffix for TOOL_RESULT delimiters. This makes the
+// untrusted-content boundary escape-resistant: a tool output that
+// happens to contain a literal TOOL_RESULT marker can't collide with
+// the closing delimiter unless it knows the per-call suffix in
+// advance, which it cannot. Pattern from Anthropic's document-tag
+// best practice.
+//
+// Falls back to a fixed suffix if crypto/rand fails (vanishingly
+// unlikely on a healthy system; preserves correctness over security
+// in that pathological case so transcripts still form well).
+func transcriptDelimiterSuffix() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "fallback"
+	}
+	return hex.EncodeToString(b)
+}
 
 // summarizationPromptHeader instructs the summarizer model to emit a
 // structured 9-section summary wrapped in <analysis> + <summary> blocks.
@@ -112,6 +142,7 @@ REMINDER: Do NOT call any tools. Tool calls are rejected. Respond with the <anal
 // later Phase 1 task.)
 func BuildTranscript(entries []session.SessionEntry) string {
 	var sb strings.Builder
+	suffix := transcriptDelimiterSuffix()
 	for _, e := range entries {
 		switch e.Type {
 		case session.EntryTypeMessage:
@@ -138,7 +169,13 @@ func BuildTranscript(entries []session.SessionEntry) string {
 				content = tr.Error
 				label = "TOOL_RESULT[error]"
 			}
-			fmt.Fprintf(&sb, "%s (untrusted, begin):\n%s\n%s (end)\n", label, content, label)
+			if len(content) > maxTranscriptToolResultLen {
+				orig := len(content)
+				content = content[:maxTranscriptToolResultLen] +
+					fmt.Sprintf("\n[truncated, %d bytes elided]", orig-maxTranscriptToolResultLen)
+			}
+			fmt.Fprintf(&sb, "%s_%s (untrusted, begin):\n%s\n%s_%s (end)\n",
+				label, suffix, content, label, suffix)
 		case session.EntryTypeCompaction:
 			// A previous summary in the to-be-compacted range — fold it in.
 			var cd session.CompactionData

@@ -1,10 +1,12 @@
 package compaction
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/sausheong/felix/internal/session"
 )
@@ -20,9 +22,9 @@ func TestBuildTranscriptIncludesAllRoles(t *testing.T) {
 	assert.Contains(t, got, "USER: how do I read a file?")
 	assert.Contains(t, got, "ASSISTANT: use the read_file tool")
 	assert.Contains(t, got, "TOOL_CALL[read_file]: ")
-	assert.Contains(t, got, "TOOL_RESULT (untrusted, begin):")
+	assert.Regexp(t, `TOOL_RESULT_[a-f0-9]+ \(untrusted, begin\):`, got)
 	assert.Contains(t, got, "file contents here")
-	assert.Contains(t, got, "TOOL_RESULT (end)")
+	assert.Regexp(t, `TOOL_RESULT_[a-f0-9]+ \(end\)`, got)
 }
 
 func TestBuildTranscriptMarksErroredToolResult(t *testing.T) {
@@ -31,9 +33,9 @@ func TestBuildTranscriptMarksErroredToolResult(t *testing.T) {
 		session.ToolResultEntry("tc-1", "", "exit status 1", nil),
 	}
 	got := BuildTranscript(entries)
-	assert.Contains(t, got, "TOOL_RESULT[error] (untrusted, begin):")
+	assert.Regexp(t, `TOOL_RESULT\[error\]_[a-f0-9]+ \(untrusted, begin\):`, got)
 	assert.Contains(t, got, "exit status 1")
-	assert.Contains(t, got, "TOOL_RESULT[error] (end)")
+	assert.Regexp(t, `TOOL_RESULT\[error\]_[a-f0-9]+ \(end\)`, got)
 }
 
 func TestBuildPromptNoExtraInstructions(t *testing.T) {
@@ -159,4 +161,79 @@ func TestFormatCompactSummaryHandlesMultipleSummaryBlocks(t *testing.T) {
 	assert.NotContains(t, got, "<summary>", "no <summary> tags should remain")
 	assert.Contains(t, got, "first")
 	assert.Contains(t, got, "second")
+}
+
+func TestBuildTranscriptCapsLargeToolResults(t *testing.T) {
+	huge := strings.Repeat("a", 20000)
+	entries := []session.SessionEntry{
+		session.ToolResultEntry("tc1", huge, "", nil),
+	}
+	got := BuildTranscript(entries)
+	assert.Less(t, len(got), 12000,
+		"transcript must cap oversized tool results (got %d bytes)", len(got))
+	assert.Contains(t, got, "[truncated",
+		"truncation marker must be present so the model knows content was elided")
+}
+
+func TestBuildTranscriptLeavesSmallToolResultsIntact(t *testing.T) {
+	small := "small output line"
+	entries := []session.SessionEntry{
+		session.ToolResultEntry("tc1", small, "", nil),
+	}
+	got := BuildTranscript(entries)
+	assert.Contains(t, got, small,
+		"small tool results must be preserved verbatim")
+}
+
+func TestBuildTranscriptUsesRandomDelimiterSuffix(t *testing.T) {
+	// Two separate BuildTranscript calls must produce different
+	// delimiter suffixes. Without per-call randomization, a tool result
+	// could embed the literal closing delimiter and break out of the
+	// untrusted boundary.
+	entries := []session.SessionEntry{
+		session.ToolResultEntry("tc1", "hello", "", nil),
+	}
+	got1 := BuildTranscript(entries)
+	got2 := BuildTranscript(entries)
+
+	// Extract the suffix from each. The format is "TOOL_RESULT_<hex> (untrusted, begin):".
+	re := regexp.MustCompile(`TOOL_RESULT_([a-f0-9]+) \(untrusted, begin\)`)
+	m1 := re.FindStringSubmatch(got1)
+	m2 := re.FindStringSubmatch(got2)
+	require.Len(t, m1, 2, "first transcript must contain a TOOL_RESULT_<suffix> marker")
+	require.Len(t, m2, 2, "second transcript must contain a TOOL_RESULT_<suffix> marker")
+	assert.NotEqual(t, m1[1], m2[1],
+		"per-call suffix must differ across BuildTranscript invocations")
+	assert.GreaterOrEqual(t, len(m1[1]), 8,
+		"suffix must be at least 8 hex chars to make collisions effectively impossible")
+}
+
+func TestBuildTranscriptSuffixIsUniformWithinOneTranscript(t *testing.T) {
+	// All tool-result delimiters within one BuildTranscript call must
+	// share the same suffix so the prompt structure is uniform.
+	entries := []session.SessionEntry{
+		session.ToolResultEntry("tc1", "first", "", nil),
+		session.ToolResultEntry("tc2", "second", "", nil),
+		session.ToolResultEntry("tc3", "third", "an error", nil),
+	}
+	got := BuildTranscript(entries)
+	re := regexp.MustCompile(`TOOL_RESULT(?:\[error\])?_([a-f0-9]+) \((?:untrusted, begin|end)\)`)
+	matches := re.FindAllStringSubmatch(got, -1)
+	require.GreaterOrEqual(t, len(matches), 6, "expected 3 begin + 3 end markers, got %d", len(matches))
+	first := matches[0][1]
+	for i, m := range matches {
+		assert.Equal(t, first, m[1],
+			"marker %d suffix %q must equal first suffix %q (uniform within one transcript)", i, m[1], first)
+	}
+}
+
+func TestBuildTranscriptErrorMarkerStillUsesUntrustedWrapping(t *testing.T) {
+	// Errored tool results retain the [error] label AND the (untrusted) wrapping.
+	entries := []session.SessionEntry{
+		session.ToolResultEntry("tc1", "ignored", "boom: file not found", nil),
+	}
+	got := BuildTranscript(entries)
+	assert.Contains(t, got, "TOOL_RESULT[error]_", "error label must be preserved")
+	assert.Contains(t, got, "(untrusted, begin):", "error results must also use untrusted wrapping")
+	assert.Contains(t, got, "boom: file not found", "error text must be present")
 }
