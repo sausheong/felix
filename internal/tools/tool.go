@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"unicode"
@@ -218,11 +219,22 @@ func (r *Registry) Execute(ctx context.Context, name string, input json.RawMessa
 }
 
 // ToolDefs returns the tool definitions for the LLM API.
+// Output is sorted by tool name so the LLM-request prefix is stable across
+// turns — required for prompt-cache hits and for compaction-summary
+// reproducibility. Map iteration in Go is randomized; without sorting,
+// every turn would invalidate the cache and a single tool reordering
+// could change a generated summary's content.
 func (r *Registry) ToolDefs() []llm.ToolDef {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	defs := make([]llm.ToolDef, 0, len(r.tools))
-	for _, t := range r.tools {
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	defs := make([]llm.ToolDef, 0, len(names))
+	for _, name := range names {
+		t := r.tools[name]
 		defs = append(defs, llm.ToolDef{
 			Name:        t.Name(),
 			Description: t.Description(),
@@ -232,7 +244,8 @@ func (r *Registry) ToolDefs() []llm.ToolDef {
 	return defs
 }
 
-// Names returns the names of all registered tools.
+// Names returns the names of all registered tools, sorted alphabetically.
+// See ToolDefs() for why ordering matters.
 func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -240,6 +253,7 @@ func (r *Registry) Names() []string {
 	for name := range r.tools {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
