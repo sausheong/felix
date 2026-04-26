@@ -61,7 +61,7 @@ type Manager struct {
 	mu    sync.Mutex             // guards locks map
 	locks map[string]*sync.Mutex // session.ID → mutex
 
-	failMu   sync.Mutex
+	failMu   sync.Mutex     // guards failures map; separate from mu so the breaker check (called before lockFor) doesn't serialize on the per-session lock-map allocator
 	failures map[string]int // session.ID → consecutive-failure count
 }
 
@@ -83,12 +83,12 @@ func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reaso
 		return Result{Reason: reason, Skipped: "no_summarizer"}, nil
 	}
 
-	if m.failureCount(sess.ID) >= MaxConsecutiveFailures {
+	if fc := m.failureCount(sess.ID); fc >= MaxConsecutiveFailures {
 		slog.Info("compaction skipped",
 			"session_id", sess.ID,
 			"reason", string(reason),
 			"skipped", "circuit_breaker",
-			"consecutive_failures", m.failureCount(sess.ID))
+			"consecutive_failures", fc)
 		return Result{Reason: reason, Skipped: "circuit_breaker"}, nil
 	}
 
