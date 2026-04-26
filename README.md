@@ -15,11 +15,11 @@ Felix connects you (via CLI or web chat) to LLMs (Claude, GPT, Gemini, DeepSeek,
 - **Two interfaces** — local CLI (`felix chat`) and a web chat page served by the gateway
 - **Model-agnostic** — Claude, GPT, Gemini, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible API
 - **Multi-agent** — run multiple agents with different models, tools, and personas
-- **Inter-agent delegation** — agents can delegate subtasks to other agents via the `ask_agent` tool
 - **Extended reasoning** — `reasoning: off|low|medium|high` per-agent knob unlocks Claude thinking budgets, OpenAI o-series `reasoning_effort`, and Gemini 2.5 thinking config; unsupported models are detected and the request runs without reasoning rather than failing
 - **Cross-provider tool portability** — JSON Schema fields one provider rejects (Gemini drops `anyOf`/`oneOf`/`format`; OpenAI drops `$ref`/`definitions`) are stripped at the provider boundary with diagnostic logging, so a single tool definition works across providers
 - **MCP client** — connect to external [Model Context Protocol](https://modelcontextprotocol.io) servers over Streamable-HTTP or stdio; remote tools auto-register into agent registries with OAuth2 client-credentials or bearer auth
-- **Persistent memory** — BM25 search over Markdown files, recalled automatically each turn
+- **Persistent memory** — BM25 lexical search over Markdown files, recalled automatically each turn; optional vector search via `chromem-go` when an embedding provider is configured
+- **Cortex knowledge graph** — optional SQLite-backed knowledge graph (enabled by default) that ingests completed conversations and surfaces relevant facts on subsequent turns
 - **Skill system** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance. Ships with bundled starter skills (`ffmpeg`, `imagemagick`, `pandoc`, `pdftotext`, `cortex`) seeded on first run; the skill name+description index is always injected so the agent knows what's available even when no skill matches closely
 - **Heartbeat daemon** — proactive agent actions on a schedule via HEARTBEAT.md checklists
 - **Cron jobs** — recurring prompts on configurable intervals, with pause/resume/remove management
@@ -112,10 +112,13 @@ not interfere with any system Ollama you may have on `:11434`.
 | `felix chat` | Interactive CLI chat with the default agent |
 | `felix chat myagent` | Chat with a specific agent |
 | `felix chat -m openai/gpt-4o` | Chat with a model override |
+| `felix clear [agent]` | Clear the local CLI session history for an agent |
+| `felix sessions [agent]` | List all sessions for an agent |
+| `felix model list \| pull <name> \| rm <name> \| status` | Manage local Ollama models pulled by Felix |
 | `felix status` | Query the running gateway for agent status |
 | `felix doctor` | Run diagnostic checks |
 | `felix version` | Print version and commit info |
-| `felix gt-harness --env <file>` | Smoke-test connection to a remote MCP gateway (experimental) — reads OAuth client-credentials from a dotenv file and lists exposed tools |
+| `felix gt-harness --env-file <file>` | Smoke-test connection to a remote MCP gateway (experimental) — reads OAuth client-credentials from a dotenv file and lists exposed tools |
 
 ---
 
@@ -171,9 +174,6 @@ On both platforms, you can set API keys directly in the config file instead of u
 
 ## Architecture
 
-![Architecture](architecture.jpg)
-
-
 Single-process, hub-and-spoke design. All components run in one binary.
 
 ### Core Components
@@ -184,7 +184,8 @@ Single-process, hub-and-spoke design. All components run in one binary.
 - **LLM Client** — Abstracted behind `LLMProvider` interface with `ChatStream()`, `Models()`, and `NormalizeToolSchema()` methods. Providers: Anthropic (`anthropic-sdk-go`), OpenAI (`sashabaranov/go-openai`), Google Gemini (`google.golang.org/genai`), Qwen (DashScope via go-openai), Ollama and other OpenAI-compatible endpoints. Each provider declares the JSON Schema dialect it accepts so cross-provider tool portability is enforced at the boundary; reasoning/thinking knobs are mapped per-provider from the unified `ReasoningMode` enum.
 - **Session Manager** — Append-only JSONL files with DAG structure. One file per session. Supports compaction when history exceeds context window.
 - **Message Router** — Declarative bindings (JSON) map channel + account + peer to agent IDs (currently only the `cli` channel routes through here). Priority: peer.id > peer.kind > accountId > channel > default.
-- **Memory Manager** — BM25 text search over Markdown files in `~/.felix/memory/`.
+- **Memory Manager** — BM25 lexical search over Markdown files in `~/.felix/memory/`. When an embedding provider is configured (`memory.embedding_provider`), `chromem-go` builds an in-process vector index alongside BM25; lookups fall back to BM25 if the index fails to initialize.
+- **Cortex** — optional knowledge graph (SQLite via the `sausheong/cortex` library, enabled by default). Completed conversation threads are ingested asynchronously; on subsequent turns, sufficiently long user prompts trigger a recall step that injects relevant facts into the system prompt.
 - **Skill System** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance. Compatible with OpenClaw/Claude Code/Cursor skill format. Bundled starter skills are seeded into `~/.felix/skills/` on first run.
 - **MCP Manager** — Connects to external Model Context Protocol servers declared in `mcp_servers`. Supports Streamable-HTTP (with OAuth2 client-credentials or bearer auth) and stdio transports. Tools exposed by remote servers are wrapped as `tools.Tool` adapters and registered into agent registries; tool names are auto-added to agent allowlists.
 - **Heartbeat Daemon** — Background goroutine on configurable interval (default 30min), reads `HEARTBEAT.md`, sends to agent for proactive actions.
@@ -243,7 +244,7 @@ All configuration lives in `~/.felix/felix.json5` (JSON5 format for comments and
 
 ### LLM Providers
 
-Felix supports four provider kinds. Each provider is defined in the `providers` section of the config with a unique name, a `kind`, and connection details.
+Felix supports six provider kinds. Each provider is defined in the `providers` section of the config with a unique name, a `kind`, and connection details.
 
 | Kind | Description | Requires |
 |------|-------------|----------|
@@ -252,6 +253,7 @@ Felix supports four provider kinds. Each provider is defined in the `providers` 
 | `gemini` | Google's Gemini API | `api_key` |
 | `qwen` | Alibaba Cloud's Qwen (Tongyi Qianwen) API | `api_key` |
 | `openai-compatible` | Any OpenAI-compatible API (Ollama, LM Studio, DeepSeek, LiteLLM, etc.) | `base_url`, optionally `api_key` |
+| `local` | Bundled local LLM runtime (Ollama supervised by Felix) — wired up automatically by the onboarding wizard | none |
 
 **Standard providers (Anthropic, OpenAI):**
 
@@ -416,7 +418,7 @@ Tools discovered from an MCP server are auto-added to agent allowlists at startu
         "workspace": "~/.felix/workspace-default",
         "system_prompt": "You are a helpful coding assistant.",  // optional: overrides IDENTITY.md
         "tools": {
-          "allow": ["read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "cron", "ask_agent"]
+          "allow": ["read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "cron", "send_message"]
         }
       }
     ]
@@ -463,7 +465,7 @@ Built-in tools that agents can use:
 | `web_search` | Search the web |
 | `browser` | Headless Chrome automation (navigate, click, type, screenshot, evaluate JS). All actions accept an optional `url` to navigate before acting |
 | `cron` | Dynamically schedule, list, pause, resume, remove, and update recurring tasks |
-| `ask_agent` | Delegate a task to another agent and get back the result |
+| `send_message` | Send outbound messages over a configured channel (currently Telegram via Bot API) |
 
 Tool access is controlled per-agent via allow/deny policies, configurable from the Settings UI's Agents tab.
 
@@ -503,8 +505,11 @@ JSON-RPC 2.0 over WebSocket at `ws://127.0.0.1:18789/ws`.
 |--------|-------------|
 | `chat.send` | Send a message to an agent (streams response events) |
 | `chat.abort` | Cancel the active response for this connection |
-| `agent.status` | List all configured agents |
-| `session.list` | List sessions |
+| `chat.compact` | Force-compact the active session immediately |
+| `agent.status` | List all configured agents and their state |
+| `session.list` | List sessions for an agent |
+| `session.new` | Start a fresh session for an agent |
+| `session.switch` | Switch the active session for an agent |
 | `session.history` | Load conversation history for an agent |
 | `session.clear` | Clear an agent's session history |
 
@@ -577,10 +582,16 @@ make help                   # Show all targets
 | Anthropic client | `github.com/anthropics/anthropic-sdk-go` |
 | OpenAI client | `github.com/sashabaranov/go-openai` |
 | Gemini client | `google.golang.org/genai` |
-| Vector DB | `github.com/philippgille/chromem-go` |
+| MCP client SDK | `github.com/modelcontextprotocol/go-sdk` |
+| Knowledge graph | `github.com/sausheong/cortex` |
+| Vector index | `github.com/philippgille/chromem-go` |
+| HTML → Markdown | `github.com/JohannesKaufmann/html-to-markdown/v2` |
+| Markdown rendering (CLI) | `github.com/charmbracelet/glamour` |
 | File watching | `github.com/fsnotify/fsnotify` |
 | Browser automation | `github.com/chromedp/chromedp` |
+| OAuth2 (MCP auth) | `golang.org/x/oauth2` |
 | System tray | `fyne.io/systray` |
+| YAML (skill frontmatter) | `gopkg.in/yaml.v3` |
 | Testing | `github.com/stretchr/testify` |
 | Logging | `log/slog` (stdlib) |
 
@@ -596,17 +607,23 @@ Per-package test coverage:
 
 | Package | Coverage |
 |---------|----------|
-| `internal/memory` | 89.2% |
+| `internal/tokens` | 90.2% |
 | `internal/heartbeat` | 88.6% |
-| `internal/skill` | 86.6% |
-| `internal/cron` | 85.7% |
-| `internal/session` | 84.6% |
-| `internal/agent` | 82.1% |
-| `internal/router` | 77.8% |
-| `internal/config` | 73.9% |
-| `internal/gateway` | 56.8% |
-| `internal/tools` | 44.4% |
-| `internal/llm` | 14.5% |
+| `internal/skill` | 87.8% |
+| `internal/compaction` | 87.2% |
+| `internal/mcp` | 83.0% |
+| `internal/local` | 77.9% |
+| `internal/memory` | 73.1% |
+| `internal/config` | 72.3% |
+| `internal/llm/llmtest` | 68.4% |
+| `internal/router` | 63.6% |
+| `internal/agent` | 60.7% |
+| `internal/session` | 58.9% |
+| `internal/tools` | 47.8% |
+| `internal/llm` | 36.1% |
+| `internal/cron` | 34.4% |
+| `internal/cortex` | 27.2% |
+| `internal/gateway` | 16.3% |
 
 ---
 
@@ -617,23 +634,26 @@ Per-package test coverage:
 | Gateway (WebSocket control plane) | Yes | Yes |
 | CLI / Terminal channel | Yes | Yes |
 | Web chat UI | No | Yes |
-| Telegram / WhatsApp / other messaging channels | Yes (15+) | No |
+| Telegram / WhatsApp / other messaging channels | Yes (15+) | Outbound Telegram only (`send_message` tool); no inbound channel adapters |
 | Agent loop with tool calling | Yes (via Pi SDK) | Yes (native Go) |
 | Session persistence (JSONL DAG) | Yes | Yes |
 | Multi-agent routing | Yes | Yes |
 | Skill system (Markdown format) | Yes | Yes (format-compatible) |
 | Persistent memory | Yes | Yes |
+| Knowledge graph (Cortex) | No | Yes |
+| MCP client (external tool servers) | Yes | Yes |
 | Heartbeat daemon | Yes | Yes |
 | Cron scheduling | Yes | Yes |
 | Config hot-reload | Yes | Yes |
-| Inter-agent delegation | No | Yes |
 | Tool policies | Yes | Yes |
-| Docker sandboxing | Yes | Yes |
 | Browser automation (CDP) | Yes | Yes |
-| Control UI | Yes | Yes |
+| Web chat & Settings UI | Yes | Yes |
+| Bundled local LLM (no API key) | No | Yes (Ollama supervisor) |
 | Canvas / A2UI | Yes | No |
 | Voice (TTS/STT) | Yes | No |
-| Plugin system | Yes (TypeScript) | Planned (Go/Wasm) |
+| Sandboxing (Docker / namespaces) | Yes | Config field only — not yet implemented |
+| Inter-agent delegation | Yes | No |
+| Plugin system | Yes (TypeScript) | No |
 | **Single-binary deployment** | No (Node.js required) | **Yes** |
 | **Sub-50MB memory** | No (~150-400MB) | **Yes** |
 | **<100ms cold start** | No (2-5s) | **Yes** |
