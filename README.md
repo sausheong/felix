@@ -16,6 +16,8 @@ Felix connects you (via CLI or web chat) to LLMs (Claude, GPT, Gemini, DeepSeek,
 - **Model-agnostic** — Claude, GPT, Gemini, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible API
 - **Multi-agent** — run multiple agents with different models, tools, and personas
 - **Inter-agent delegation** — agents can delegate subtasks to other agents via the `ask_agent` tool
+- **Extended reasoning** — `reasoning: off|low|medium|high` per-agent knob unlocks Claude thinking budgets, OpenAI o-series `reasoning_effort`, and Gemini 2.5 thinking config; unsupported models are detected and the request runs without reasoning rather than failing
+- **Cross-provider tool portability** — JSON Schema fields one provider rejects (Gemini drops `anyOf`/`oneOf`/`format`; OpenAI drops `$ref`/`definitions`) are stripped at the provider boundary with diagnostic logging, so a single tool definition works across providers
 - **MCP client** — connect to external [Model Context Protocol](https://modelcontextprotocol.io) servers over Streamable-HTTP or stdio; remote tools auto-register into agent registries with OAuth2 client-credentials or bearer auth
 - **Persistent memory** — BM25 search over Markdown files, recalled automatically each turn
 - **Skill system** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance. Ships with bundled starter skills (`ffmpeg`, `imagemagick`, `pandoc`, `pdftotext`, `cortex`) seeded on first run; the skill name+description index is always injected so the agent knows what's available even when no skill matches closely
@@ -24,6 +26,8 @@ Felix connects you (via CLI or web chat) to LLMs (Claude, GPT, Gemini, DeepSeek,
 - **Vision/image support** — paste or drop image paths in CLI/web chat and the LLM analyzes them
 - **Tool policies** — per-agent allow/deny lists for all built-in tools
 - **Session persistence** — append-only JSONL files with DAG structure and branching
+- **Smart compaction** — token-threshold-triggered summarization with a 9-section structured prompt; three-stage fallback chain (full → small-only → placeholder) and per-session circuit breaker so a runaway summarizer can't block conversation
+- **Cache-stability invariant** — request prefixes are byte-stable across turns (sorted tool definitions, deterministic schema normalization, "Resume directly" continuation directive after compaction) so Anthropic and OpenAI prompt caches keep hitting
 - **Config hot-reload** — edit felix.json5 while running, changes apply immediately
 - **WebSocket API** — JSON-RPC 2.0 control plane for programmatic access
 - **Local-first** — all data lives on your filesystem, no external database
@@ -177,7 +181,7 @@ Single-process, hub-and-spoke design. All components run in one binary.
 - **Gateway Server** (`cmd/felix/`) — HTTP + WebSocket server on `:18789` using chi router + gorilla/websocket. Entry point for all CLI subcommands via cobra.
 - **CLI Adapter** — `felix chat` runs the agent loop directly against stdin/stdout with readline editing and Markdown rendering. The gateway also serves a web chat page at `/chat`.
 - **Agent Runtime** — The think-act loop: assemble context (identity + skills + memory + history), stream LLM response, execute tool calls with policy checks, loop until final text response.
-- **LLM Client** — Abstracted behind `LLMProvider` interface with `ChatStream()` and `Embed()` methods. Providers: Anthropic (custom SSE), OpenAI (`sashabaranov/go-openai`), Google Gemini (`google/generative-ai-go`), Ollama (OpenAI-compatible HTTP).
+- **LLM Client** — Abstracted behind `LLMProvider` interface with `ChatStream()`, `Models()`, and `NormalizeToolSchema()` methods. Providers: Anthropic (`anthropic-sdk-go`), OpenAI (`sashabaranov/go-openai`), Google Gemini (`google.golang.org/genai`), Qwen (DashScope via go-openai), Ollama and other OpenAI-compatible endpoints. Each provider declares the JSON Schema dialect it accepts so cross-provider tool portability is enforced at the boundary; reasoning/thinking knobs are mapped per-provider from the unified `ReasoningMode` enum.
 - **Session Manager** — Append-only JSONL files with DAG structure. One file per session. Supports compaction when history exceeds context window.
 - **Message Router** — Declarative bindings (JSON) map channel + account + peer to agent IDs (currently only the `cli` channel routes through here). Priority: peer.id > peer.kind > accountId > channel > default.
 - **Memory Manager** — BM25 text search over Markdown files in `~/.felix/memory/`.
@@ -203,8 +207,11 @@ type Channel interface {
 // LLMProvider — model provider
 type LLMProvider interface {
     ChatStream(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error)
-    Embed(ctx context.Context, texts []string) ([][]float32, error)
     Models() []ModelInfo
+    // NormalizeToolSchema strips JSON Schema fields the provider rejects
+    // and returns one Diagnostic per stripped/rewritten/rejected field.
+    // Must be deterministic — required for prompt cache stability.
+    NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic)
 }
 
 // Tool — executable tool
@@ -405,6 +412,7 @@ Tools discovered from an MCP server are auto-added to agent allowlists at startu
         "id": "default",
         "name": "Felix",
         "model": "anthropic/claude-sonnet-4-5-20250514",
+        "reasoning": "high",  // off | low | medium | high; default off
         "workspace": "~/.felix/workspace-default",
         "system_prompt": "You are a helpful coding assistant.",  // optional: overrides IDENTITY.md
         "tools": {
