@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -176,8 +175,3 @@ func prefixWithoutLastMessage(t *testing.T, req llm.ChatRequest) string {
 	clone.Messages = req.Messages[:len(req.Messages)-1]
 	return fullSignature(t, clone)
 }
-
-// Hint to readers grepping for json: imported above only to keep
-// json.RawMessage compile-checkable in mockTool below. Actual test does
-// not deserialize anything.
-var _ = json.RawMessage(nil)
