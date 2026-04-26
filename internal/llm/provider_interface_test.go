@@ -306,3 +306,47 @@ func TestOpenAIDefaultConstructorIsOpenAIKind(t *testing.T) {
 	_, ok := p.BuildReasoningEffort("o3-mini", llm.ReasoningLow)
 	assert.True(t, ok, "default constructor must support reasoning for o-series models")
 }
+
+func TestGeminiReasoningOff(t *testing.T) {
+	p, err := llm.NewGeminiProvider(context.Background(), "fake")
+	require.NoError(t, err, "Gemini construction should succeed offline with fake key")
+	budget, ok := p.BuildThinkingBudget("gemini-2.5-pro", llm.ReasoningOff)
+	assert.False(t, ok)
+	assert.Equal(t, int32(0), budget)
+}
+
+func TestGeminiReasoningLevels(t *testing.T) {
+	p, err := llm.NewGeminiProvider(context.Background(), "fake")
+	require.NoError(t, err)
+	cases := map[llm.ReasoningMode]int32{
+		llm.ReasoningLow:    1024,
+		llm.ReasoningMedium: 4096,
+		llm.ReasoningHigh:   16384,
+	}
+	for mode, want := range cases {
+		budget, ok := p.BuildThinkingBudget("gemini-2.5-pro", mode)
+		require.True(t, ok, "mode %s", mode)
+		assert.Equal(t, want, budget)
+	}
+}
+
+func TestGeminiReasoningUnsupportedModel(t *testing.T) {
+	p, err := llm.NewGeminiProvider(context.Background(), "fake")
+	require.NoError(t, err)
+	_, ok := p.BuildThinkingBudget("gemini-1.5-flash", llm.ReasoningHigh)
+	assert.False(t, ok, "gemini-1.5-flash does not support thinking")
+}
+
+func TestGeminiReasoningSupportsThinkingFamilies(t *testing.T) {
+	p, err := llm.NewGeminiProvider(context.Background(), "fake")
+	require.NoError(t, err)
+	// Both 2.0-flash-thinking and 2.5 are supported.
+	for _, model := range []string{
+		"gemini-2.0-flash-thinking-exp-1219",
+		"gemini-2.5-pro",
+		"gemini-2.5-flash",
+	} {
+		_, ok := p.BuildThinkingBudget(model, llm.ReasoningMedium)
+		assert.True(t, ok, "model %s should support thinking", model)
+	}
+}

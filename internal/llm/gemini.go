@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"google.golang.org/genai"
 )
@@ -157,6 +159,22 @@ func (p *GeminiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		config.Tools = tools
 	}
 
+	if budget, ok := p.BuildThinkingBudget(model, req.Reasoning); ok {
+		b := budget // need addressable int32 for *int32 field
+		config.ThinkingConfig = &genai.ThinkingConfig{
+			ThinkingBudget: &b,
+		}
+		slog.Info("gemini thinking enabled",
+			"model", model,
+			"budget_tokens", budget)
+	} else if req.Reasoning != ReasoningOff {
+		slog.Info("reasoning ignored",
+			"provider", "gemini",
+			"model", model,
+			"requested", string(req.Reasoning),
+			"reason", "model does not support thinking")
+	}
+
 	// Stream responses
 	events := make(chan ChatEvent, 100)
 
@@ -246,5 +264,41 @@ func (p *GeminiProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diag
 		allDiags = append(allDiags, diags...)
 	}
 	return out, allDiags
+}
+
+// BuildThinkingBudget maps a ReasoningMode to Gemini's thinking budget
+// (in tokens). Returns (0, false) when reasoning is off or the model
+// does not support thinking. Mapping: low=1024, medium=4096, high=16384.
+func (p *GeminiProvider) BuildThinkingBudget(model string, mode ReasoningMode) (int32, bool) {
+	if mode == ReasoningOff {
+		return 0, false
+	}
+	if !geminiSupportsThinking(model) {
+		return 0, false
+	}
+	switch mode {
+	case ReasoningLow:
+		return 1024, true
+	case ReasoningMedium:
+		return 4096, true
+	case ReasoningHigh:
+		return 16384, true
+	default:
+		return 0, false
+	}
+}
+
+// geminiSupportsThinking returns true for Gemini models that accept the
+// ThinkingConfig field. Conservative — unknown IDs default to false
+// (Gemini's thinking is tightly bound to 2.0-flash-thinking and 2.5
+// families; other models reject the field).
+func geminiSupportsThinking(model string) bool {
+	prefixes := []string{"gemini-2.0-flash-thinking", "gemini-2.5"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
