@@ -5,6 +5,24 @@ import (
 	"sort"
 )
 
+// applyStripList runs StripFields over each tool's Parameters with the
+// given field-strip list, preserving input order and accumulating
+// diagnostics across all tools. The per-provider NormalizeToolSchema
+// methods (OpenAI, Qwen, Gemini) are thin wrappers over this helper —
+// only the strip list differs. Anthropic doesn't use this (identity).
+func applyStripList(tools []ToolDef, fields []string) ([]ToolDef, []Diagnostic) {
+	out := make([]ToolDef, len(tools))
+	var allDiags []Diagnostic
+	for i, t := range tools {
+		newParams, diags := StripFields(t.Name, t.Parameters, fields)
+		td := t
+		td.Parameters = newParams
+		out[i] = td
+		allDiags = append(allDiags, diags...)
+	}
+	return out, allDiags
+}
+
 // StripFields removes the given field names from a JSON Schema document
 // recursively. It descends into "properties.*", "items", and
 // "additionalProperties" (the standard JSON Schema schema-bearing

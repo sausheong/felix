@@ -370,16 +370,7 @@ var openaiUnsupportedFields = []string{"$ref", "definitions"}
 // that contain these (it accepts a restricted JSON Schema subset).
 // Diagnostics list every stripped occurrence with a dotted JSON path.
 func (p *OpenAIProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
-	out := make([]ToolDef, len(tools))
-	var allDiags []Diagnostic
-	for i, t := range tools {
-		newParams, diags := StripFields(t.Name, t.Parameters, openaiUnsupportedFields)
-		td := t
-		td.Parameters = newParams
-		out[i] = td
-		allDiags = append(allDiags, diags...)
-	}
-	return out, allDiags
+	return applyStripList(tools, openaiUnsupportedFields)
 }
 
 // BuildReasoningEffort maps a ReasoningMode to OpenAI's reasoning_effort

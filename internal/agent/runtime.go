@@ -241,8 +241,11 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 
 			toolDefs := r.Tools.ToolDefs()
 			toolDefs, diags := r.LLM.NormalizeToolSchema(toolDefs)
+			// Info, not Warn: stripping is the expected pre-flight transform
+			// (e.g. Gemini drops format/anyOf on every web_fetch call). Warn
+			// implies "investigate"; this is steady-state behavior.
 			for _, d := range diags {
-				slog.Warn("tool schema normalized",
+				slog.Info("tool schema normalized",
 					"tool", d.ToolName,
 					"field", d.Field,
 					"action", d.Action,

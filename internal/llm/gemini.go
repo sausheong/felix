@@ -254,16 +254,7 @@ var geminiUnsupportedFields = []string{"anyOf", "oneOf", "not", "$ref", "format"
 // 3.0 subset. Diagnostics list every stripped occurrence with a
 // dotted JSON path.
 func (p *GeminiProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
-	out := make([]ToolDef, len(tools))
-	var allDiags []Diagnostic
-	for i, t := range tools {
-		newParams, diags := StripFields(t.Name, t.Parameters, geminiUnsupportedFields)
-		td := t
-		td.Parameters = newParams
-		out[i] = td
-		allDiags = append(allDiags, diags...)
-	}
-	return out, allDiags
+	return applyStripList(tools, geminiUnsupportedFields)
 }
 
 // BuildThinkingBudget maps a ReasoningMode to Gemini's thinking budget
