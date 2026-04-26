@@ -259,3 +259,50 @@ func TestAnthropicReasoningUnknownModelDefaultsSupported(t *testing.T) {
 	require.NotNil(t, cfg)
 	assert.Equal(t, int64(4096), cfg.BudgetTokens)
 }
+
+func TestOpenAIReasoningOff(t *testing.T) {
+	p := llm.NewOpenAIProvider("fake", "")
+	effort, ok := p.BuildReasoningEffort("o3-mini", llm.ReasoningOff)
+	assert.False(t, ok)
+	assert.Empty(t, effort)
+}
+
+func TestOpenAIReasoningLevels(t *testing.T) {
+	p := llm.NewOpenAIProvider("fake", "")
+	cases := map[llm.ReasoningMode]string{
+		llm.ReasoningLow:    "low",
+		llm.ReasoningMedium: "medium",
+		llm.ReasoningHigh:   "high",
+	}
+	for mode, want := range cases {
+		effort, ok := p.BuildReasoningEffort("o3-mini", mode)
+		require.True(t, ok, "mode %s", mode)
+		assert.Equal(t, want, effort)
+	}
+}
+
+func TestOpenAIReasoningUnsupportedModel(t *testing.T) {
+	p := llm.NewOpenAIProvider("fake", "")
+	effort, ok := p.BuildReasoningEffort("gpt-4o", llm.ReasoningHigh)
+	assert.False(t, ok, "gpt-4o does not support reasoning_effort")
+	assert.Empty(t, effort)
+}
+
+func TestOpenAICompatibleSuppressesReasoning(t *testing.T) {
+	p := llm.NewOpenAIProviderWithKind("", "http://localhost:11434/v1", "openai-compatible")
+	_, ok := p.BuildReasoningEffort("gpt-5-thinking", llm.ReasoningHigh)
+	assert.False(t, ok, "openai-compatible kind suppresses reasoning")
+}
+
+func TestOpenAILocalKindSuppressesReasoning(t *testing.T) {
+	p := llm.NewOpenAIProviderWithKind("", "http://localhost:11434/v1", "local")
+	_, ok := p.BuildReasoningEffort("gpt-5-thinking", llm.ReasoningHigh)
+	assert.False(t, ok, "local kind suppresses reasoning")
+}
+
+func TestOpenAIDefaultConstructorIsOpenAIKind(t *testing.T) {
+	// NewOpenAIProvider (no Kind) should behave as kind=openai.
+	p := llm.NewOpenAIProvider("fake", "")
+	_, ok := p.BuildReasoningEffort("o3-mini", llm.ReasoningLow)
+	assert.True(t, ok, "default constructor must support reasoning for o-series models")
+}

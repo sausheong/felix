@@ -171,10 +171,12 @@ func NewProvider(providerName string, opts ProviderOptions) (LLMProvider, error)
 	switch kind {
 	case "anthropic":
 		return NewAnthropicProvider(opts.APIKey, opts.BaseURL), nil
-	case "openai", "openai-compatible":
-		return NewOpenAIProvider(opts.APIKey, opts.BaseURL), nil
+	case "openai":
+		return NewOpenAIProviderWithKind(opts.APIKey, opts.BaseURL, "openai"), nil
+	case "openai-compatible":
+		return NewOpenAIProviderWithKind(opts.APIKey, opts.BaseURL, "openai-compatible"), nil
 	case "local":
-		return NewOpenAIProvider("", opts.BaseURL), nil
+		return NewOpenAIProviderWithKind("", opts.BaseURL, "local"), nil
 	case "gemini":
 		return NewGeminiProvider(context.Background(), opts.APIKey)
 	case "qwen":
