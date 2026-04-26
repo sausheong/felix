@@ -12,6 +12,7 @@ import (
 
 	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/llm/llmtest"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/tools"
 	"github.com/stretchr/testify/assert"
@@ -20,6 +21,7 @@ import (
 
 // mockLLMProvider returns canned ChatEvent streams for testing.
 type mockLLMProvider struct {
+	llmtest.Base
 	events []llm.ChatEvent
 }
 
@@ -30,10 +32,6 @@ func (m *mockLLMProvider) ChatStream(ctx context.Context, req llm.ChatRequest) (
 	}
 	close(ch)
 	return ch, nil
-}
-
-func (m *mockLLMProvider) Models() []llm.ModelInfo {
-	return []llm.ModelInfo{{ID: "mock", Name: "Mock", Provider: "mock"}}
 }
 
 // --- assembleSystemPrompt tests ---
@@ -400,6 +398,7 @@ func TestRuntimeRunSync(t *testing.T) {
 
 // statefulMockLLMProvider returns different responses on successive calls.
 type statefulMockLLMProvider struct {
+	llmtest.Base
 	responses [][]llm.ChatEvent
 	callCount *int
 }
@@ -417,10 +416,6 @@ func (m *statefulMockLLMProvider) ChatStream(ctx context.Context, req llm.ChatRe
 	}
 	close(ch)
 	return ch, nil
-}
-
-func (m *statefulMockLLMProvider) Models() []llm.ModelInfo {
-	return []llm.ModelInfo{{ID: "mock", Name: "Mock", Provider: "mock"}}
 }
 
 // mockTool is a simple tool that returns a canned output.
@@ -485,6 +480,7 @@ func mustMarshalMessageData(t *testing.T, text string) json.RawMessage {
 // On the overflow path the call index is NOT advanced, so the next call
 // (the retry after compaction) consumes the responses[0] entry.
 type fakeLLM struct {
+	llmtest.Base
 	responses []string // one per turn; no tool calls
 	idx       int
 	overflow  int // call index at which to return a context-overflow error; -1 disables
@@ -510,10 +506,8 @@ func (f *fakeLLM) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan l
 	return ch, nil
 }
 
-func (f *fakeLLM) Models() []llm.ModelInfo { return nil }
-
 // alwaysSummary: every call returns "compacted summary".
-type alwaysSummary struct{}
+type alwaysSummary struct{ llmtest.Base }
 
 func (alwaysSummary) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
 	ch := make(chan llm.ChatEvent, 2)
@@ -524,7 +518,6 @@ func (alwaysSummary) ChatStream(ctx context.Context, req llm.ChatRequest) (<-cha
 	}()
 	return ch, nil
 }
-func (alwaysSummary) Models() []llm.ModelInfo { return nil }
 
 func newCompactionMgr() *compaction.Manager {
 	return &compaction.Manager{
@@ -692,6 +685,7 @@ func TestCompactionMessageCapHonored(t *testing.T) {
 // cannedSummarizer is a minimal LLMProvider stub for tests that need a
 // summarizer-shaped fake; it returns a fixed text reply on every call.
 type cannedSummarizer struct {
+	llmtest.Base
 	text string
 }
 
@@ -705,4 +699,3 @@ func (f *cannedSummarizer) ChatStream(ctx context.Context, req llm.ChatRequest) 
 	return ch, nil
 }
 
-func (f *cannedSummarizer) Models() []llm.ModelInfo { return nil }

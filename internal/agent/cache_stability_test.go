@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/llm/llmtest"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/tools"
 )
@@ -18,6 +19,7 @@ import (
 // canned text response. Used to inspect what the runtime sends to the
 // LLM across turns.
 type recordingProvider struct {
+	llmtest.Base
 	mu       sync.Mutex
 	requests []llm.ChatRequest
 	reply    string
@@ -35,10 +37,6 @@ func (r *recordingProvider) ChatStream(ctx context.Context, req llm.ChatRequest)
 		ch <- llm.ChatEvent{Type: llm.EventDone}
 	}()
 	return ch, nil
-}
-
-func (r *recordingProvider) Models() []llm.ModelInfo {
-	return []llm.ModelInfo{{ID: "rec", Name: "Recording", Provider: "rec"}}
 }
 
 // requestPrefixSignature renders the cache-relevant portion of a request:
