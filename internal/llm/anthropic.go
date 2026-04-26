@@ -264,10 +264,11 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 	return events, nil
 }
 
-// NormalizeToolSchema returns tools unchanged. Anthropic accepts the
-// full JSON Schema draft-7 dialect; per-provider stripping rules are
-// added in Phase 2 Task 5 (this is the placeholder so the interface is
-// satisfied).
+// NormalizeToolSchema returns tools unchanged. The Anthropic Messages
+// API accepts the full JSON Schema draft-7 dialect (including anyOf,
+// oneOf, format, $ref, and definitions), so no fields need stripping
+// to be portable. Identity behavior is intentional and durable, not a
+// placeholder.
 func (p *AnthropicProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
 	return tools, nil
 }

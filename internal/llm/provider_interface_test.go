@@ -1,6 +1,7 @@
 package llm_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/sausheong/felix/internal/llm"
@@ -28,4 +29,25 @@ func TestDiagnosticFields(t *testing.T) {
 	}
 	assert.Equal(t, "read_file", d.ToolName)
 	assert.Equal(t, "stripped", d.Action)
+}
+
+func TestAnthropicNormalizeToolSchemaIsIdentity(t *testing.T) {
+	p := llm.NewAnthropicProvider("fake-key", "")
+	tools := []llm.ToolDef{
+		{
+			Name: "complex",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"url": {"type": "string", "format": "uri"},
+					"items": {"oneOf": [{"type": "string"}, {"type": "number"}]}
+				},
+				"$ref": "#/defs/x",
+				"definitions": {"x": {"type": "string"}}
+			}`),
+		},
+	}
+	out, diags := p.NormalizeToolSchema(tools)
+	assert.Equal(t, tools, out, "Anthropic accepts full draft-7; nothing stripped")
+	assert.Empty(t, diags)
 }
