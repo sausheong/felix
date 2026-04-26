@@ -189,3 +189,36 @@ func TestGeminiNormalizeToolSchemaStripsAll(t *testing.T) {
 		assert.Equal(t, "stripped", d.Action)
 	}
 }
+
+func TestReasoningModeConstants(t *testing.T) {
+	assert.Equal(t, llm.ReasoningMode(""), llm.ReasoningOff)
+	assert.Equal(t, llm.ReasoningMode("low"), llm.ReasoningLow)
+	assert.Equal(t, llm.ReasoningMode("medium"), llm.ReasoningMedium)
+	assert.Equal(t, llm.ReasoningMode("high"), llm.ReasoningHigh)
+}
+
+func TestChatRequestReasoningZeroValue(t *testing.T) {
+	// Existing call sites that don't set Reasoning must keep working —
+	// zero value must equal ReasoningOff.
+	var req llm.ChatRequest
+	assert.Equal(t, llm.ReasoningOff, req.Reasoning)
+}
+
+func TestParseReasoningMode(t *testing.T) {
+	cases := map[string]llm.ReasoningMode{
+		"":       llm.ReasoningOff,
+		"off":    llm.ReasoningOff,
+		"low":    llm.ReasoningLow,
+		"medium": llm.ReasoningMedium,
+		"high":   llm.ReasoningHigh,
+	}
+	for in, want := range cases {
+		got, err := llm.ParseReasoningMode(in)
+		require.NoError(t, err, "input %q", in)
+		assert.Equal(t, want, got, "input %q", in)
+	}
+	_, err := llm.ParseReasoningMode("ultra")
+	assert.Error(t, err, "unknown level must error")
+	_, err = llm.ParseReasoningMode("LOW")
+	assert.Error(t, err, "case-sensitive: uppercase must error")
+}

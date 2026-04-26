@@ -59,6 +59,38 @@ type Diagnostic struct {
 	Reason   string // human-readable; safe to log
 }
 
+// ReasoningMode is the unified reasoning/thinking knob across providers.
+// Zero value (ReasoningOff) means no extended reasoning — safe default
+// for existing call sites that don't set the field. Each provider maps
+// this to its native config (Anthropic thinking budget, OpenAI
+// reasoning_effort, Gemini ThinkingConfig, Qwen enable_thinking).
+type ReasoningMode string
+
+const (
+	ReasoningOff    ReasoningMode = ""
+	ReasoningLow    ReasoningMode = "low"
+	ReasoningMedium ReasoningMode = "medium"
+	ReasoningHigh   ReasoningMode = "high"
+)
+
+// ParseReasoningMode parses a config string into a ReasoningMode.
+// Accepts "" or "off" for ReasoningOff; "low", "medium", "high" for
+// the named levels. Case-sensitive. Returns an error for unknown values.
+func ParseReasoningMode(s string) (ReasoningMode, error) {
+	switch s {
+	case "", "off":
+		return ReasoningOff, nil
+	case "low":
+		return ReasoningLow, nil
+	case "medium":
+		return ReasoningMedium, nil
+	case "high":
+		return ReasoningHigh, nil
+	default:
+		return ReasoningOff, fmt.Errorf("unknown reasoning mode %q (want off|low|medium|high)", s)
+	}
+}
+
 // ChatRequest is the input to a streaming chat call.
 type ChatRequest struct {
 	Model        string
@@ -67,6 +99,7 @@ type ChatRequest struct {
 	MaxTokens    int
 	Temperature  float64
 	SystemPrompt string
+	Reasoning    ReasoningMode // zero value = ReasoningOff; safe default
 }
 
 // Usage tracks token usage.
