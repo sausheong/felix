@@ -169,9 +169,19 @@ func assembleMessages(history []session.SessionEntry) []llm.Message {
 			if err := json.Unmarshal(entry.Data, &cd); err != nil {
 				continue
 			}
+			// The summary is followed by an explicit continuation directive
+			// so the model resumes the conversation rather than treating it
+			// as a fresh start. Without this, models tend to reply with
+			// openers like "I'm ready to help! Our previous conversation
+			// covered X" — which loses the in-flight task context that
+			// the user's next message implicitly relies on.
+			content := "[Previous conversation summary]\n\n" + cd.Summary +
+				"\n\nContinue the conversation from where it left off without asking the user any further questions. " +
+				"Resume directly — do not acknowledge the summary, do not recap what was happening, " +
+				"do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened."
 			msgs = append(msgs, llm.Message{
 				Role:    "user",
-				Content: "[Previous conversation summary]\n\n" + cd.Summary,
+				Content: content,
 			})
 
 		case session.EntryTypeMeta:
