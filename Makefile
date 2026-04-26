@@ -10,7 +10,7 @@ APP_SIGN_ID      := Developer ID Application: Sau Sheong Chang (83N864XA6Z)
 PKG_SIGN_ID      := Developer ID Installer: Sau Sheong Chang (83N864XA6Z)
 KEYCHAIN_PROFILE := felix-notary
 
-.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release build-release installer installer-windows sign ollama-fetch _payload-secret-scan _payload-secret-scan-windows
+.PHONY: build build-app build-app-windows build-small run test test-race test-v lint fmt vet tidy clean snapshot install release publish-release build-release installer installer-windows sign ollama-fetch _payload-secret-scan _payload-secret-scan-windows
 
 ## build: compile the binary
 build:
@@ -160,6 +160,42 @@ endif
 	@echo "Release artifacts in $(RELEASE_DIR)/:"
 	@ls -1 $(RELEASE_DIR)/*.zip
 
+## publish-release: create a GitHub release for the latest tag with notes from
+## commits between the previous tag and the latest tag. Attaches any *.zip
+## artifacts found in $(RELEASE_DIR)/ (e.g. from a prior `make build-release`).
+publish-release:
+	@latest=$$(git describe --tags --abbrev=0 2>/dev/null) || { echo "ERROR: no tags found"; exit 1; }; \
+	if [ -z "$$latest" ]; then echo "ERROR: no tags found"; exit 1; fi; \
+	prev=$$(git describe --tags --abbrev=0 "$$latest^" 2>/dev/null || true); \
+	echo "==> Publishing release for $$latest"; \
+	notes_file=$$(mktemp); \
+	trap "rm -f $$notes_file" EXIT INT TERM; \
+	if [ -n "$$prev" ]; then \
+	  echo "    Notes from $$prev..$$latest"; \
+	  printf '## Changes since %s\n\n' "$$prev" > $$notes_file; \
+	  git log "$$prev..$$latest" --pretty=format:'- %s' --no-merges >> $$notes_file; \
+	else \
+	  echo "    No previous tag — including all commits up to $$latest"; \
+	  printf '## Initial release\n\n' > $$notes_file; \
+	  git log "$$latest" --pretty=format:'- %s' --no-merges >> $$notes_file; \
+	fi; \
+	if [ ! -s $$notes_file ]; then echo "No notable changes." > $$notes_file; fi; \
+	if gh release view "$$latest" >/dev/null 2>&1; then \
+	  echo "ERROR: GitHub release $$latest already exists. Delete first with:"; \
+	  echo "  gh release delete $$latest --yes"; \
+	  exit 1; \
+	fi; \
+	gh release create "$$latest" --title "$$latest" --notes-file "$$notes_file" || exit 1; \
+	artifacts=$$(ls $(RELEASE_DIR)/*.zip $(RELEASE_DIR)/*.pkg 2>/dev/null); \
+	if [ -n "$$artifacts" ]; then \
+	  echo "==> Uploading artifacts from $(RELEASE_DIR)/"; \
+	  echo "$$artifacts" | sed 's/^/    /'; \
+	  gh release upload "$$latest" $$artifacts --clobber; \
+	else \
+	  echo "    No artifacts in $(RELEASE_DIR)/ to attach (run 'make build-release' and/or 'make sign' first)"; \
+	fi; \
+	echo "==> Released: https://github.com/sausheong/felix/releases/tag/$$latest"
+
 ## build-release: cross-compile CLI for all platforms without creating a GitHub release
 build-release: ollama-fetch
 	rm -rf $(RELEASE_DIR)
@@ -308,21 +344,23 @@ sign: build-app
 		--version $(VERSION) \
 		--install-location / \
 		Felix-component.pkg
-	# Sign the PKG
+	# Sign the PKG into the release artifacts directory so publish-release
+	# picks it up alongside the cross-compiled zips.
+	@mkdir -p $(RELEASE_DIR)
 	productsign \
 		--sign "$(PKG_SIGN_ID)" \
 		Felix-component.pkg \
-		Felix-$(VERSION)-signed.pkg
+		$(RELEASE_DIR)/Felix-$(VERSION)-signed.pkg
 	rm -rf Felix-component.pkg installer/payload
 	# Notarize
-	xcrun notarytool submit Felix-$(VERSION)-signed.pkg \
+	xcrun notarytool submit $(RELEASE_DIR)/Felix-$(VERSION)-signed.pkg \
 		--apple-id "$(APPLE_ID)" \
 		--team-id "$(TEAM_ID)" \
 		--keychain-profile "$(KEYCHAIN_PROFILE)" \
 		--wait
 	# Staple
-	xcrun stapler staple Felix-$(VERSION)-signed.pkg
-	@echo "Signed installer: Felix-$(VERSION)-signed.pkg"
+	xcrun stapler staple $(RELEASE_DIR)/Felix-$(VERSION)-signed.pkg
+	@echo "Signed installer: $(RELEASE_DIR)/Felix-$(VERSION)-signed.pkg"
 
 ## _payload-secret-scan: refuse to ship if the staged payload contains user
 ## config or anything that looks like an API key. Internal target invoked by
