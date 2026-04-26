@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -44,31 +43,29 @@ func (r *recordingProvider) Models() []llm.ModelInfo {
 }
 
 // requestPrefixSignature renders the cache-relevant portion of a request:
-// system prompt, sorted tool definitions, and the message list excluding
-// the final user turn. Two calls in the same session that differ only in
-// the freshly-arrived user message must produce identical signatures.
+// system prompt, tool definitions in their request-given order, and the
+// message list excluding the final user turn. Two calls in the same
+// session that differ only in the freshly-arrived user message must
+// produce identical signatures.
+//
+// This intentionally does NOT sort tools — it renders them in the exact
+// order the runtime hands them to the LLM, matching the byte sequence
+// Anthropic/OpenAI prompt caches actually see. A separate test asserts
+// that the tool registry returns tools in sorted order; this signature
+// reflects what the runtime actually sends.
 func requestPrefixSignature(t *testing.T, req llm.ChatRequest) string {
 	t.Helper()
 	var sb strings.Builder
 	sb.WriteString("SYS:")
 	sb.WriteString(req.SystemPrompt)
 	sb.WriteString("\nTOOLS:")
-	names := make([]string, len(req.Tools))
-	descByName := make(map[string]string, len(req.Tools))
-	paramsByName := make(map[string]string, len(req.Tools))
-	for i, td := range req.Tools {
-		names[i] = td.Name
-		descByName[td.Name] = td.Description
-		paramsByName[td.Name] = string(td.Parameters)
-	}
-	sort.Strings(names)
-	for _, n := range names {
+	for _, td := range req.Tools {
 		sb.WriteString("\n  ")
-		sb.WriteString(n)
+		sb.WriteString(td.Name)
 		sb.WriteString("|")
-		sb.WriteString(descByName[n])
+		sb.WriteString(td.Description)
 		sb.WriteString("|")
-		sb.WriteString(paramsByName[n])
+		sb.WriteString(string(td.Parameters))
 	}
 	sb.WriteString("\nMSGS_EXCL_LAST:")
 	for i := 0; i < len(req.Messages)-1; i++ {
@@ -143,19 +140,6 @@ func TestRequestPrefixIsByteStableAcrossTurns(t *testing.T) {
 	turn2Prefix := prefixWithoutLastMessage(t, req2)
 	assert.Equal(t, turn1FullPlusAssistant, turn2Prefix,
 		"turn 2 prefix must byte-match turn 1's full request plus the assistant reply")
-
-	// Also assert that req.Tools order is byte-stable across turns. The
-	// signature above sorts tool names for content-comparison, which would
-	// hide an ordering regression from Go's randomized map iteration.
-	// This separate check is what catches the Task 2 regression: if
-	// Registry.ToolDefs() stops sorting, turn 2 will eventually emit tools
-	// in a different order from turn 1 and this assertion will fail.
-	require.Equal(t, len(req1.Tools), len(req2.Tools),
-		"tool count must not change between turns")
-	for i := range req1.Tools {
-		assert.Equal(t, req1.Tools[i].Name, req2.Tools[i].Name,
-			"tool[%d] name must match across turns (cache-prefix order regression)", i)
-	}
 }
 
 // fullSignature renders the entire request the same way requestPrefixSignature
