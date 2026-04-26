@@ -169,3 +169,25 @@ func TestSummarizeFallbackToPlaceholderWhenAllStagesFail(t *testing.T) {
 	assert.Contains(t, got, "compaction failed",
 		"placeholder must indicate the failure so the next turn can adapt")
 }
+
+func TestSummarizePerCallTimeoutPropagates(t *testing.T) {
+	// A per-call timeout (Summarizer.Timeout shorter than provider delay)
+	// must surface to the caller as context.DeadlineExceeded — NOT silently
+	// degrade to a placeholder. The Manager classifies this as "timeout"
+	// for telemetry; the placeholder path would mask that as a successful
+	// stub.
+	s := &Summarizer{
+		Provider: &delayedProvider{
+			text:    "never reached",
+			delay:   500 * time.Millisecond,
+			started: make(chan struct{}),
+		},
+		Model:   "m",
+		Timeout: 50 * time.Millisecond,
+	}
+	entries := []session.SessionEntry{session.UserMessageEntry("hi")}
+	_, err := s.Summarize(context.Background(), entries, "")
+	require.Error(t, err, "per-call timeout must propagate, not be swallowed by placeholder")
+	assert.True(t, errors.Is(err, context.DeadlineExceeded),
+		"error must be (or wrap) context.DeadlineExceeded; got %v", err)
+}

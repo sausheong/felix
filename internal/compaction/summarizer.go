@@ -54,19 +54,28 @@ func (s *Summarizer) summarizeWithFallback(ctx context.Context, entries []sessio
 	// the cancel with a placeholder. This preserves the Manager's ability
 	// to classify cancellation/timeout distinctly from "compaction is
 	// genuinely broken; degrade gracefully".
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	//
+	// We also propagate a per-call deadline (Summarizer.Timeout firing while
+	// the parent ctx is still alive) — otherwise a per-call timeout would
+	// flow into stage 2/3, masking timeout as a placeholder. Manager
+	// classifies the wrapped DeadlineExceeded as Skipped: "timeout".
+	if ctxErr := ctx.Err(); ctxErr != nil || errors.Is(stage1Err, context.DeadlineExceeded) {
 		return "", stage1Err
 	}
 
-	// Stage 2: drop oversized messages and retry.
+	// Stage 2: drop oversized messages and retry. Only meaningful when
+	// buildSmallOnlyTranscript actually elides something — otherwise we'd
+	// be re-sending the same transcript with the same prompt against the
+	// same provider (predictable failure, wasted call). Fall through to
+	// stage 3 in that case.
 	if isOverflowError(stage1Err) || isStreamError(stage1Err) {
 		small, droppedCount := buildSmallOnlyTranscript(entries)
 		if droppedCount > 0 {
 			small += fmt.Sprintf("\n[oversized message(s) elided: %d]\n", droppedCount)
-		}
-		out, err = s.callOnce(ctx, small, additionalInstructions)
-		if err == nil && out != "" {
-			return out, nil
+			out, err = s.callOnce(ctx, small, additionalInstructions)
+			if err == nil && out != "" {
+				return out, nil
+			}
 		}
 	}
 
