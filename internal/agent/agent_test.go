@@ -50,7 +50,22 @@ func TestAssembleSystemPromptWithIdentity(t *testing.T) {
 }
 
 func TestAssembleSystemPromptDefault(t *testing.T) {
-	dir := t.TempDir() // no IDENTITY.md
+	// Isolate HOME so configSummary() doesn't read the developer's real
+	// ~/.felix/felix.json5 — which may list agents whose tool allowlists
+	// include "web_fetch", breaking the NotContains assertion below.
+	// We also write an empty agents/channels config so the fallback
+	// DefaultConfig() (which includes a Felix agent allowing web_fetch)
+	// doesn't get used.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".felix"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(home, ".felix", "felix.json5"),
+		[]byte(`{"agents":{"list":[]},"channels":{}}`),
+		0o600,
+	))
+
+	dir := t.TempDir() // workspace, no IDENTITY.md
 	result := assembleSystemPrompt(dir, "", "default", "Assistant", []string{"read_file", "bash"})
 	assert.Contains(t, result, defaultIdentityBase)
 	assert.Contains(t, result, "read files")
