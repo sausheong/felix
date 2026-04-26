@@ -89,7 +89,7 @@ func TestPromptRequiresIdentifierPreservation(t *testing.T) {
 	low := strings.ToLower(got)
 	assert.Contains(t, low, "verbatim",
 		"prompt must demand verbatim preservation of identifiers")
-	for _, kind := range []string{"file path", "uuid", "id"} {
+	for _, kind := range []string{"file path", "uuid", "identifier"} {
 		assert.Contains(t, low, kind,
 			"prompt must explicitly mention preserving %q-class identifiers", kind)
 	}
@@ -149,4 +149,14 @@ func TestFormatCompactSummaryHandlesMissingTags(t *testing.T) {
 	raw := "User asked about X; we did Y."
 	got := FormatCompactSummary(raw)
 	assert.Contains(t, got, "User asked about X")
+}
+
+func TestFormatCompactSummaryHandlesMultipleSummaryBlocks(t *testing.T) {
+	raw := `<summary>first</summary>
+
+<summary>second</summary>`
+	got := FormatCompactSummary(raw)
+	assert.NotContains(t, got, "<summary>", "no <summary> tags should remain")
+	assert.Contains(t, got, "first")
+	assert.Contains(t, got, "second")
 }

@@ -171,21 +171,29 @@ var analysisBlockRE = regexp.MustCompile(`(?s)<analysis>.*?</analysis>`)
 // summaryBlockRE captures the contents of a <summary>...</summary> block.
 var summaryBlockRE = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
 
+// blankLineCollapseRE collapses runs of 3+ newlines into a single blank line.
+var blankLineCollapseRE = regexp.MustCompile(`\n{3,}`)
+
 // FormatCompactSummary strips the <analysis> drafting scratchpad from a raw
 // summarizer response and unwraps the <summary> block under a "Summary:"
 // header. If the model emitted unstructured prose (no tags), the input is
-// returned as-is so we never silently drop content.
+// returned as-is so we never silently drop content. Multiple <summary>
+// blocks (rare, but possible) are each unwrapped consistently so no literal
+// tags leak into the injected context.
 //
 // Pattern adapted from Claude Code's formatCompactSummary
 // (claude-code-source/src/services/compact/prompt.ts:311-335).
 func FormatCompactSummary(raw string) string {
 	out := analysisBlockRE.ReplaceAllString(raw, "")
 
-	if m := summaryBlockRE.FindStringSubmatch(out); len(m) == 2 {
-		body := strings.TrimSpace(m[1])
-		out = summaryBlockRE.ReplaceAllString(out, "Summary:\n"+body)
-	}
+	out = summaryBlockRE.ReplaceAllStringFunc(out, func(match string) string {
+		m := summaryBlockRE.FindStringSubmatch(match)
+		if len(m) == 2 {
+			return "Summary:\n" + strings.TrimSpace(m[1])
+		}
+		return match
+	})
 
-	out = regexp.MustCompile(`\n{3,}`).ReplaceAllString(out, "\n\n")
+	out = blankLineCollapseRE.ReplaceAllString(out, "\n\n")
 	return strings.TrimSpace(out)
 }
