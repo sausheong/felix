@@ -328,8 +328,23 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 	return events, nil
 }
 
-// NormalizeToolSchema returns tools unchanged. Per-provider stripping
-// rules (strip $ref, definitions) are added in Phase 2 Task 6.
+// openaiUnsupportedFields are JSON Schema fields the OpenAI function-
+// calling schema rejects. anyOf/oneOf/format are accepted and kept.
+var openaiUnsupportedFields = []string{"$ref", "definitions"}
+
+// NormalizeToolSchema strips $ref and definitions from each tool's
+// JSON Schema. The OpenAI function-calling endpoint rejects schemas
+// that contain these (it accepts a restricted JSON Schema subset).
+// Diagnostics list every stripped occurrence with a dotted JSON path.
 func (p *OpenAIProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
-	return tools, nil
+	out := make([]ToolDef, len(tools))
+	var allDiags []Diagnostic
+	for i, t := range tools {
+		newParams, diags := StripFields(t.Name, t.Parameters, openaiUnsupportedFields)
+		td := t
+		td.Parameters = newParams
+		out[i] = td
+		allDiags = append(allDiags, diags...)
+	}
+	return out, allDiags
 }
