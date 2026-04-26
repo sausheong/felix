@@ -343,6 +343,13 @@ func runChat(agentID, configPath, modelOverride string) error {
 
 	ctx := context.Background()
 
+	reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
+	if err != nil {
+		slog.Error("invalid reasoning mode in agent config; defaulting to off",
+			"agent", agentCfg.ID, "value", agentCfg.Reasoning, "err", err)
+		reasoning = llm.ReasoningOff
+	}
+
 	// Init cron scheduler for chat mode so the agent can use the cron tool
 	cronScheduler := cron.NewScheduler()
 
@@ -370,6 +377,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 				AgentID:      agentCfg.ID,
 				AgentName:    agentCfg.Name,
 				Model:        modelName,
+				Reasoning:    reasoning,
 				Workspace:    agentCfg.Workspace,
 				MaxTurns:     agentCfg.MaxTurns,
 				SystemPrompt: agentCfg.SystemPrompt,
@@ -428,6 +436,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		AgentID:      agentCfg.ID,
 		AgentName:    agentCfg.Name,
 		Model:        modelName,
+		Reasoning:    reasoning,
 		Workspace:    agentCfg.Workspace,
 		MaxTurns:     agentCfg.MaxTurns,
 		SystemPrompt: agentCfg.SystemPrompt,
