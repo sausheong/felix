@@ -16,8 +16,9 @@ Felix connects you (via CLI or web chat) to LLMs (Claude, GPT, Gemini, DeepSeek,
 - **Model-agnostic** — Claude, GPT, Gemini, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible API
 - **Multi-agent** — run multiple agents with different models, tools, and personas
 - **Inter-agent delegation** — agents can delegate subtasks to other agents via the `ask_agent` tool
+- **MCP client** — connect to external [Model Context Protocol](https://modelcontextprotocol.io) servers over Streamable-HTTP or stdio; remote tools auto-register into agent registries with OAuth2 client-credentials or bearer auth
 - **Persistent memory** — BM25 search over Markdown files, recalled automatically each turn
-- **Skill system** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance
+- **Skill system** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance. Ships with bundled starter skills (`ffmpeg`, `imagemagick`, `pandoc`, `pdftotext`, `cortex`) seeded on first run; the skill name+description index is always injected so the agent knows what's available even when no skill matches closely
 - **Heartbeat daemon** — proactive agent actions on a schedule via HEARTBEAT.md checklists
 - **Cron jobs** — recurring prompts on configurable intervals, with pause/resume/remove management
 - **Vision/image support** — paste or drop image paths in CLI/web chat and the LLM analyzes them
@@ -110,6 +111,7 @@ not interfere with any system Ollama you may have on `:11434`.
 | `felix status` | Query the running gateway for agent status |
 | `felix doctor` | Run diagnostic checks |
 | `felix version` | Print version and commit info |
+| `felix gt-harness --env <file>` | Smoke-test connection to a remote MCP gateway (experimental) — reads OAuth client-credentials from a dotenv file and lists exposed tools |
 
 ---
 
@@ -135,7 +137,7 @@ make build-app-windows  # Windows — produces felix-app.exe
 |------|--------|
 | **Chat** | Opens a web-based chat interface in your default browser |
 | **Jobs** | Opens the cron jobs dashboard (`/jobs`) showing active scheduled tasks |
-| **Settings** | Opens `~/.felix/felix.json5` in your default editor |
+| **Settings** | Opens the web Settings UI (`/settings`) in your default browser — tabs for Providers, Agents, Models, MCP servers, and more |
 | **Restart** | Restarts the gateway |
 | **Quit** | Gracefully shuts down the gateway and exits |
 
@@ -179,7 +181,8 @@ Single-process, hub-and-spoke design. All components run in one binary.
 - **Session Manager** — Append-only JSONL files with DAG structure. One file per session. Supports compaction when history exceeds context window.
 - **Message Router** — Declarative bindings (JSON) map channel + account + peer to agent IDs (currently only the `cli` channel routes through here). Priority: peer.id > peer.kind > accountId > channel > default.
 - **Memory Manager** — BM25 text search over Markdown files in `~/.felix/memory/`.
-- **Skill System** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance. Compatible with OpenClaw/Claude Code/Cursor skill format.
+- **Skill System** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance. Compatible with OpenClaw/Claude Code/Cursor skill format. Bundled starter skills are seeded into `~/.felix/skills/` on first run.
+- **MCP Manager** — Connects to external Model Context Protocol servers declared in `mcp_servers`. Supports Streamable-HTTP (with OAuth2 client-credentials or bearer auth) and stdio transports. Tools exposed by remote servers are wrapped as `tools.Tool` adapters and registered into agent registries; tool names are auto-added to agent allowlists.
 - **Heartbeat Daemon** — Background goroutine on configurable interval (default 30min), reads `HEARTBEAT.md`, sends to agent for proactive actions.
 - **Cron Scheduler** — Recurring prompts on configurable intervals (e.g., "24h", "1h", "30m"). Supports pause, resume, remove, and schedule updates at runtime.
 - **Config Manager** — JSON5 config at `~/.felix/felix.json5`, hot-reloaded via fsnotify.
@@ -332,6 +335,61 @@ export QWEN_API_KEY="sk-..."  // DashScope API key
 
 The naming convention is `{PROVIDER}_API_KEY` (or `{PROVIDER}_AUTH_TOKEN`), and `{PROVIDER}_BASE_URL` for custom endpoints — where `{PROVIDER}` is the uppercased provider name from your config.
 
+### MCP servers
+
+Felix can connect to external [Model Context Protocol](https://modelcontextprotocol.io) servers and expose their tools to agents alongside built-ins. Declare servers under `mcp_servers`:
+
+```json5
+{
+  "mcp_servers": [
+    // HTTP transport with OAuth2 client-credentials.
+    // client_secret can live inline ("client_secret"), in an env var
+    // ("client_secret_env"), or in a separate dotenv-style creds file.
+    {
+      "id": "remote-tools",
+      "transport": "http",
+      "enabled": true,
+      "tool_prefix": "remote_",
+      "http": {
+        "url": "https://mcp.example.com/v1",
+        "auth": {
+          "kind": "oauth2_client_credentials",
+          "token_url": "https://auth.example.com/oauth/token",
+          "client_id": "felix-prod",
+          "client_secret_env": "REMOTE_MCP_SECRET",
+          "scope": "mcp.read mcp.write"
+        }
+      }
+    },
+
+    // HTTP transport with a static bearer token.
+    {
+      "id": "internal-api",
+      "transport": "http",
+      "enabled": true,
+      "http": {
+        "url": "https://internal.example.com/mcp",
+        "auth": { "kind": "bearer", "token_env": "INTERNAL_MCP_TOKEN" }
+      }
+    },
+
+    // Stdio transport — Felix spawns the child process and inherits PATH.
+    {
+      "id": "fs-tools",
+      "transport": "stdio",
+      "enabled": true,
+      "stdio": {
+        "command": "uvx",
+        "args": ["mcp-server-filesystem", "/Users/me/projects"],
+        "env": { "DEBUG": "1" }
+      }
+    }
+  ]
+}
+```
+
+Tools discovered from an MCP server are auto-added to agent allowlists at startup; remove individual entries from an agent's `tools.allow` if you want to scope access. Servers can also be edited from the Settings UI's MCP tab.
+
 ### Full config example
 
 ```json5
@@ -361,6 +419,17 @@ The naming convention is `{PROVIDER}_API_KEY` (or `{PROVIDER}_AUTH_TOKEN`), and 
   "channels": {
     "cli": { "enabled": true }
   },
+  "mcp_servers": [
+    {
+      "id": "remote-tools",
+      "transport": "http",
+      "enabled": true,
+      "http": {
+        "url": "https://mcp.example.com/v1",
+        "auth": { "kind": "bearer", "token_env": "REMOTE_MCP_TOKEN" }
+      }
+    }
+  ],
   "memory": { "enabled": true },
   "cortex": { "enabled": true },
   "heartbeat": { "enabled": true, "interval": "30m" },
@@ -390,6 +459,8 @@ Built-in tools that agents can use:
 
 Tool access is controlled per-agent via allow/deny policies, configurable from the Settings UI's Agents tab.
 
+**MCP-provided tools** — any [Model Context Protocol](https://modelcontextprotocol.io) server declared in `mcp_servers` exposes its tools through the same `Tool` interface. They appear in agent registries alongside built-ins, can be allow/deny-listed per agent, and (when newly discovered) are auto-added to agent allowlists at startup.
+
 ---
 
 ## Data Directory
@@ -401,7 +472,9 @@ All state lives in `~/.felix/` (on Windows: `C:\Users\<you>\.felix\`) — no ext
   felix.json5             # Configuration file
   sessions/                # Conversation history (JSONL)
   memory/entries/          # Memory entries (Markdown)
-  skills/                  # Shared skills (SKILL.md files)
+  skills/                  # Shared skills (SKILL.md files); bundled
+                           # starter skills (ffmpeg, imagemagick, pandoc,
+                           # pdftotext, cortex) are seeded here on first run
   workspace-default/       # Default agent workspace
     IDENTITY.md            # Agent identity/persona (fallback if no system_prompt in config)
     HEARTBEAT.md           # Heartbeat checklist
@@ -427,7 +500,7 @@ JSON-RPC 2.0 over WebSocket at `ws://127.0.0.1:18789/ws`.
 | `session.history` | Load conversation history for an agent |
 | `session.clear` | Clear an agent's session history |
 
-HTTP endpoints: `GET /health` (health check), `GET /ws` (WebSocket), `GET /metrics` (Prometheus metrics), `GET /ui` (control panel), `GET /chat` (web chat interface), `GET /jobs` (cron jobs dashboard).
+HTTP endpoints: `GET /health` (health check), `GET /ws` (WebSocket), `GET /metrics` (Prometheus metrics), `GET /ui` (control panel), `GET /chat` (web chat interface), `GET /jobs` (cron jobs dashboard), `GET /settings` (settings UI — Providers, Agents, Models, MCP servers).
 
 ---
 
