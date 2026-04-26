@@ -157,6 +157,7 @@ type AgentConfig struct {
 	Name         string       `json:"name"`
 	Workspace    string       `json:"workspace"`
 	Model        string       `json:"model"`
+	Reasoning    string       `json:"reasoning,omitempty"` // off | low | medium | high; default off
 	Fallbacks    []string     `json:"fallbacks"`
 	Sandbox      string       `json:"sandbox"`                 // "none", "docker", "namespace"
 	MaxTurns     int          `json:"maxTurns,omitempty"`      // max tool-use loop iterations (0 = default 25)
@@ -488,6 +489,9 @@ func (c *Config) Validate() error {
 		}
 		if a.Sandbox == "" {
 			a.Sandbox = "none"
+		}
+		if err := ValidateReasoningMode(a.Reasoning); err != nil {
+			return fmt.Errorf("agent %q: %w", a.ID, err)
 		}
 	}
 
@@ -825,5 +829,17 @@ func (c *Config) StripMCPAutoAdded(other *Config) {
 			}
 		}
 		other.Agents.List[i].Tools.Allow = kept
+	}
+}
+
+// ValidateReasoningMode returns nil for "", "off", "low", "medium",
+// "high"; an error otherwise. Case-sensitive — matches the parsing
+// done by llm.ParseReasoningMode.
+func ValidateReasoningMode(s string) error {
+	switch s {
+	case "", "off", "low", "medium", "high":
+		return nil
+	default:
+		return fmt.Errorf("reasoning %q invalid (want off|low|medium|high)", s)
 	}
 }

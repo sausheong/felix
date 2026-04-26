@@ -290,3 +290,36 @@ func TestRuntimeCallsNormalizeToolSchema(t *testing.T) {
 	assert.False(t, hasFormat,
 		"runtime must call NormalizeToolSchema; format should be stripped")
 }
+
+// TestReasoningIsInRequestPrefix asserts that the agent's Reasoning
+// setting flows into ChatRequest and remains stable across turns.
+// Required for prompt cache hits with reasoning enabled.
+func TestReasoningIsInRequestPrefix(t *testing.T) {
+	rec := &recordingProvider{reply: "ok"}
+	sess := session.NewSession("test-agent", "test-key")
+	reg := tools.NewRegistry()
+
+	rt := &Runtime{
+		LLM:       rec,
+		Tools:     reg,
+		Session:   sess,
+		Model:     "rec-model",
+		Reasoning: llm.ReasoningHigh,
+		Workspace: t.TempDir(),
+		MaxTurns:  3,
+	}
+
+	for i := 0; i < 2; i++ {
+		events, err := rt.Run(context.Background(), "ping", nil)
+		require.NoError(t, err)
+		for range events {
+		}
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.GreaterOrEqual(t, len(rec.requests), 2)
+	assert.Equal(t, llm.ReasoningHigh, rec.requests[0].Reasoning)
+	assert.Equal(t, llm.ReasoningHigh, rec.requests[1].Reasoning,
+		"reasoning level must be stable across turns")
+}

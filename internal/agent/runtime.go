@@ -53,6 +53,7 @@ type Runtime struct {
 	AgentID      string // agent identifier (e.g. "default", "coder")
 	AgentName    string // human-readable name (e.g. "Assistant", "Coder")
 	Model        string
+	Reasoning    llm.ReasoningMode // optional; zero value = ReasoningOff
 	Workspace    string
 	MaxTurns     int                 // safety limit for tool-use loops
 	SystemPrompt string              // optional: inline system prompt (overrides IDENTITY.md)
@@ -298,6 +299,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				Tools:        toolDefs,
 				MaxTokens:    8192,
 				SystemPrompt: systemPrompt,
+				Reasoning:    r.Reasoning,
 			}
 
 			// Call LLM

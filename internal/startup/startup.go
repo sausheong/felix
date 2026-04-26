@@ -543,6 +543,13 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				}
 				tools.RegisterSendMessage(hbToolReg, sendMsgConfigFn)
 
+				reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
+				if err != nil {
+					slog.Error("invalid reasoning mode in agent config; defaulting to off",
+						"agent", agentCfg.ID, "value", agentCfg.Reasoning, "err", err)
+					reasoning = llm.ReasoningOff
+				}
+
 				rt := &agent.Runtime{
 					LLM:          provider,
 					Tools:        hbToolReg,
@@ -550,6 +557,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					AgentID:      agentID,
 					AgentName:    agentName,
 					Model:        modelName,
+					Reasoning:    reasoning,
 					Workspace:    agentWorkspace,
 					MaxTurns:     agentMaxTurns,
 					SystemPrompt: agentSystemPrompt,
@@ -592,6 +600,12 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
+				reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
+				if err != nil {
+					slog.Error("invalid reasoning mode in agent config; defaulting to off",
+						"agent", agentCfg.ID, "value", agentCfg.Reasoning, "err", err)
+					reasoning = llm.ReasoningOff
+				}
 				rt := &agent.Runtime{
 					LLM:          provider,
 					Tools:        cronToolReg,
@@ -599,6 +613,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					AgentID:      agentID,
 					AgentName:    agentName,
 					Model:        modelName,
+					Reasoning:    reasoning,
 					Workspace:    agentWorkspace,
 					MaxTurns:     agentMaxTurns,
 					SystemPrompt: agentSystemPrompt,
@@ -639,6 +654,12 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
+				reasoning, err := llm.ParseReasoningMode(defaultCfg.Reasoning)
+				if err != nil {
+					slog.Error("invalid reasoning mode in agent config; defaulting to off",
+						"agent", defaultCfg.ID, "value", defaultCfg.Reasoning, "err", err)
+					reasoning = llm.ReasoningOff
+				}
 				rt := &agent.Runtime{
 					LLM:          p,
 					Tools:        cronToolReg,
@@ -646,6 +667,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					AgentID:      defaultCfg.ID,
 					AgentName:    defaultCfg.Name,
 					Model:        mName,
+					Reasoning:    reasoning,
 					Workspace:    defaultCfg.Workspace,
 					MaxTurns:     defaultCfg.MaxTurns,
 					SystemPrompt: defaultCfg.SystemPrompt,
