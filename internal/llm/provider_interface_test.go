@@ -110,3 +110,28 @@ func TestOpenAINormalizeKeepsAnyOf(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out[0].Parameters, &outDoc))
 	assert.Equal(t, inDoc, outDoc, "structure must be unchanged")
 }
+
+func TestQwenNormalizeToolSchemaStripsRef(t *testing.T) {
+	p := llm.NewQwenProvider("fake-key", "")
+	tools := []llm.ToolDef{{
+		Name: "lookup",
+		Parameters: json.RawMessage(`{
+			"$ref": "#/x",
+			"definitions": {"x": {"type": "string"}},
+			"properties": {"q": {"type": "string"}}
+		}`),
+	}}
+	out, diags := p.NormalizeToolSchema(tools)
+	require.Len(t, out, 1)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(out[0].Parameters, &schema))
+	_, hasRef := schema["$ref"]
+	_, hasDefs := schema["definitions"]
+	assert.False(t, hasRef, "$ref must be stripped")
+	assert.False(t, hasDefs, "definitions must be stripped")
+	require.Len(t, diags, 2)
+	for _, d := range diags {
+		assert.Equal(t, "lookup", d.ToolName)
+		assert.Equal(t, "stripped", d.Action)
+	}
+}
