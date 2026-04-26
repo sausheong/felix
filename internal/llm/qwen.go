@@ -304,16 +304,7 @@ func (p *QwenProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan 
 // shape, so the same restricted JSON Schema subset applies (and the
 // same openaiUnsupportedFields list is reused).
 func (p *QwenProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
-	out := make([]ToolDef, len(tools))
-	var allDiags []Diagnostic
-	for i, t := range tools {
-		newParams, diags := StripFields(t.Name, t.Parameters, openaiUnsupportedFields)
-		td := t
-		td.Parameters = newParams
-		out[i] = td
-		allDiags = append(allDiags, diags...)
-	}
-	return out, allDiags
+	return applyStripList(tools, openaiUnsupportedFields)
 }
 
 // BuildEnableThinking maps a ReasoningMode to Qwen's enable_thinking
