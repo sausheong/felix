@@ -21,7 +21,6 @@ Felix connects you (via CLI or web chat) to LLMs (Claude, GPT, Gemini, DeepSeek,
 - **Persistent memory** — BM25 lexical search over Markdown files, recalled automatically each turn; optional vector search via `chromem-go` when an embedding provider is configured
 - **Cortex knowledge graph** — optional SQLite-backed knowledge graph (enabled by default) that ingests completed conversations and surfaces relevant facts on subsequent turns
 - **Skill system** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance. Ships with bundled starter skills (`ffmpeg`, `imagemagick`, `pandoc`, `pdftotext`, `cortex`) seeded on first run; the skill name+description index is always injected so the agent knows what's available even when no skill matches closely
-- **Heartbeat daemon** — proactive agent actions on a schedule via HEARTBEAT.md checklists
 - **Cron jobs** — recurring prompts on configurable intervals, with pause/resume/remove management
 - **Vision/image support** — paste or drop image paths in CLI/web chat and the LLM analyzes them
 - **Tool policies** — per-agent allow/deny lists for all built-in tools
@@ -85,15 +84,17 @@ felix-app.exe               # Windows
 ### Bundled local LLM (no API key needed)
 
 Felix ships with a bundled Ollama binary so you can run agents offline with
-no API key. On first run, the wizard offers a curated list of local models;
-pick one and Felix will download it (~4–6 GB depending on model).
+no API key. On first run Felix pulls `gemma4:latest` (the chat model) and
+`nomic-embed-text` (for memory embeddings) into the bundled Ollama instance
+in the background.
 
 To pull additional models later:
 
 ```bash
-felix model pull qwen2.5:7b-instruct
+felix model pull qwen2.5:0.5b
 felix model list
 felix model status
+felix model rm qwen2.5:0.5b
 ```
 
 The bundled Ollama runs as a child of Felix on `127.0.0.1:18790` (next
@@ -111,7 +112,7 @@ not interfere with any system Ollama you may have on `:11434`.
 | `felix start -c path/to/config.json5` | Start with a custom config |
 | `felix chat` | Interactive CLI chat with the default agent |
 | `felix chat myagent` | Chat with a specific agent |
-| `felix chat -m openai/gpt-4o` | Chat with a model override |
+| `felix chat -m openai/gpt-5.4` | Chat with a model override |
 | `felix clear [agent]` | Clear the local CLI session history for an agent |
 | `felix sessions [agent]` | List all sessions for an agent |
 | `felix model list \| pull <name> \| rm <name> \| status` | Manage local Ollama models pulled by Felix |
@@ -144,7 +145,7 @@ make build-app-windows  # Windows — produces felix-app.exe
 |------|--------|
 | **Chat** | Opens a web-based chat interface in your default browser |
 | **Jobs** | Opens the cron jobs dashboard (`/jobs`) showing active scheduled tasks |
-| **Settings** | Opens the web Settings UI (`/settings`) in your default browser — tabs for Providers, Agents, Models, MCP servers, and more |
+| **Settings** | Opens the web Settings UI (`/settings`) in your default browser — tabs: Agents, Providers, Models, Intelligence, Security, Messaging, MCP, Gateway |
 | **Restart** | Restarts the gateway |
 | **Quit** | Gracefully shuts down the gateway and exits |
 
@@ -184,11 +185,10 @@ Single-process, hub-and-spoke design. All components run in one binary.
 - **LLM Client** — Abstracted behind `LLMProvider` interface with `ChatStream()`, `Models()`, and `NormalizeToolSchema()` methods. Providers: Anthropic (`anthropic-sdk-go`), OpenAI (`sashabaranov/go-openai`), Google Gemini (`google.golang.org/genai`), Qwen (DashScope via go-openai), Ollama and other OpenAI-compatible endpoints. Each provider declares the JSON Schema dialect it accepts so cross-provider tool portability is enforced at the boundary; reasoning/thinking knobs are mapped per-provider from the unified `ReasoningMode` enum.
 - **Session Manager** — Append-only JSONL files with DAG structure. One file per session. Supports compaction when history exceeds context window.
 - **Message Router** — Declarative bindings (JSON) map channel + account + peer to agent IDs (currently only the `cli` channel routes through here). Priority: peer.id > peer.kind > accountId > channel > default.
-- **Memory Manager** — BM25 lexical search over Markdown files in `~/.felix/memory/`. When an embedding provider is configured (`memory.embedding_provider`), `chromem-go` builds an in-process vector index alongside BM25; lookups fall back to BM25 if the index fails to initialize.
+- **Memory Manager** — BM25 lexical search over Markdown files in `~/.felix/memory/`. When an embedding provider is configured (`memory.embeddingProvider` + `memory.embeddingModel`), `chromem-go` builds an in-process vector index alongside BM25; lookups fall back to BM25 if the index fails to initialize.
 - **Cortex** — optional knowledge graph (SQLite via the `sausheong/cortex` library, enabled by default). Completed conversation threads are ingested asynchronously; on subsequent turns, sufficiently long user prompts trigger a recall step that injects relevant facts into the system prompt.
 - **Skill System** — Markdown files with YAML frontmatter, selectively injected per-turn based on relevance. Compatible with OpenClaw/Claude Code/Cursor skill format. Bundled starter skills are seeded into `~/.felix/skills/` on first run.
 - **MCP Manager** — Connects to external Model Context Protocol servers declared in `mcp_servers`. Supports Streamable-HTTP (with OAuth2 client-credentials or bearer auth) and stdio transports. Tools exposed by remote servers are wrapped as `tools.Tool` adapters and registered into agent registries; tool names are auto-added to agent allowlists.
-- **Heartbeat Daemon** — Background goroutine on configurable interval (default 30min), reads `HEARTBEAT.md`, sends to agent for proactive actions.
 - **Cron Scheduler** — Recurring prompts on configurable intervals (e.g., "24h", "1h", "30m"). Supports pause, resume, remove, and schedule updates at runtime.
 - **Config Manager** — JSON5 config at `~/.felix/felix.json5`, hot-reloaded via fsnotify.
 
@@ -321,8 +321,9 @@ Agents reference models as `provider/model-name`, where the provider name matche
 
 ```json5
 "model": "anthropic/claude-sonnet-4-5-20250514"   // Anthropic Claude
-"model": "openai/gpt-4o"                          // OpenAI GPT-4o
-"model": "ollama/llama3"                           // Ollama local model
+"model": "openai/gpt-5.4"                         // OpenAI GPT-5.4
+"model": "openai/gpt-5.4-mini"                    // OpenAI GPT-5.4 Mini (cheaper)
+"model": "ollama/llama3"                          // Ollama local model
 "model": "deepseek/deepseek-chat"                  // DeepSeek
 "model": "gemini/gemini-2.5-flash"                 // Google Gemini
 "model": "lmstudio/qwen2.5-coder-14b"             // LM Studio local model
@@ -442,7 +443,6 @@ Tools discovered from an MCP server are auto-added to agent allowlists at startu
   ],
   "memory": { "enabled": true },
   "cortex": { "enabled": true },
-  "heartbeat": { "enabled": true, "interval": "30m" },
   "security": {
     "execApprovals": { "level": "full" }
   }
@@ -487,7 +487,6 @@ All state lives in `~/.felix/` (on Windows: `C:\Users\<you>\.felix\`) — no ext
                            # pdftotext, cortex) are seeded here on first run
   workspace-default/       # Default agent workspace
     IDENTITY.md            # Agent identity/persona (fallback if no system_prompt in config)
-    HEARTBEAT.md           # Heartbeat checklist
     skills/                # Agent-specific skills
   brain.db                 # Cortex knowledge graph (SQLite)
   ollama/                  # Bundled Ollama model store
@@ -513,7 +512,7 @@ JSON-RPC 2.0 over WebSocket at `ws://127.0.0.1:18789/ws`.
 | `session.history` | Load conversation history for an agent |
 | `session.clear` | Clear an agent's session history |
 
-HTTP endpoints: `GET /health` (health check), `GET /ws` (WebSocket), `GET /metrics` (Prometheus metrics), `GET /ui` (control panel), `GET /chat` (web chat interface), `GET /jobs` (cron jobs dashboard), `GET /settings` (settings UI — Providers, Agents, Models, MCP servers).
+HTTP endpoints: `GET /health` (health check), `GET /ws` (WebSocket), `GET /metrics` (Prometheus metrics, when enabled), `GET /ui` (control panel, when enabled), `GET /chat` (web chat interface), `GET /jobs` (cron jobs dashboard), `GET /settings` (settings UI — Agents, Providers, Models, Intelligence, Security, Messaging, MCP, Gateway tabs).
 
 ---
 
@@ -566,8 +565,10 @@ make test-race              # Run tests with race detector
 make lint                   # Run golangci-lint
 make fmt                    # Format source files
 make tidy                   # Tidy module dependencies
-make release TAG=v0.1.4     # Commit, push, create GitHub release, and build cross-platform binaries
+make release TAG=v0.3.1     # Commit, push, create GitHub release, and build cross-platform binaries (TAG required)
+make publish-release        # Publish a GH release for the latest tag with notes from the previous tag, attaching dist/*.zip and dist/*.pkg
 make build-release          # Cross-compile binaries without creating a GitHub release
+make sign                   # Build the macOS PKG installer, sign, notarize, and staple (output → dist/Felix-<VERSION>-signed.pkg)
 make snapshot               # Cross-platform build via goreleaser
 make help                   # Show all targets
 ```
@@ -608,7 +609,6 @@ Per-package test coverage:
 | Package | Coverage |
 |---------|----------|
 | `internal/tokens` | 90.2% |
-| `internal/heartbeat` | 88.6% |
 | `internal/skill` | 87.8% |
 | `internal/compaction` | 87.2% |
 | `internal/mcp` | 83.0% |
@@ -642,7 +642,6 @@ Per-package test coverage:
 | Persistent memory | Yes | Yes |
 | Knowledge graph (Cortex) | No | Yes |
 | MCP client (external tool servers) | Yes | Yes |
-| Heartbeat daemon | Yes | Yes |
 | Cron scheduling | Yes | Yes |
 | Config hot-reload | Yes | Yes |
 | Tool policies | Yes | Yes |
