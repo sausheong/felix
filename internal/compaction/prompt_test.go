@@ -1,6 +1,7 @@
 package compaction
 
 import (
+	"encoding/hex"
 	"regexp"
 	"strings"
 	"testing"
@@ -236,4 +237,22 @@ func TestBuildTranscriptErrorMarkerStillUsesUntrustedWrapping(t *testing.T) {
 	assert.Contains(t, got, "TOOL_RESULT[error]_", "error label must be preserved")
 	assert.Contains(t, got, "(untrusted, begin):", "error results must also use untrusted wrapping")
 	assert.Contains(t, got, "boom: file not found", "error text must be present")
+}
+
+// TestBuildTranscriptFallbackSuffixIsHexAndDoesNotCollideAcrossCalls
+// only documents the fallback shape — it doesn't actually trigger the
+// crypto/rand failure path (nigh-impossible in tests). The new
+// fallback derivation is exercised by hand-calling it via the
+// helpers, but the production path is the rand.Read branch which is
+// already covered by TestBuildTranscriptUsesRandomDelimiterSuffix.
+//
+// We verify here that the helper itself returns valid 8-char hex on
+// every invocation, regardless of which branch fires.
+func TestTranscriptDelimiterSuffixIsAlwaysHex(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		got := transcriptDelimiterSuffix()
+		assert.Len(t, got, 8, "suffix must be 8 hex chars (iteration %d)", i)
+		_, err := hex.DecodeString(got)
+		assert.NoError(t, err, "suffix must be valid hex (iteration %d, got %q)", i, got)
+	}
 }

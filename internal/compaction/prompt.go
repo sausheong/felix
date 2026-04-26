@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/sausheong/felix/internal/session"
 )
@@ -20,23 +22,23 @@ import (
 // reads and web fetches) would otherwise dominate the prompt.
 const maxTranscriptToolResultLen = 10000
 
-// transcriptDelimiterSuffix returns 8 hex chars (4 random bytes) used
-// as a per-call suffix for TOOL_RESULT delimiters. This makes the
-// untrusted-content boundary escape-resistant: a tool output that
-// happens to contain a literal TOOL_RESULT marker can't collide with
-// the closing delimiter unless it knows the per-call suffix in
-// advance, which it cannot. Pattern from Anthropic's document-tag
-// best practice.
-//
-// Falls back to a fixed suffix if crypto/rand fails (vanishingly
-// unlikely on a healthy system; preserves correctness over security
-// in that pathological case so transcripts still form well).
+// transcriptDelimiterSuffix returns 8 hex chars (4 random bytes from
+// crypto/rand) used as a per-call suffix for TOOL_RESULT delimiters.
+// If crypto/rand.Read fails (vanishingly unlikely), falls back to a
+// time + PID derived suffix — not cryptographically random but
+// unguessable within one process lifetime, so a tool result still
+// can't accidentally embed the closing delimiter. (Returning a
+// constant fallback would silently re-introduce the very collision
+// risk the random suffix is designed to close.)
 func transcriptDelimiterSuffix() string {
 	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		return "fallback"
+	if _, err := rand.Read(b); err == nil {
+		return hex.EncodeToString(b)
 	}
-	return hex.EncodeToString(b)
+	// Fallback: low-32-bits of (nanosecond timestamp XOR PID), hex-encoded.
+	mix := uint32(time.Now().UnixNano()) ^ uint32(os.Getpid())
+	b2 := []byte{byte(mix >> 24), byte(mix >> 16), byte(mix >> 8), byte(mix)}
+	return hex.EncodeToString(b2)
 }
 
 // summarizationPromptHeader instructs the summarizer model to emit a
