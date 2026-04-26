@@ -39,6 +39,10 @@ type Manager struct {
 	Summarizer    *Summarizer
 	PreserveTurns int     // K; default 4 if zero
 	Threshold     float64 // fraction of context window that triggers preventive compaction (e.g. 0.6); 0 means use caller default
+	// MessageCap is a hard backstop on total message count before compaction
+	// fires, regardless of token threshold. 0 disables the cap. See
+	// CompactionConfig.MessageCap for the rationale.
+	MessageCap int
 
 	mu    sync.Mutex             // guards locks map
 	locks map[string]*sync.Mutex // session.ID → mutex

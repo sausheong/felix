@@ -616,3 +616,85 @@ func TestCompactionMessageIncludesContinuationDirective(t *testing.T) {
 	assert.Contains(t, summaryMsg.Content, "do not acknowledge the summary",
 		"continuation directive must forbid restarting")
 }
+
+// TestCompactionMessageCapHonored verifies the runtime reads the message-count
+// cap from CompactionConfig.MessageCap rather than the previously-hardcoded
+// constant. With MessageCap=10 and msgs > 10, compaction must trigger; with
+// MessageCap=0 (cap disabled) and msgs > 10 but threshold not hit, compaction
+// must NOT trigger.
+func TestCompactionMessageCapHonored(t *testing.T) {
+	mock := &mockLLMProvider{events: []llm.ChatEvent{
+		{Type: llm.EventTextDelta, Text: "ok"},
+		{Type: llm.EventDone},
+	}}
+
+	makeRT := func(cap int) *Runtime {
+		sess := session.NewSession("a", "k")
+		// Pre-populate session with enough messages to exceed cap=10.
+		for i := 0; i < 12; i++ {
+			sess.Append(session.UserMessageEntry("u"))
+			sess.Append(session.AssistantMessageEntry("a"))
+		}
+		mgr := &compaction.Manager{
+			Summarizer: &compaction.Summarizer{
+				Provider: &fakeRecordingSummarizer{text: "summary"},
+				Model:    "m",
+				Timeout:  time.Second,
+			},
+			PreserveTurns: 4,
+			MessageCap:    cap,
+		}
+		return &Runtime{
+			LLM:        mock,
+			Tools:      tools.NewRegistry(),
+			Session:    sess,
+			Model:      "anthropic/claude-mock",
+			Workspace:  t.TempDir(),
+			MaxTurns:   3,
+			Compaction: mgr,
+		}
+	}
+
+	// With cap=10, the existing 24+ messages exceed it; compaction MUST fire.
+	rt := makeRT(10)
+	events, err := rt.Run(context.Background(), "go", nil)
+	require.NoError(t, err)
+	var sawCompaction bool
+	for e := range events {
+		if e.Type == EventCompactionDone || e.Type == EventCompactionStart {
+			sawCompaction = true
+		}
+	}
+	assert.True(t, sawCompaction, "MessageCap=10 with 24+ msgs must fire compaction")
+
+	// With cap=0 (disabled) and a high-window model that won't hit the
+	// token threshold, compaction MUST NOT fire.
+	rt = makeRT(0)
+	events, err = rt.Run(context.Background(), "go", nil)
+	require.NoError(t, err)
+	sawCompaction = false
+	for e := range events {
+		if e.Type == EventCompactionDone || e.Type == EventCompactionStart {
+			sawCompaction = true
+		}
+	}
+	assert.False(t, sawCompaction, "MessageCap=0 with no threshold hit must NOT fire compaction")
+}
+
+// fakeRecordingSummarizer is a minimal LLMProvider for tests that need a
+// summarizer-shaped fake but don't care about the recording side.
+type fakeRecordingSummarizer struct {
+	text string
+}
+
+func (f *fakeRecordingSummarizer) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
+	ch := make(chan llm.ChatEvent, 4)
+	go func() {
+		defer close(ch)
+		ch <- llm.ChatEvent{Type: llm.EventTextDelta, Text: f.text}
+		ch <- llm.ChatEvent{Type: llm.EventDone}
+	}()
+	return ch, nil
+}
+
+func (f *fakeRecordingSummarizer) Models() []llm.ModelInfo { return nil }

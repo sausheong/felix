@@ -58,5 +58,6 @@ func BuildManager(cfg *config.Config) *Manager {
 		},
 		PreserveTurns: c.PreserveTurns,
 		Threshold:     c.Threshold,
+		MessageCap:    c.MessageCap,
 	}
 }

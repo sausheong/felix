@@ -143,6 +143,13 @@ type CompactionConfig struct {
 	Threshold     float64 `json:"threshold"`     // fraction of context window that triggers preventive compaction
 	PreserveTurns int     `json:"preserveTurns"` // K — last K user turns kept verbatim
 	TimeoutSec    int     `json:"timeoutSec"`    // per-summarizer-call deadline
+	// MessageCap is a hard backstop on total message count before compaction
+	// fires, regardless of token threshold. Local models commonly report
+	// 32K-token windows that translate to ~76K chars at our 0.6 default
+	// threshold — far above typical Felix prefill (5-25K). Without a count
+	// cap, sessions with low-cost tool-heavy turns can grow indefinitely.
+	// 0 disables the cap (use only the token threshold). Default 50.
+	MessageCap int `json:"messageCap"`
 }
 
 type AgentConfig struct {
@@ -331,6 +338,9 @@ func Load(path string) (*Config, error) {
 		if cur.TimeoutSec == 0 {
 			cur.TimeoutSec = d.TimeoutSec
 		}
+		if cur.MessageCap == 0 {
+			cur.MessageCap = d.MessageCap
+		}
 		cfg.Agents.Defaults.Compaction = cur
 	}
 
@@ -374,6 +384,7 @@ func DefaultConfig() *Config {
 					Threshold:     0.6,
 					PreserveTurns: 4,
 					TimeoutSec:    60,
+					MessageCap:    50,
 				},
 			},
 		},
