@@ -239,6 +239,14 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			pruneToolResults(msgs, maxToolResultLen)
 
 			toolDefs := r.Tools.ToolDefs()
+			toolDefs, diags := r.LLM.NormalizeToolSchema(toolDefs)
+			for _, d := range diags {
+				slog.Warn("tool schema normalized",
+					"tool", d.ToolName,
+					"field", d.Field,
+					"action", d.Action,
+					"reason", d.Reason)
+			}
 			tr.Mark("context.assemble", "turn", turn, "msgs", len(msgs), "tools", len(toolDefs), "sysprompt_chars", len(systemPrompt), "dur_ms_local", time.Since(phaseStart).Milliseconds())
 
 			// Preventive compaction check.
