@@ -350,3 +350,36 @@ func TestGeminiReasoningSupportsThinkingFamilies(t *testing.T) {
 		assert.True(t, ok, "model %s should support thinking", model)
 	}
 }
+
+func TestQwenReasoningOff(t *testing.T) {
+	p := llm.NewQwenProvider("fake", "")
+	enabled, diag, ok := p.BuildEnableThinking("qwen3-32b", llm.ReasoningOff)
+	assert.False(t, ok)
+	assert.False(t, enabled)
+	assert.Empty(t, diag.Action)
+}
+
+func TestQwenReasoningClamps(t *testing.T) {
+	p := llm.NewQwenProvider("fake", "")
+	for _, mode := range []llm.ReasoningMode{llm.ReasoningLow, llm.ReasoningMedium, llm.ReasoningHigh} {
+		enabled, diag, ok := p.BuildEnableThinking("qwen3-32b", mode)
+		require.True(t, ok, "mode %s should produce config", mode)
+		assert.True(t, enabled, "mode %s -> enable_thinking=true", mode)
+		assert.Equal(t, "clamped", diag.Action, "any non-off mode emits clamped diagnostic")
+		assert.Contains(t, diag.Reason, "boolean")
+	}
+}
+
+func TestQwenReasoningUnsupportedModel(t *testing.T) {
+	p := llm.NewQwenProvider("fake", "")
+	_, _, ok := p.BuildEnableThinking("qwen-turbo", llm.ReasoningHigh)
+	assert.False(t, ok, "qwen-turbo does not support thinking")
+}
+
+func TestQwenReasoningSupportsKnownThinkingModels(t *testing.T) {
+	p := llm.NewQwenProvider("fake", "")
+	for _, model := range []string{"qwen-qwq-32b", "qwen3-32b", "qwen3-coder-30b"} {
+		_, _, ok := p.BuildEnableThinking(model, llm.ReasoningMedium)
+		assert.True(t, ok, "model %s should support thinking", model)
+	}
+}

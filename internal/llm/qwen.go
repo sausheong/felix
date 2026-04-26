@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -180,6 +182,28 @@ func (p *QwenProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan 
 		openaiReq.Temperature = float32(req.Temperature)
 	}
 
+	if enabled, diag, ok := p.BuildEnableThinking(model, req.Reasoning); ok {
+		// TODO: Qwen DashScope expects a custom top-level "enable_thinking"
+		// JSON field that go-openai v1.41 does not expose via any
+		// ExtraBody/RawJSON mechanism. Wiring it requires either upgrading
+		// to a go-openai version with custom-field support or adding a
+		// custom HTTP roundtripper. Tracked as a Phase 2 follow-up.
+		_ = enabled
+		_ = diag
+		slog.Info("qwen thinking requested",
+			"model", model,
+			"requested", string(req.Reasoning),
+			"clamped_to_bool", true,
+			"reason", diag.Reason,
+			"sdk_limitation", "enable_thinking not yet wired to wire format")
+	} else if req.Reasoning != ReasoningOff {
+		slog.Info("reasoning ignored",
+			"provider", "qwen",
+			"model", model,
+			"requested", string(req.Reasoning),
+			"reason", "model does not support thinking")
+	}
+
 	stream, err := p.client.CreateChatCompletionStream(ctx, openaiReq)
 	if err != nil {
 		return nil, err
@@ -290,4 +314,35 @@ func (p *QwenProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagno
 		allDiags = append(allDiags, diags...)
 	}
 	return out, allDiags
+}
+
+// BuildEnableThinking maps a ReasoningMode to Qwen's enable_thinking
+// boolean. Returns (false, empty diag, false) when off or the model
+// doesn't support thinking. For any non-off mode on a supported model,
+// returns (true, clamped diag, true) — the boolean toggle loses the
+// requested low/medium/high granularity, so the diag always fires.
+func (p *QwenProvider) BuildEnableThinking(model string, mode ReasoningMode) (bool, Diagnostic, bool) {
+	if mode == ReasoningOff {
+		return false, Diagnostic{}, false
+	}
+	if !qwenSupportsThinking(model) {
+		return false, Diagnostic{}, false
+	}
+	return true, Diagnostic{
+		Action: "clamped",
+		Reason: "qwen reasoning is boolean; granularity ignored",
+	}, true
+}
+
+// qwenSupportsThinking returns true for Qwen models that support the
+// enable_thinking parameter. Conservative — unknown IDs default to
+// false (only QwQ and Qwen3 family models accept this field).
+func qwenSupportsThinking(model string) bool {
+	prefixes := []string{"qwen-qwq", "qwen3"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
 }
