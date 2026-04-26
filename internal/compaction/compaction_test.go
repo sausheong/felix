@@ -91,10 +91,15 @@ func TestManagerRefusesShortSession(t *testing.T) {
 	assert.Equal(t, "too_short", res.Skipped)
 }
 
-func TestManagerSummarizerErrorReturnsResult(t *testing.T) {
+func TestManagerSummarizerErrorFallsBackToPlaceholder(t *testing.T) {
+	// With the three-stage fallback chain, an empty model response no
+	// longer surfaces ErrEmptySummary to the Manager — stage 3 emits a
+	// placeholder summary so compaction "succeeds" with a stub. The
+	// circuit breaker (Task 5) detects the stub by string match for
+	// breaker accounting.
 	mgr := &Manager{
 		Summarizer: &Summarizer{
-			Provider: &fakeProvider{text: ""}, // → ErrEmptySummary
+			Provider: &fakeProvider{text: ""},
 			Model:    "m",
 			Timeout:  time.Second,
 		},
@@ -102,9 +107,10 @@ func TestManagerSummarizerErrorReturnsResult(t *testing.T) {
 	}
 	sess := longSession()
 	res, err := mgr.MaybeCompact(context.Background(), sess, ReasonManual, "")
-	require.NoError(t, err) // skip is not a hard error
-	assert.False(t, res.Compacted)
-	assert.Equal(t, "empty_summary", res.Skipped)
+	require.NoError(t, err)
+	assert.True(t, res.Compacted, "stage-3 placeholder counts as a successful compaction")
+	assert.Contains(t, res.Summary, "compaction failed",
+		"summary must contain the placeholder marker so Task 5's breaker can detect it")
 }
 
 func TestManagerSerializesPerSession(t *testing.T) {
