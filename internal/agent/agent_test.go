@@ -429,9 +429,11 @@ type mockTool struct {
 	output string
 }
 
-func (t *mockTool) Name() string                    { return t.name }
-func (t *mockTool) Description() string             { return "mock tool" }
-func (t *mockTool) Parameters() json.RawMessage      { return json.RawMessage(`{"type":"object","properties":{}}`) }
+func (t *mockTool) Name() string        { return t.name }
+func (t *mockTool) Description() string { return "mock tool" }
+func (t *mockTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
+}
 func (t *mockTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{Output: t.output}, nil
 }
@@ -637,7 +639,7 @@ func TestCompactionMessageCapHonored(t *testing.T) {
 		}
 		mgr := &compaction.Manager{
 			Summarizer: &compaction.Summarizer{
-				Provider: &fakeRecordingSummarizer{text: "summary"},
+				Provider: &cannedSummarizer{text: "summary"},
 				Model:    "m",
 				Timeout:  time.Second,
 			},
@@ -645,9 +647,15 @@ func TestCompactionMessageCapHonored(t *testing.T) {
 			MessageCap:    cap,
 		}
 		return &Runtime{
-			LLM:        mock,
-			Tools:      tools.NewRegistry(),
-			Session:    sess,
+			LLM:     mock,
+			Tools:   tools.NewRegistry(),
+			Session: sess,
+			// Model picks an "anthropic/claude-*" alias so
+			// tokens.ContextWindow returns 200000 (any modelID containing
+			// "claude" hits the Anthropic 200k branch). With the test's
+			// tiny messages, the 60% threshold of a 200k window is
+			// unreachable — isolating MessageCap as the variable under
+			// test.
 			Model:      "anthropic/claude-mock",
 			Workspace:  t.TempDir(),
 			MaxTurns:   3,
@@ -681,13 +689,13 @@ func TestCompactionMessageCapHonored(t *testing.T) {
 	assert.False(t, sawCompaction, "MessageCap=0 with no threshold hit must NOT fire compaction")
 }
 
-// fakeRecordingSummarizer is a minimal LLMProvider for tests that need a
-// summarizer-shaped fake but don't care about the recording side.
-type fakeRecordingSummarizer struct {
+// cannedSummarizer is a minimal LLMProvider stub for tests that need a
+// summarizer-shaped fake; it returns a fixed text reply on every call.
+type cannedSummarizer struct {
 	text string
 }
 
-func (f *fakeRecordingSummarizer) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
+func (f *cannedSummarizer) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
 	ch := make(chan llm.ChatEvent, 4)
 	go func() {
 		defer close(ch)
@@ -697,4 +705,4 @@ func (f *fakeRecordingSummarizer) ChatStream(ctx context.Context, req llm.ChatRe
 	return ch, nil
 }
 
-func (f *fakeRecordingSummarizer) Models() []llm.ModelInfo { return nil }
+func (f *cannedSummarizer) Models() []llm.ModelInfo { return nil }

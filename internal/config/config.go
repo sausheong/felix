@@ -16,18 +16,18 @@ import (
 
 // Config is the top-level Felix configuration.
 type Config struct {
-	Gateway   GatewayConfig            `json:"gateway"`
-	Providers map[string]ProviderConfig `json:"providers"`
-	Agents    AgentsConfig             `json:"agents"`
-	Bindings  []Binding                `json:"bindings"`
-	Channels  ChannelsConfig           `json:"channels"`
-	Heartbeat HeartbeatConfig          `json:"heartbeat"`
-	Memory    MemoryConfig             `json:"memory"`
-	Cortex    CortexConfig             `json:"cortex"`
-	Security  SecurityConfig           `json:"security"`
-	Local     LocalConfig              `json:"local"`
-	Telegram  TelegramConfig           `json:"telegram"`
-	MCPServers []MCPServerConfig       `json:"mcp_servers"`
+	Gateway    GatewayConfig             `json:"gateway"`
+	Providers  map[string]ProviderConfig `json:"providers"`
+	Agents     AgentsConfig              `json:"agents"`
+	Bindings   []Binding                 `json:"bindings"`
+	Channels   ChannelsConfig            `json:"channels"`
+	Heartbeat  HeartbeatConfig           `json:"heartbeat"`
+	Memory     MemoryConfig              `json:"memory"`
+	Cortex     CortexConfig              `json:"cortex"`
+	Security   SecurityConfig            `json:"security"`
+	Local      LocalConfig               `json:"local"`
+	Telegram   TelegramConfig            `json:"telegram"`
+	MCPServers []MCPServerConfig         `json:"mcp_servers"`
 
 	mu   sync.RWMutex
 	path string
@@ -57,12 +57,12 @@ type TelegramConfig struct {
 // legacy flat HTTP layout (top-level URL+Auth) is still accepted for
 // backward compatibility — Felix never silently rewrites felix.json5.
 type MCPServerConfig struct {
-	ID         string         `json:"id"`                    // unique within the list
-	Transport  string         `json:"transport,omitempty"`   // "http" (default) | "stdio"
-	HTTP       *MCPHTTPBlock  `json:"http,omitempty"`        // populated when Transport == "http"
-	Stdio      *MCPStdioBlock `json:"stdio,omitempty"`       // populated when Transport == "stdio"
-	URL        string         `json:"url,omitempty"`         // legacy flat HTTP — accepted on read, never written
-	Auth       MCPAuthConfig  `json:"auth,omitempty"`        // legacy flat HTTP — accepted on read, never written
+	ID         string         `json:"id"`                  // unique within the list
+	Transport  string         `json:"transport,omitempty"` // "http" (default) | "stdio"
+	HTTP       *MCPHTTPBlock  `json:"http,omitempty"`      // populated when Transport == "http"
+	Stdio      *MCPStdioBlock `json:"stdio,omitempty"`     // populated when Transport == "stdio"
+	URL        string         `json:"url,omitempty"`       // legacy flat HTTP — accepted on read, never written
+	Auth       MCPAuthConfig  `json:"auth,omitempty"`      // legacy flat HTTP — accepted on read, never written
 	Enabled    bool           `json:"enabled"`
 	ToolPrefix string         `json:"tool_prefix,omitempty"` // optional name prefix
 }
@@ -112,9 +112,9 @@ type ProviderConfig struct {
 }
 
 type GatewayConfig struct {
-	Host   string     `json:"host"`
-	Port   int        `json:"port"`
-	Auth   AuthConfig `json:"auth"`
+	Host   string       `json:"host"`
+	Port   int          `json:"port"`
+	Auth   AuthConfig   `json:"auth"`
 	Reload ReloadConfig `json:"reload"`
 }
 
@@ -158,9 +158,9 @@ type AgentConfig struct {
 	Workspace    string       `json:"workspace"`
 	Model        string       `json:"model"`
 	Fallbacks    []string     `json:"fallbacks"`
-	Sandbox      string       `json:"sandbox"`                    // "none", "docker", "namespace"
-	MaxTurns     int          `json:"maxTurns,omitempty"`         // max tool-use loop iterations (0 = default 25)
-	SystemPrompt string       `json:"system_prompt,omitempty"`    // inline system prompt (overrides IDENTITY.md)
+	Sandbox      string       `json:"sandbox"`                 // "none", "docker", "namespace"
+	MaxTurns     int          `json:"maxTurns,omitempty"`      // max tool-use loop iterations (0 = default 25)
+	SystemPrompt string       `json:"system_prompt,omitempty"` // inline system prompt (overrides IDENTITY.md)
 	Tools        ToolPolicy   `json:"tools"`
 	Cron         []CronConfig `json:"cron,omitempty"`
 }
@@ -338,6 +338,10 @@ func Load(path string) (*Config, error) {
 		if cur.TimeoutSec == 0 {
 			cur.TimeoutSec = d.TimeoutSec
 		}
+		// TODO: 0 means "use default" here, but the field doc says 0 disables.
+		// Migrate to *int or a sentinel when the broader Compaction merge
+		// gets revisited (same dissonance affects Threshold/PreserveTurns/
+		// TimeoutSec).
 		if cur.MessageCap == 0 {
 			cur.MessageCap = d.MessageCap
 		}
@@ -355,8 +359,8 @@ func Load(path string) (*Config, error) {
 func DefaultConfig() *Config {
 	return &Config{
 		Gateway: GatewayConfig{
-			Host: "127.0.0.1",
-			Port: 18789,
+			Host:   "127.0.0.1",
+			Port:   18789,
 			Reload: ReloadConfig{Mode: "hybrid"},
 		},
 		Providers: map[string]ProviderConfig{},

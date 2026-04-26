@@ -255,6 +255,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// confuse small local models that conflate the freshly-injected
 			// summary with the in-flight tool result. The reactive overflow
 			// handler below still covers all turns.
+			// See CompactionConfig.MessageCap for incident rationale.
 			if turn == 0 && r.Compaction != nil && r.Model != "" {
 				if r.calibrator == nil {
 					r.calibrator = tokens.NewCalibrator()
