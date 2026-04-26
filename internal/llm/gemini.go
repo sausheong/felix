@@ -227,9 +227,24 @@ func (p *GeminiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 	return events, nil
 }
 
-// NormalizeToolSchema returns tools unchanged. Per-provider stripping
-// rules (strip OpenAPI-incompatible fields) are added in Phase 2 Task 8.
+// geminiUnsupportedFields are JSON Schema fields Gemini's "OpenAPI 3.0
+// subset" rejects. This is the broadest strip set across the four
+// providers — most of the cross-provider portability gap shows up here.
+var geminiUnsupportedFields = []string{"anyOf", "oneOf", "not", "$ref", "format"}
+
+// NormalizeToolSchema strips fields incompatible with Gemini's OpenAPI
+// 3.0 subset. Diagnostics list every stripped occurrence with a
+// dotted JSON path.
 func (p *GeminiProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
-	return tools, nil
+	out := make([]ToolDef, len(tools))
+	var allDiags []Diagnostic
+	for i, t := range tools {
+		newParams, diags := StripFields(t.Name, t.Parameters, geminiUnsupportedFields)
+		td := t
+		td.Parameters = newParams
+		out[i] = td
+		allDiags = append(allDiags, diags...)
+	}
+	return out, allDiags
 }
 

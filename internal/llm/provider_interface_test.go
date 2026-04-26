@@ -1,6 +1,7 @@
 package llm_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -132,6 +133,59 @@ func TestQwenNormalizeToolSchemaStripsRef(t *testing.T) {
 	require.Len(t, diags, 2)
 	for _, d := range diags {
 		assert.Equal(t, "lookup", d.ToolName)
+		assert.Equal(t, "stripped", d.Action)
+	}
+}
+
+func TestGeminiNormalizeToolSchemaStripsAll(t *testing.T) {
+	ctx := context.Background()
+	p, err := llm.NewGeminiProvider(ctx, "fake-key")
+	if err != nil {
+		t.Skipf("Gemini provider construction failed (no API stub available): %v", err)
+	}
+	tools := []llm.ToolDef{{
+		Name: "fetch",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"url": {"type": "string", "format": "uri"},
+				"alt": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+				"choice": {"oneOf": [{"type": "string"}, {"type": "number"}]},
+				"exclude": {"not": {"type": "boolean"}}
+			},
+			"$ref": "#/defs/x"
+		}`),
+	}}
+	out, diags := p.NormalizeToolSchema(tools)
+	require.Len(t, out, 1)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(out[0].Parameters, &schema))
+
+	_, hasRef := schema["$ref"]
+	assert.False(t, hasRef, "$ref must be stripped at root")
+
+	props := schema["properties"].(map[string]any)
+	url := props["url"].(map[string]any)
+	_, hasFormat := url["format"]
+	assert.False(t, hasFormat, "format must be stripped under properties.url")
+
+	alt := props["alt"].(map[string]any)
+	_, hasAnyOf := alt["anyOf"]
+	assert.False(t, hasAnyOf, "anyOf must be stripped under properties.alt")
+
+	choice := props["choice"].(map[string]any)
+	_, hasOneOf := choice["oneOf"]
+	assert.False(t, hasOneOf, "oneOf must be stripped under properties.choice")
+
+	exclude := props["exclude"].(map[string]any)
+	_, hasNot := exclude["not"]
+	assert.False(t, hasNot, "not must be stripped under properties.exclude")
+
+	// Five diagnostics expected: $ref, properties.alt.anyOf,
+	// properties.choice.oneOf, properties.exclude.not, properties.url.format.
+	require.Len(t, diags, 5)
+	for _, d := range diags {
+		assert.Equal(t, "fetch", d.ToolName)
 		assert.Equal(t, "stripped", d.Action)
 	}
 }
