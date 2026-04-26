@@ -222,3 +222,40 @@ func TestParseReasoningMode(t *testing.T) {
 	_, err = llm.ParseReasoningMode("LOW")
 	assert.Error(t, err, "case-sensitive: uppercase must error")
 }
+
+func TestAnthropicReasoningOff(t *testing.T) {
+	p := llm.NewAnthropicProvider("fake", "")
+	cfg, ok := p.BuildThinkingConfig("claude-sonnet-4-5", llm.ReasoningOff)
+	assert.False(t, ok, "off → no thinking config")
+	assert.Nil(t, cfg)
+}
+
+func TestAnthropicReasoningLevels(t *testing.T) {
+	p := llm.NewAnthropicProvider("fake", "")
+	cases := map[llm.ReasoningMode]int64{
+		llm.ReasoningLow:    1024,
+		llm.ReasoningMedium: 4096,
+		llm.ReasoningHigh:   16384,
+	}
+	for mode, wantBudget := range cases {
+		cfg, ok := p.BuildThinkingConfig("claude-sonnet-4-5", mode)
+		require.True(t, ok, "mode %s should produce config", mode)
+		require.NotNil(t, cfg)
+		assert.Equal(t, wantBudget, cfg.BudgetTokens, "mode %s budget", mode)
+	}
+}
+
+func TestAnthropicReasoningUnsupportedModel(t *testing.T) {
+	p := llm.NewAnthropicProvider("fake", "")
+	cfg, ok := p.BuildThinkingConfig("claude-3-haiku-20240307", llm.ReasoningHigh)
+	assert.False(t, ok, "haiku-3 doesn't support thinking; mode should be ignored")
+	assert.Nil(t, cfg)
+}
+
+func TestAnthropicReasoningUnknownModelDefaultsSupported(t *testing.T) {
+	p := llm.NewAnthropicProvider("fake", "")
+	cfg, ok := p.BuildThinkingConfig("claude-future-model-vNEW", llm.ReasoningMedium)
+	assert.True(t, ok, "unknown models default to supported (let API decide)")
+	require.NotNil(t, cfg)
+	assert.Equal(t, int64(4096), cfg.BudgetTokens)
+}
