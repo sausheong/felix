@@ -49,6 +49,16 @@ type ToolDef struct {
 	Parameters  json.RawMessage `json:"parameters"` // JSON Schema
 }
 
+// Diagnostic describes a single normalization or clamping event emitted
+// by NormalizeToolSchema or per-provider reasoning mapping. The runtime
+// logs these via slog; they are advisory, not fatal.
+type Diagnostic struct {
+	ToolName string // empty for non-tool diagnostics (e.g., reasoning)
+	Field    string // dotted JSON path: "properties.url.format" — empty for whole-tool actions
+	Action   string // "stripped" | "rewritten" | "rejected" | "clamped" | "ignored"
+	Reason   string // human-readable; safe to log
+}
+
 // ChatRequest is the input to a streaming chat call.
 type ChatRequest struct {
 	Model        string
@@ -85,6 +95,12 @@ type ModelInfo struct {
 type LLMProvider interface {
 	ChatStream(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error)
 	Models() []ModelInfo
+	// NormalizeToolSchema rewrites tool JSON Schemas to the subset the
+	// provider accepts. Returns the normalized tool list (input order
+	// preserved) and a diagnostic per stripped/rewritten/rejected field.
+	// Implementations must be deterministic — same input → same output
+	// in the same diagnostic order — to preserve prompt cache stability.
+	NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic)
 }
 
 // ParseProviderModel splits "provider/model" into (provider, model).

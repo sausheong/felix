@@ -263,3 +263,11 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 
 	return events, nil
 }
+
+// NormalizeToolSchema returns tools unchanged. Anthropic accepts the
+// full JSON Schema draft-7 dialect; per-provider stripping rules are
+// added in Phase 2 Task 5 (this is the placeholder so the interface is
+// satisfied).
+func (p *AnthropicProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
+	return tools, nil
+}

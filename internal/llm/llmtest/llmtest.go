@@ -25,6 +25,13 @@ type Base struct{}
 // Models returns an empty slice (non-nil so callers can range safely).
 func (Base) Models() []llm.ModelInfo { return []llm.ModelInfo{} }
 
+// NormalizeToolSchema is identity by default — no fields stripped, no
+// diagnostics emitted. Per-provider implementations strip fields their
+// API rejects.
+func (Base) NormalizeToolSchema(tools []llm.ToolDef) ([]llm.ToolDef, []llm.Diagnostic) {
+	return tools, nil
+}
+
 // Stub is a configurable LLMProvider for tests.
 type Stub struct {
 	Base

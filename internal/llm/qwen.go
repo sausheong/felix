@@ -274,3 +274,9 @@ func (p *QwenProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan 
 
 	return events, nil
 }
+
+// NormalizeToolSchema returns tools unchanged. Per-provider stripping
+// rules (strip $ref, definitions) are added in Phase 2 Task 7.
+func (p *QwenProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
+	return tools, nil
+}

@@ -327,3 +327,9 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 
 	return events, nil
 }
+
+// NormalizeToolSchema returns tools unchanged. Per-provider stripping
+// rules (strip $ref, definitions) are added in Phase 2 Task 6.
+func (p *OpenAIProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
+	return tools, nil
+}
