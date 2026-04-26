@@ -90,8 +90,23 @@ func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reaso
 
 	first := toCompact[0]
 	last := toCompact[len(toCompact)-1]
+	_, toPreserve, _ := Split(view, K)
 	entry := session.CompactionEntry(summary, first.ID, last.ID, m.Summarizer.Model, 0, 0, len(toCompact))
+	// Splice the compaction entry between the to-be-compacted range and the
+	// preserved range so View()'s walk-back from leaf hits: leaf → ... →
+	// preserved[0] → compaction → STOP. Without re-linking, Append would put
+	// compaction at the leaf and View() would terminate on it immediately,
+	// silently dropping every preserved turn.
+	entry.ParentID = toPreserve[0].ParentID
 	sess.Append(entry)
+	for i, e := range toPreserve {
+		if i == 0 {
+			e.ParentID = entry.ID
+		}
+		// Re-append with same ID — Session.Append's entryMap overwrite and
+		// the loader's last-write-wins behaviour both make this safe.
+		sess.Append(e)
+	}
 
 	dur := time.Since(start).Milliseconds()
 	slog.Info("compaction complete", "session_id", sess.ID, "reason", string(reason), "turns_compacted", len(toCompact), "duration_ms", dur)

@@ -42,6 +42,38 @@ func TestManagerAppendsCompactionEntry(t *testing.T) {
 	assert.Equal(t, session.EntryTypeCompaction, last.Type)
 }
 
+// TestViewIncludesPreservedRangeAfterCompaction guards against the regression
+// where View() returns only the compaction entry and silently drops the
+// preserved range. longSession() has 6 user/assistant pairs (12 entries);
+// with PreserveTurns=4 the last 4 user turns must remain verbatim, so View()
+// after compaction must be: [compaction, u3, a3, u4, a4, u5, a5, u6, a6].
+func TestViewIncludesPreservedRangeAfterCompaction(t *testing.T) {
+	mgr := &Manager{
+		Summarizer: &Summarizer{
+			Provider: &fakeProvider{text: "summary text"},
+			Model:    "m",
+			Timeout:  time.Second,
+		},
+		PreserveTurns: 4,
+	}
+	sess := longSession()
+	res, err := mgr.MaybeCompact(context.Background(), sess, ReasonManual, "")
+	require.NoError(t, err)
+	require.True(t, res.Compacted)
+
+	view := sess.View()
+	require.Len(t, view, 9, "view must be [compaction, 4 user/assistant pairs]")
+	assert.Equal(t, session.EntryTypeCompaction, view[0].Type, "first entry is the summary")
+	for i := 1; i < 9; i++ {
+		assert.Equal(t, session.EntryTypeMessage, view[i].Type, "entry %d is a preserved message", i)
+	}
+	// User/assistant should alternate starting with user.
+	assert.Equal(t, "user", view[1].Role)
+	assert.Equal(t, "assistant", view[2].Role)
+	assert.Equal(t, "user", view[7].Role)
+	assert.Equal(t, "assistant", view[8].Role)
+}
+
 func TestManagerRefusesShortSession(t *testing.T) {
 	mgr := &Manager{
 		Summarizer: &Summarizer{
