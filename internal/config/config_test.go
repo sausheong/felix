@@ -323,6 +323,31 @@ func TestResolveMCPServers_MissingSecretSkipsServer(t *testing.T) {
 	assert.Equal(t, "ltm-good", got[0].ID)
 }
 
+func TestResolveMCPServers_EmptyIDSkipsServer(t *testing.T) {
+	// A stub entry from clicking "+ Add MCP Server" in the UI without
+	// filling in the ID must not take down the whole gateway. Same posture
+	// as missing-secret: log+skip.
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{
+			{ID: "", Transport: "http", Enabled: true},
+			{
+				ID: "ltm-good", Transport: "http", Enabled: true,
+				HTTP: &MCPHTTPBlock{
+					URL: "https://y",
+					Auth: MCPAuthConfig{
+						Kind: "oauth2_client_credentials", TokenURL: "https://t",
+						ClientID: "c", ClientSecret: "ok",
+					},
+				},
+			},
+		},
+	}
+	got, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "ltm-good", got[0].ID)
+}
+
 func TestResolveMCPServers_UnsupportedAuthKind(t *testing.T) {
 	cfg := &Config{
 		MCPServers: []MCPServerConfig{{

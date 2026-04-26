@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"fyne.io/systray"
@@ -148,6 +150,13 @@ func onReady() {
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Shut down and exit")
 
+	// Posted to by SIGTERM/SIGINT handler so terminal-driven kills run
+	// the same Cleanup → systray.Quit chain as the Quit menu item.
+	// Without this, signals bypass cleanup and orphan the bundled Ollama
+	// supervisor + its runner children.
+	quitCh := make(chan os.Signal, 1)
+	signal.Notify(quitCh, syscall.SIGTERM, syscall.SIGINT)
+
 	go func() {
 		for {
 			select {
@@ -184,20 +193,29 @@ func onReady() {
 				}
 				slog.Info("gateway restarted", "port", port)
 			case <-mQuit.ClickedCh:
-				// Hard deadline so a hung cleanup step (slow MCP server,
-				// stuck cortex/Ollama, etc.) can't trap the user. macOS's
-				// "Quit" should always quit within seconds.
-				go func() {
-					time.Sleep(5 * time.Second)
-					slog.Error("cleanup exceeded 5s, force-exiting")
-					os.Exit(1)
-				}()
-				result.Cleanup()
-				systray.Quit()
+				shutdownAndExit(result, "menu Quit clicked")
+				return
+			case sig := <-quitCh:
+				shutdownAndExit(result, fmt.Sprintf("signal %s", sig))
 				return
 			}
 		}
 	}()
+}
+
+// shutdownAndExit runs the gateway cleanup chain with a hard 5s deadline,
+// then asks systray to exit. macOS Quit (and signal-driven kills) should
+// always finish within seconds — a hung MCP server, cortex, or Ollama
+// supervisor can't be allowed to trap the user.
+func shutdownAndExit(result *startup.Result, reason string) {
+	slog.Info("shutting down", "reason", reason)
+	go func() {
+		time.Sleep(5 * time.Second)
+		slog.Error("cleanup exceeded 5s, force-exiting")
+		os.Exit(1)
+	}()
+	result.Cleanup()
+	systray.Quit()
 }
 
 func onQuit() {

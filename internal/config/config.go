@@ -624,7 +624,11 @@ func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 			continue
 		}
 		if s.ID == "" {
-			return nil, fmt.Errorf("mcp_servers: entry with empty id")
+			// A stub entry (e.g. user clicked "+ Add MCP Server" in the UI
+			// but didn't fill in the ID before saving) shouldn't crash the
+			// gateway. Log and skip — same posture as missing-secret.
+			slog.Warn("mcp_servers: skipping entry with empty id")
+			continue
 		}
 
 		transport := s.Transport
