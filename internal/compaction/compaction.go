@@ -4,11 +4,25 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/sausheong/felix/internal/session"
 )
+
+// MaxConsecutiveFailures is the per-session circuit-breaker threshold.
+// After this many consecutive autocompact attempts that drop to the
+// placeholder stage (stage 3), MaybeCompact stops attempting compaction
+// for the session and returns Skipped="circuit_breaker".
+//
+// The breaker resets on any genuine summarizer success (stage 1 or 2
+// returning real content). It exists to prevent a session whose context
+// is irrecoverably over the limit from hammering the API on every turn.
+//
+// Pattern from Claude Code MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
+// (src/services/compact/autoCompact.ts:67-70).
+const MaxConsecutiveFailures = 3
 
 // Reason identifies why compaction was triggered.
 type Reason string
@@ -39,9 +53,16 @@ type Manager struct {
 	Summarizer    *Summarizer
 	PreserveTurns int     // K; default 4 if zero
 	Threshold     float64 // fraction of context window that triggers preventive compaction (e.g. 0.6); 0 means use caller default
+	// MessageCap is a hard backstop on total message count before compaction
+	// fires, regardless of token threshold. 0 disables the cap. See
+	// CompactionConfig.MessageCap for the rationale.
+	MessageCap int
 
 	mu    sync.Mutex             // guards locks map
 	locks map[string]*sync.Mutex // session.ID → mutex
+
+	failMu   sync.Mutex     // guards failures map; separate from mu so the breaker check (called before lockFor) doesn't serialize on the per-session lock-map allocator
+	failures map[string]int // session.ID → consecutive-failure count
 }
 
 // MaybeCompact runs a compaction pass on sess if the session has more than
@@ -60,6 +81,15 @@ type Manager struct {
 func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reason Reason, instructions string) (Result, error) {
 	if m == nil || m.Summarizer == nil {
 		return Result{Reason: reason, Skipped: "no_summarizer"}, nil
+	}
+
+	if fc := m.failureCount(sess.ID); fc >= MaxConsecutiveFailures {
+		slog.Info("compaction skipped",
+			"session_id", sess.ID,
+			"reason", string(reason),
+			"skipped", "circuit_breaker",
+			"consecutive_failures", fc)
+		return Result{Reason: reason, Skipped: "circuit_breaker"}, nil
 	}
 
 	K := m.PreserveTurns
@@ -85,7 +115,22 @@ func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reaso
 	if err != nil {
 		skipReason := classifySummarizerError(err)
 		slog.Warn("compaction skipped", "session_id", sess.ID, "reason", string(reason), "skipped", skipReason, "detail", err.Error())
+		// A hard error from Summarize means even stage 3 didn't run.
+		// Count it as a failure for breaker accounting.
+		m.incrementFailure(sess.ID)
 		return Result{Reason: reason, Skipped: skipReason}, nil
+	}
+
+	// summarizeWithFallback's stage 3 returns a placeholder summary
+	// (no error) when both stage 1 and stage 2 failed. We detect
+	// placeholders by their stable marker phrase and treat them as
+	// failures for breaker accounting; real (stage-1 or stage-2)
+	// summaries reset the counter.
+	isPlaceholder := strings.Contains(summary, "compaction failed and the summary could not be generated")
+	if isPlaceholder {
+		m.incrementFailure(sess.ID)
+	} else {
+		m.resetFailures(sess.ID)
 	}
 
 	first := toCompact[0]
@@ -132,8 +177,39 @@ func (m *Manager) ForgetSession(sessionID string) {
 		return
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	delete(m.locks, sessionID)
+	m.mu.Unlock()
+	m.failMu.Lock()
+	delete(m.failures, sessionID)
+	m.failMu.Unlock()
+}
+
+// incrementFailure bumps the per-session consecutive-failure count and
+// returns the new count.
+func (m *Manager) incrementFailure(sessionID string) int {
+	m.failMu.Lock()
+	defer m.failMu.Unlock()
+	if m.failures == nil {
+		m.failures = make(map[string]int)
+	}
+	m.failures[sessionID]++
+	return m.failures[sessionID]
+}
+
+// resetFailures clears the per-session counter on a genuine success.
+func (m *Manager) resetFailures(sessionID string) {
+	m.failMu.Lock()
+	defer m.failMu.Unlock()
+	if m.failures != nil {
+		delete(m.failures, sessionID)
+	}
+}
+
+// failureCount returns the current per-session consecutive-failure count.
+func (m *Manager) failureCount(sessionID string) int {
+	m.failMu.Lock()
+	defer m.failMu.Unlock()
+	return m.failures[sessionID]
 }
 
 func (m *Manager) lockFor(sessionID string) *sync.Mutex {

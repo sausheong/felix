@@ -429,9 +429,11 @@ type mockTool struct {
 	output string
 }
 
-func (t *mockTool) Name() string                    { return t.name }
-func (t *mockTool) Description() string             { return "mock tool" }
-func (t *mockTool) Parameters() json.RawMessage      { return json.RawMessage(`{"type":"object","properties":{}}`) }
+func (t *mockTool) Name() string        { return t.name }
+func (t *mockTool) Description() string { return "mock tool" }
+func (t *mockTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
+}
 func (t *mockTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{Output: t.output}, nil
 }
@@ -616,3 +618,91 @@ func TestCompactionMessageIncludesContinuationDirective(t *testing.T) {
 	assert.Contains(t, summaryMsg.Content, "do not acknowledge the summary",
 		"continuation directive must forbid restarting")
 }
+
+// TestCompactionMessageCapHonored verifies the runtime reads the message-count
+// cap from CompactionConfig.MessageCap rather than the previously-hardcoded
+// constant. With MessageCap=10 and msgs > 10, compaction must trigger; with
+// MessageCap=0 (cap disabled) and msgs > 10 but threshold not hit, compaction
+// must NOT trigger.
+func TestCompactionMessageCapHonored(t *testing.T) {
+	mock := &mockLLMProvider{events: []llm.ChatEvent{
+		{Type: llm.EventTextDelta, Text: "ok"},
+		{Type: llm.EventDone},
+	}}
+
+	makeRT := func(cap int) *Runtime {
+		sess := session.NewSession("a", "k")
+		// Pre-populate session with enough messages to exceed cap=10.
+		for i := 0; i < 12; i++ {
+			sess.Append(session.UserMessageEntry("u"))
+			sess.Append(session.AssistantMessageEntry("a"))
+		}
+		mgr := &compaction.Manager{
+			Summarizer: &compaction.Summarizer{
+				Provider: &cannedSummarizer{text: "summary"},
+				Model:    "m",
+				Timeout:  time.Second,
+			},
+			PreserveTurns: 4,
+			MessageCap:    cap,
+		}
+		return &Runtime{
+			LLM:     mock,
+			Tools:   tools.NewRegistry(),
+			Session: sess,
+			// Model picks an "anthropic/claude-*" alias so
+			// tokens.ContextWindow returns 200000 (any modelID containing
+			// "claude" hits the Anthropic 200k branch). With the test's
+			// tiny messages, the 60% threshold of a 200k window is
+			// unreachable — isolating MessageCap as the variable under
+			// test.
+			Model:      "anthropic/claude-mock",
+			Workspace:  t.TempDir(),
+			MaxTurns:   3,
+			Compaction: mgr,
+		}
+	}
+
+	// With cap=10, the existing 24+ messages exceed it; compaction MUST fire.
+	rt := makeRT(10)
+	events, err := rt.Run(context.Background(), "go", nil)
+	require.NoError(t, err)
+	var sawCompaction bool
+	for e := range events {
+		if e.Type == EventCompactionDone || e.Type == EventCompactionStart {
+			sawCompaction = true
+		}
+	}
+	assert.True(t, sawCompaction, "MessageCap=10 with 24+ msgs must fire compaction")
+
+	// With cap=0 (disabled) and a high-window model that won't hit the
+	// token threshold, compaction MUST NOT fire.
+	rt = makeRT(0)
+	events, err = rt.Run(context.Background(), "go", nil)
+	require.NoError(t, err)
+	sawCompaction = false
+	for e := range events {
+		if e.Type == EventCompactionDone || e.Type == EventCompactionStart {
+			sawCompaction = true
+		}
+	}
+	assert.False(t, sawCompaction, "MessageCap=0 with no threshold hit must NOT fire compaction")
+}
+
+// cannedSummarizer is a minimal LLMProvider stub for tests that need a
+// summarizer-shaped fake; it returns a fixed text reply on every call.
+type cannedSummarizer struct {
+	text string
+}
+
+func (f *cannedSummarizer) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
+	ch := make(chan llm.ChatEvent, 4)
+	go func() {
+		defer close(ch)
+		ch <- llm.ChatEvent{Type: llm.EventTextDelta, Text: f.text}
+		ch <- llm.ChatEvent{Type: llm.EventDone}
+	}()
+	return ch, nil
+}
+
+func (f *cannedSummarizer) Models() []llm.ModelInfo { return nil }

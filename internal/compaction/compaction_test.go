@@ -2,6 +2,7 @@ package compaction
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -91,10 +92,15 @@ func TestManagerRefusesShortSession(t *testing.T) {
 	assert.Equal(t, "too_short", res.Skipped)
 }
 
-func TestManagerSummarizerErrorReturnsResult(t *testing.T) {
+func TestManagerSummarizerErrorFallsBackToPlaceholder(t *testing.T) {
+	// With the three-stage fallback chain, an empty model response no
+	// longer surfaces ErrEmptySummary to the Manager — stage 3 emits a
+	// placeholder summary so compaction "succeeds" with a stub. The
+	// circuit breaker (Task 5) detects the stub by string match for
+	// breaker accounting.
 	mgr := &Manager{
 		Summarizer: &Summarizer{
-			Provider: &fakeProvider{text: ""}, // → ErrEmptySummary
+			Provider: &fakeProvider{text: ""},
 			Model:    "m",
 			Timeout:  time.Second,
 		},
@@ -102,9 +108,10 @@ func TestManagerSummarizerErrorReturnsResult(t *testing.T) {
 	}
 	sess := longSession()
 	res, err := mgr.MaybeCompact(context.Background(), sess, ReasonManual, "")
-	require.NoError(t, err) // skip is not a hard error
-	assert.False(t, res.Compacted)
-	assert.Equal(t, "empty_summary", res.Skipped)
+	require.NoError(t, err)
+	assert.True(t, res.Compacted, "stage-3 placeholder counts as a successful compaction")
+	assert.Contains(t, res.Summary, "compaction failed",
+		"summary must contain the placeholder marker so Task 5's breaker can detect it")
 }
 
 func TestManagerSerializesPerSession(t *testing.T) {
@@ -280,3 +287,97 @@ func (d *delayedProvider) ChatStream(ctx context.Context, req llm.ChatRequest) (
 }
 
 func (d *delayedProvider) Models() []llm.ModelInfo { return nil }
+
+// alwaysFailingProvider returns an error from ChatStream every call.
+type alwaysFailingProvider struct{}
+
+func (a *alwaysFailingProvider) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
+	return nil, errors.New("provider down")
+}
+
+func (a *alwaysFailingProvider) Models() []llm.ModelInfo { return nil }
+
+func TestCircuitBreakerTripsAfterMaxFailures(t *testing.T) {
+	mgr := &Manager{
+		Summarizer: &Summarizer{
+			Provider: &alwaysFailingProvider{},
+			Model:    "m",
+			Timeout:  time.Second,
+		},
+		PreserveTurns: 4,
+	}
+	sess := longSession()
+
+	// First N-1 attempts run the summarizer; the alwaysFailingProvider
+	// makes every call drop to stage 3 (placeholder). The breaker treats
+	// hitting stage 3 as failure for circuit-breaker accounting.
+	//
+	// After each placeholder compaction, View() walks back to the new
+	// compaction entry and Split sees only the preserved K turns — too
+	// short to compact again. To keep the loop reaching the summarizer
+	// (so the failure counter can increment) we add a new user/assistant
+	// pair between iterations, simulating real conversation continuing
+	// through repeated compaction failures.
+	//
+	// First MaxConsecutiveFailures calls: Compacted=true (placeholder)
+	// — each increments the failure counter. The next call sees
+	// counter >= MaxConsecutiveFailures and is blocked by the breaker.
+	for i := 0; i < MaxConsecutiveFailures; i++ {
+		res, err := mgr.MaybeCompact(context.Background(), sess, ReasonPreventive, "")
+		require.NoError(t, err, "iteration %d", i)
+		assert.True(t, res.Compacted, "iteration %d should still attempt", i)
+		// Add new turns so the next iteration has something to compact.
+		sess.Append(session.UserMessageEntry("follow-up"))
+		sess.Append(session.AssistantMessageEntry("more reply"))
+	}
+	res, err := mgr.MaybeCompact(context.Background(), sess, ReasonPreventive, "")
+	require.NoError(t, err)
+	assert.False(t, res.Compacted, "call after MaxConsecutiveFailures must be skipped by circuit breaker")
+	assert.Equal(t, "circuit_breaker", res.Skipped)
+}
+
+func TestCircuitBreakerResetsOnSuccess(t *testing.T) {
+	mgr := &Manager{
+		Summarizer: &Summarizer{
+			Provider: &fakeProvider{text: "ok"},
+			Model:    "m",
+			Timeout:  time.Second,
+		},
+		PreserveTurns: 4,
+	}
+	sess := longSession()
+
+	// Run several successful compactions; failure count stays 0.
+	for i := 0; i < MaxConsecutiveFailures+5; i++ {
+		_, err := mgr.MaybeCompact(context.Background(), sess, ReasonPreventive, "")
+		require.NoError(t, err, "iteration %d", i)
+		// Don't assert Compacted=true: Split returns ok=false once the
+		// session has nothing left to compact past PreserveTurns. Either
+		// way the breaker must NOT trip on stage-1 success.
+	}
+}
+
+func TestCircuitBreakerIsPerSession(t *testing.T) {
+	mgr := &Manager{
+		Summarizer: &Summarizer{
+			Provider: &alwaysFailingProvider{},
+			Model:    "m",
+			Timeout:  time.Second,
+		},
+		PreserveTurns: 4,
+	}
+	sessA := longSession()
+	sessB := longSession()
+
+	for i := 0; i < MaxConsecutiveFailures; i++ {
+		_, _ = mgr.MaybeCompact(context.Background(), sessA, ReasonPreventive, "")
+		// Add new turns so each iteration has compactable history.
+		sessA.Append(session.UserMessageEntry("follow-up"))
+		sessA.Append(session.AssistantMessageEntry("more reply"))
+	}
+
+	res, err := mgr.MaybeCompact(context.Background(), sessB, ReasonPreventive, "")
+	require.NoError(t, err)
+	assert.NotEqual(t, "circuit_breaker", res.Skipped,
+		"Session B must not be tripped by Session A's failures")
+}

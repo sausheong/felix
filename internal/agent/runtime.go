@@ -244,10 +244,10 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// Preventive compaction check.
 			// Two triggers, either is sufficient:
 			//   - Token estimate exceeds threshold * model context window.
-			//   - Hard message-count cap (compactMsgsTrigger). For local
-			//     models the reported window is huge (32K tokens default)
-			//     so the threshold-based check almost never fires; the
-			//     count cap keeps prefill bounded for fast TTFT.
+			//   - Hard message-count cap (CompactionConfig.MessageCap; 0
+			//     disables). For local models the reported window is huge
+			//     (32K tokens default) so the threshold-based check almost
+			//     never fires; the count cap keeps prefill bounded for fast TTFT.
 			//
 			// Only fires at turn==0 (start of a new user-initiated run).
 			// Compacting mid-loop — between a tool_call and the assistant's
@@ -255,6 +255,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// confuse small local models that conflate the freshly-injected
 			// summary with the in-flight tool result. The reactive overflow
 			// handler below still covers all turns.
+			// See CompactionConfig.MessageCap for incident rationale.
 			if turn == 0 && r.Compaction != nil && r.Model != "" {
 				if r.calibrator == nil {
 					r.calibrator = tokens.NewCalibrator()
@@ -266,7 +267,8 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					threshold = r.Compaction.Threshold
 				}
 				thresholdHit := window > 0 && estimate > int(threshold*float64(window))
-				countHit := len(msgs) > compactMsgsTrigger
+				msgCap := r.Compaction.MessageCap
+				countHit := msgCap > 0 && len(msgs) > msgCap
 				if thresholdHit || countHit {
 					events <- AgentEvent{Type: EventCompactionStart}
 					res, _ := r.Compaction.MaybeCompact(ctx, r.Session, compaction.ReasonPreventive, "")

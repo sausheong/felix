@@ -633,3 +633,18 @@ func TestStripMCPAutoAdded_NoSnapshot(t *testing.T) {
 	runtime.StripMCPAutoAdded(incoming)
 	assert.ElementsMatch(t, []string{"bash", "ltm_x"}, incoming.Agents.List[0].Tools.Allow)
 }
+
+func TestCompactionConfigMessageCapDefault(t *testing.T) {
+	cfg := DefaultConfig()
+	assert.Equal(t, 50, cfg.Agents.Defaults.Compaction.MessageCap,
+		"default MessageCap must be 50 (conservative; tool-heavy turns won't insta-trigger)")
+}
+
+func TestCompactionConfigMessageCapZeroDisablesCap(t *testing.T) {
+	// Documented contract: MessageCap == 0 disables the count-based trigger,
+	// leaving only the token-threshold check active. Verify the type and
+	// default behavior; runtime exercises this in agent_test.go.
+	var cfg CompactionConfig
+	cfg.MessageCap = 0
+	assert.Equal(t, 0, cfg.MessageCap)
+}

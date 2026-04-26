@@ -15,13 +15,6 @@ import (
 
 const maxToolResultLen = 4000 // truncate tool results longer than this
 
-// compactMsgsTrigger forces preventive compaction when len(msgs) exceeds
-// this number. The token-window-based threshold rarely fires for local
-// models (gemma4 reports a 32K-token window so 60% ≈ 76K chars and our
-// typical prefill is 5-25K), so we need an absolute cap to bound prefill
-// growth and keep TTFT predictable.
-const compactMsgsTrigger = 20
-
 // detectImageMIME returns the actual MIME type based on magic bytes.
 // Falls back to the provided hint if the format is unrecognized.
 func detectImageMIME(data []byte, hint string) string {
