@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/llm/llmtest"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/tools"
 )
@@ -18,6 +20,7 @@ import (
 // canned text response. Used to inspect what the runtime sends to the
 // LLM across turns.
 type recordingProvider struct {
+	llmtest.Base
 	mu       sync.Mutex
 	requests []llm.ChatRequest
 	reply    string
@@ -35,10 +38,6 @@ func (r *recordingProvider) ChatStream(ctx context.Context, req llm.ChatRequest)
 		ch <- llm.ChatEvent{Type: llm.EventDone}
 	}()
 	return ch, nil
-}
-
-func (r *recordingProvider) Models() []llm.ModelInfo {
-	return []llm.ModelInfo{{ID: "rec", Name: "Recording", Provider: "rec"}}
 }
 
 // requestPrefixSignature renders the cache-relevant portion of a request:
@@ -174,4 +173,153 @@ func prefixWithoutLastMessage(t *testing.T, req llm.ChatRequest) string {
 	clone := req
 	clone.Messages = req.Messages[:len(req.Messages)-1]
 	return fullSignature(t, clone)
+}
+
+// strippingRecordingProvider is like recordingProvider but also strips
+// the "format" field from tool schemas. Used to prove the runtime
+// actually calls NormalizeToolSchema (rather than passing tools
+// through unchanged).
+type strippingRecordingProvider struct {
+	llmtest.Base
+	mu       sync.Mutex
+	requests []llm.ChatRequest
+	reply    string
+}
+
+func (p *strippingRecordingProvider) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	p.mu.Unlock()
+	ch := make(chan llm.ChatEvent, 4)
+	go func() {
+		defer close(ch)
+		ch <- llm.ChatEvent{Type: llm.EventTextDelta, Text: p.reply}
+		ch <- llm.ChatEvent{Type: llm.EventDone}
+	}()
+	return ch, nil
+}
+
+func (p *strippingRecordingProvider) NormalizeToolSchema(tools []llm.ToolDef) ([]llm.ToolDef, []llm.Diagnostic) {
+	out := make([]llm.ToolDef, len(tools))
+	var diags []llm.Diagnostic
+	for i, t := range tools {
+		newParams, d := llm.StripFields(t.Name, t.Parameters, []string{"format"})
+		td := t
+		td.Parameters = newParams
+		out[i] = td
+		diags = append(diags, d...)
+	}
+	return out, diags
+}
+
+// customMockTool is a local mock tool whose JSON Schema parameters can
+// be supplied per-instance. We use it here (instead of the package-wide
+// mockTool) so this test can register a tool whose schema contains the
+// "format" field that strippingRecordingProvider strips, without
+// touching agent_test.go's shared fixture.
+type customMockTool struct {
+	name   string
+	schema []byte
+	output string
+}
+
+func (t *customMockTool) Name() string                { return t.name }
+func (t *customMockTool) Description() string         { return "custom mock tool" }
+func (t *customMockTool) Parameters() json.RawMessage { return json.RawMessage(t.schema) }
+func (t *customMockTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+	return tools.ToolResult{Output: t.output}, nil
+}
+
+// TestRuntimeCallsNormalizeToolSchema asserts that the agent runtime
+// invokes NormalizeToolSchema before constructing the ChatRequest
+// (so the model sees the provider's normalized tool list, not the raw
+// tool definitions). Also asserts byte-determinism across turns —
+// required for prompt cache stability.
+func TestRuntimeCallsNormalizeToolSchema(t *testing.T) {
+	rec := &strippingRecordingProvider{reply: "ok"}
+
+	sess := session.NewSession("test-agent", "test-key")
+	reg := tools.NewRegistry()
+	// Register a tool whose schema has "format" — the stripper above
+	// will remove it. If the runtime doesn't call NormalizeToolSchema,
+	// "format" survives and the assertion below fails.
+	reg.Register(&customMockTool{
+		name:   "fetch",
+		schema: []byte(`{"type":"object","properties":{"url":{"type":"string","format":"uri"}}}`),
+		output: "ok",
+	})
+
+	rt := &Runtime{
+		LLM:       rec,
+		Tools:     reg,
+		Session:   sess,
+		Model:     "rec-model",
+		Workspace: t.TempDir(),
+		MaxTurns:  3,
+	}
+
+	for i := 0; i < 3; i++ {
+		events, err := rt.Run(context.Background(), "ping", nil)
+		require.NoError(t, err)
+		for range events {
+		}
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.GreaterOrEqual(t, len(rec.requests), 3, "expected at least 3 ChatStream calls")
+
+	// Determinism: all turns must have byte-identical Tools.
+	for i := 1; i < len(rec.requests); i++ {
+		require.Equal(t, len(rec.requests[0].Tools), len(rec.requests[i].Tools))
+		for j := range rec.requests[0].Tools {
+			assert.Equal(t,
+				string(rec.requests[0].Tools[j].Parameters),
+				string(rec.requests[i].Tools[j].Parameters),
+				"turn %d tool %d parameters must byte-match turn 0", i, j)
+		}
+	}
+
+	// Normalization actually happened: the "format" field is gone.
+	require.Greater(t, len(rec.requests[0].Tools), 0)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(rec.requests[0].Tools[0].Parameters, &schema))
+	props := schema["properties"].(map[string]any)
+	url := props["url"].(map[string]any)
+	_, hasFormat := url["format"]
+	assert.False(t, hasFormat,
+		"runtime must call NormalizeToolSchema; format should be stripped")
+}
+
+// TestReasoningIsInRequestPrefix asserts that the agent's Reasoning
+// setting flows into ChatRequest and remains stable across turns.
+// Required for prompt cache hits with reasoning enabled.
+func TestReasoningIsInRequestPrefix(t *testing.T) {
+	rec := &recordingProvider{reply: "ok"}
+	sess := session.NewSession("test-agent", "test-key")
+	reg := tools.NewRegistry()
+
+	rt := &Runtime{
+		LLM:       rec,
+		Tools:     reg,
+		Session:   sess,
+		Model:     "rec-model",
+		Reasoning: llm.ReasoningHigh,
+		Workspace: t.TempDir(),
+		MaxTurns:  3,
+	}
+
+	for i := 0; i < 2; i++ {
+		events, err := rt.Run(context.Background(), "ping", nil)
+		require.NoError(t, err)
+		for range events {
+		}
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.GreaterOrEqual(t, len(rec.requests), 2)
+	assert.Equal(t, llm.ReasoningHigh, rec.requests[0].Reasoning)
+	assert.Equal(t, llm.ReasoningHigh, rec.requests[1].Reasoning,
+		"reasoning level must be stable across turns")
 }

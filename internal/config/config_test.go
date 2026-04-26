@@ -648,3 +648,23 @@ func TestCompactionConfigMessageCapZeroDisablesCap(t *testing.T) {
 	cfg.MessageCap = 0
 	assert.Equal(t, 0, cfg.MessageCap)
 }
+
+func TestAgentConfigReasoningValidation(t *testing.T) {
+	cases := map[string]bool{
+		"":       true, // empty = off
+		"off":    true,
+		"low":    true,
+		"medium": true,
+		"high":   true,
+		"ultra":  false,
+		"LOW":    false, // case-sensitive
+	}
+	for in, wantOK := range cases {
+		err := ValidateReasoningMode(in)
+		if wantOK {
+			assert.NoError(t, err, "input %q should validate", in)
+		} else {
+			assert.Error(t, err, "input %q should error", in)
+		}
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/llm/llmtest"
 	"github.com/sausheong/felix/internal/session"
 )
 
@@ -263,6 +264,7 @@ func TestSeparateManagersDoNotSerialize(t *testing.T) {
 
 // delayedProvider sleeps before responding, signalling start via a channel.
 type delayedProvider struct {
+	llmtest.Base
 	text    string
 	delay   time.Duration
 	started chan struct{}
@@ -286,16 +288,12 @@ func (d *delayedProvider) ChatStream(ctx context.Context, req llm.ChatRequest) (
 	return ch, nil
 }
 
-func (d *delayedProvider) Models() []llm.ModelInfo { return nil }
-
 // alwaysFailingProvider returns an error from ChatStream every call.
-type alwaysFailingProvider struct{}
+type alwaysFailingProvider struct{ llmtest.Base }
 
 func (a *alwaysFailingProvider) ChatStream(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
 	return nil, errors.New("provider down")
 }
-
-func (a *alwaysFailingProvider) Models() []llm.ModelInfo { return nil }
 
 func TestCircuitBreakerTripsAfterMaxFailures(t *testing.T) {
 	mgr := &Manager{

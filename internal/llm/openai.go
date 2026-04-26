@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -53,20 +54,34 @@ func logOpenAIError(err error, model string, msgCount, toolCount, maxTokens int,
 	slog.Warn("openai chat error", attrs...)
 }
 
-// OpenAIProvider implements LLMProvider using the OpenAI Chat Completions API.
+// OpenAIProvider holds the OpenAI client + the resolved provider kind.
+// Kind is "openai", "openai-compatible", or "local"; affects reasoning
+// suppression — compat and local endpoints (e.g. Ollama, LiteLLM) may
+// not support reasoning_effort, so it's suppressed there with a diag.
 type OpenAIProvider struct {
 	client *openai.Client
+	kind   string
 }
 
-// NewOpenAIProvider creates a new OpenAI LLM provider.
+// NewOpenAIProvider returns an OpenAIProvider with kind="openai".
 // If baseURL is non-empty, the client points to that endpoint (e.g. LiteLLM).
 func NewOpenAIProvider(apiKey, baseURL string) *OpenAIProvider {
+	return NewOpenAIProviderWithKind(apiKey, baseURL, "openai")
+}
+
+// NewOpenAIProviderWithKind returns an OpenAIProvider for a specific
+// provider kind. Use kind="openai-compatible" for proxies (LiteLLM)
+// or kind="local" for Ollama. Reasoning is suppressed for non-"openai"
+// kinds because those endpoints typically don't honor reasoning_effort.
+func NewOpenAIProviderWithKind(apiKey, baseURL, kind string) *OpenAIProvider {
 	cfg := openai.DefaultConfig(apiKey)
 	if baseURL != "" {
 		cfg.BaseURL = baseURL
 	}
-	client := openai.NewClientWithConfig(cfg)
-	return &OpenAIProvider{client: client}
+	return &OpenAIProvider{
+		client: openai.NewClientWithConfig(cfg),
+		kind:   kind,
+	}
 }
 
 func (p *OpenAIProvider) Models() []ModelInfo {
@@ -220,6 +235,24 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		openaiReq.Temperature = float32(req.Temperature)
 	}
 
+	if effort, ok := p.BuildReasoningEffort(model, req.Reasoning); ok {
+		openaiReq.ReasoningEffort = effort
+		slog.Info("openai reasoning enabled",
+			"model", model,
+			"effort", effort)
+	} else if req.Reasoning != ReasoningOff {
+		reason := "model does not support reasoning_effort"
+		if p.kind == "openai-compatible" || p.kind == "local" {
+			reason = "endpoint may not support reasoning_effort"
+		}
+		slog.Info("reasoning ignored",
+			"provider", "openai",
+			"kind", p.kind,
+			"model", model,
+			"requested", string(req.Reasoning),
+			"reason", reason)
+	}
+
 	stream, err := p.client.CreateChatCompletionStream(ctx, openaiReq)
 	if err != nil {
 		logOpenAIError(err, model, len(msgs), len(tools), maxTokens, openaiReq.Temperature, true)
@@ -326,4 +359,65 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 	}()
 
 	return events, nil
+}
+
+// openaiUnsupportedFields are JSON Schema fields the OpenAI function-
+// calling schema rejects. anyOf/oneOf/format are accepted and kept.
+var openaiUnsupportedFields = []string{"$ref", "definitions"}
+
+// NormalizeToolSchema strips $ref and definitions from each tool's
+// JSON Schema. The OpenAI function-calling endpoint rejects schemas
+// that contain these (it accepts a restricted JSON Schema subset).
+// Diagnostics list every stripped occurrence with a dotted JSON path.
+func (p *OpenAIProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
+	out := make([]ToolDef, len(tools))
+	var allDiags []Diagnostic
+	for i, t := range tools {
+		newParams, diags := StripFields(t.Name, t.Parameters, openaiUnsupportedFields)
+		td := t
+		td.Parameters = newParams
+		out[i] = td
+		allDiags = append(allDiags, diags...)
+	}
+	return out, allDiags
+}
+
+// BuildReasoningEffort maps a ReasoningMode to OpenAI's reasoning_effort
+// string. Returns ("", false) when reasoning is off, the model doesn't
+// support it, or the provider Kind suppresses it (openai-compatible /
+// local).
+func (p *OpenAIProvider) BuildReasoningEffort(model string, mode ReasoningMode) (string, bool) {
+	if mode == ReasoningOff {
+		return "", false
+	}
+	if p.kind == "openai-compatible" || p.kind == "local" {
+		return "", false
+	}
+	if !openaiSupportsReasoning(model) {
+		return "", false
+	}
+	switch mode {
+	case ReasoningLow:
+		return "low", true
+	case ReasoningMedium:
+		return "medium", true
+	case ReasoningHigh:
+		return "high", true
+	default:
+		return "", false
+	}
+}
+
+// openaiSupportsReasoning returns true for OpenAI models that accept
+// reasoning_effort. Conservative — unknown IDs default to false (these
+// values are tightly bounded to specific model families; unlike
+// Anthropic, OpenAI's older models reject the field).
+func openaiSupportsReasoning(model string) bool {
+	prefixes := []string{"o1-", "o3-", "o4-", "gpt-5"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
 }

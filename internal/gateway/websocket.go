@@ -329,6 +329,13 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	compactionMgr := h.compactionMgr
 	h.mu.RUnlock()
 
+	reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
+	if err != nil {
+		slog.Error("invalid reasoning mode in agent config; defaulting to off",
+			"agent", agentCfg.ID, "value", agentCfg.Reasoning, "err", err)
+		reasoning = llm.ReasoningOff
+	}
+
 	rt := &agent.Runtime{
 		LLM:          provider,
 		Tools:        executor,
@@ -336,6 +343,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		AgentID:      agentCfg.ID,
 		AgentName:    agentCfg.Name,
 		Model:        modelName,
+		Reasoning:    reasoning,
 		Workspace:    agentCfg.Workspace,
 		MaxTurns:     agentCfg.MaxTurns,
 		SystemPrompt: agentCfg.SystemPrompt,

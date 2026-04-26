@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -165,6 +166,31 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 		params.Temperature = anthropic.Float(req.Temperature)
 	}
 
+	if cfg, ok := p.BuildThinkingConfig(model, req.Reasoning); ok {
+		// SDK requires BudgetTokens < MaxTokens. Bump MaxTokens to the
+		// budget plus a 4K headroom for the actual completion tokens.
+		required := cfg.BudgetTokens + 4096
+		if maxTokens < required {
+			maxTokens = required
+			params.MaxTokens = maxTokens
+		}
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
+				BudgetTokens: cfg.BudgetTokens,
+			},
+		}
+		slog.Info("anthropic thinking enabled",
+			"model", model,
+			"budget_tokens", cfg.BudgetTokens,
+			"max_tokens", maxTokens)
+	} else if req.Reasoning != ReasoningOff {
+		slog.Info("reasoning ignored",
+			"provider", "anthropic",
+			"model", model,
+			"requested", string(req.Reasoning),
+			"reason", "model does not support thinking")
+	}
+
 	// Create stream
 	stream := p.client.Messages.NewStreaming(ctx, params)
 
@@ -262,4 +288,64 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 	}()
 
 	return events, nil
+}
+
+// NormalizeToolSchema returns tools unchanged. The Anthropic Messages
+// API accepts the full JSON Schema draft-7 dialect (including anyOf,
+// oneOf, format, $ref, and definitions), so no fields need stripping
+// to be portable. Identity behavior is intentional and durable, not a
+// placeholder.
+func (p *AnthropicProvider) NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic) {
+	return tools, nil
+}
+
+// AnthropicThinkingConfig is a provider-internal representation of
+// Anthropic's thinking config. Exported for testability — production
+// code uses BuildThinkingConfig and wires the result into the SDK
+// inside ChatStream.
+type AnthropicThinkingConfig struct {
+	BudgetTokens int64
+}
+
+// BuildThinkingConfig maps a ReasoningMode to Anthropic's thinking
+// budget. Returns (nil, false) when reasoning is off or the model
+// doesn't support thinking. Mapping: low=1024, medium=4096, high=16384.
+//
+// Models without thinking support (legacy claude-3.x except 3-7-sonnet)
+// always return (nil, false); when the caller sees this for a non-off
+// mode it should emit an "ignored" diagnostic.
+func (p *AnthropicProvider) BuildThinkingConfig(model string, mode ReasoningMode) (*AnthropicThinkingConfig, bool) {
+	if mode == ReasoningOff {
+		return nil, false
+	}
+	if !anthropicSupportsThinking(model) {
+		return nil, false
+	}
+	switch mode {
+	case ReasoningLow:
+		return &AnthropicThinkingConfig{BudgetTokens: 1024}, true
+	case ReasoningMedium:
+		return &AnthropicThinkingConfig{BudgetTokens: 4096}, true
+	case ReasoningHigh:
+		return &AnthropicThinkingConfig{BudgetTokens: 16384}, true
+	default:
+		return nil, false
+	}
+}
+
+// anthropicSupportsThinking returns true for Claude models that accept
+// extended thinking. Conservative — unknown IDs default to true so we
+// let the API decide rather than silently drop a knob the user set.
+func anthropicSupportsThinking(model string) bool {
+	noThink := []string{
+		"claude-3-haiku", "claude-3-5-haiku",
+		"claude-3-sonnet", "claude-3-5-sonnet",
+		"claude-3-opus",
+	}
+	for _, prefix := range noThink {
+		if strings.HasPrefix(model, prefix) {
+			return false
+		}
+	}
+	return true
 }

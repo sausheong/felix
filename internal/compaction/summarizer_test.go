@@ -11,11 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/llm/llmtest"
 	"github.com/sausheong/felix/internal/session"
 )
 
 // fakeProvider is an llm.LLMProvider stub that emits a fixed text response.
 type fakeProvider struct {
+	llmtest.Base
 	text string
 	err  error
 }
@@ -32,8 +34,6 @@ func (f *fakeProvider) ChatStream(ctx context.Context, req llm.ChatRequest) (<-c
 	}()
 	return ch, nil
 }
-
-func (f *fakeProvider) Models() []llm.ModelInfo { return nil }
 
 func TestSummarizerReturnsModelOutput(t *testing.T) {
 	s := &Summarizer{
@@ -94,6 +94,7 @@ func TestSummarizerProviderErrorFallsBackToPlaceholder(t *testing.T) {
 // flakyProvider returns ChatStream errors a configured number of times,
 // then succeeds. Used to exercise the fallback chain.
 type flakyProvider struct {
+	llmtest.Base
 	failsRemaining int
 	successText    string
 	failureErr     error
@@ -121,8 +122,6 @@ func (f *flakyProvider) ChatStream(ctx context.Context, req llm.ChatRequest) (<-
 	}()
 	return ch, nil
 }
-
-func (f *flakyProvider) Models() []llm.ModelInfo { return nil }
 
 func TestSummarizeFallbackFullStageSucceeds(t *testing.T) {
 	s := &Summarizer{
