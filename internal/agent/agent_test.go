@@ -585,3 +585,34 @@ func TestRuntimeShortSessionDoesNotCompactOnPreventive(t *testing.T) {
 		assert.NotEqual(t, session.EntryTypeCompaction, e.Type)
 	}
 }
+
+func TestCompactionMessageIncludesContinuationDirective(t *testing.T) {
+	sess := session.NewSession("test-agent", "test-key")
+	sess.Append(session.UserMessageEntry("first user msg"))
+	sess.Append(session.AssistantMessageEntry("first reply"))
+	sess.Append(session.CompactionEntry(
+		"User asked about Wasm; we recommended Extism. They then asked for details on how it works.",
+		"", "", "test-model", 0, 0, 2,
+	))
+
+	msgs := assembleMessages(sess.View())
+	require.NotEmpty(t, msgs)
+
+	// The compaction summary becomes a user message. It must include both
+	// the summary text and the continuation directive that tells the model
+	// to resume rather than restart.
+	var summaryMsg *llm.Message
+	for i := range msgs {
+		if strings.Contains(msgs[i].Content, "Previous conversation summary") {
+			summaryMsg = &msgs[i]
+			break
+		}
+	}
+	require.NotNil(t, summaryMsg, "compaction entry must produce a user message")
+
+	assert.Contains(t, summaryMsg.Content, "Wasm", "summary text must be present")
+	assert.Contains(t, summaryMsg.Content, "Resume directly",
+		"continuation directive must instruct the model to resume")
+	assert.Contains(t, summaryMsg.Content, "do not acknowledge the summary",
+		"continuation directive must forbid restarting")
+}
