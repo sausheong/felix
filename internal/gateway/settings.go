@@ -1263,7 +1263,8 @@ html.dark .error-state { background: #450a0a; }
 		makeField(item, 'Auth Kind', 'select', {
 			value: s.http.auth.kind || 'oauth2_client_credentials',
 			options: [
-				{value: 'oauth2_client_credentials', label: 'OAuth2 Client Credentials'},
+				{value: 'oauth2_client_credentials', label: 'OAuth2 Client Credentials (M2M)'},
+				{value: 'oauth2_authorization_code', label: 'OAuth2 Authorization Code + PKCE (interactive login)'},
 				{value: 'bearer', label: 'Bearer Token'},
 				{value: 'none', label: 'None'}
 			]
@@ -1292,6 +1293,38 @@ html.dark .error-state { background: #450a0a; }
 			hint.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
 			hint.innerHTML = 'Stored in <code>felix.json5</code>. To source from an env var instead, leave blank and set <code>auth.client_secret_env</code> in the JSON5 file.';
 			item.appendChild(hint);
+		} else if (kind === 'oauth2_authorization_code') {
+			makeField(item, 'Authorize URL', 'text', s.http.auth.auth_url || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.auth_url = v;
+			});
+			makeField(item, 'Token URL', 'text', s.http.auth.token_url || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.token_url = v;
+			});
+			var rowAC = makeRow(item);
+			makeField(rowAC, 'Client ID', 'text', s.http.auth.client_id || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.client_id = v;
+			});
+			makeField(rowAC, 'Scope', 'text', s.http.auth.scope || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.scope = v;
+			});
+			makeField(item, 'Redirect URI', 'text', s.http.auth.redirect_uri || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.redirect_uri = v;
+			});
+			makeField(item, 'Client Secret', 'password', s.http.auth.client_secret || '', function(v) {
+				if (!v) return;
+				cfg.mcp_servers[idx].http.auth.client_secret = v;
+			});
+			var hintAC = document.createElement('p');
+			hintAC.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+			hintAC.innerHTML =
+				'Interactive OAuth login. Redirect URI must be a loopback URL like ' +
+				'<code>http://localhost:12341/callback</code> registered with the IdP. ' +
+				'Scope defaults to <code>openid offline_access</code> when blank (so refresh tokens work). ' +
+				'Some IdPs (Cognito) require a client secret even for PKCE clients; pure public clients can leave it blank. ' +
+				'After saving, run <code>felix mcp login ' + (s.id || '&lt;id&gt;') + '</code> in a terminal to complete the browser dance — ' +
+				'the gateway caches the token under <code>~/.felix/mcp-tokens/</code> and refreshes it silently after that. ' +
+				'A restart is required to pick up a freshly minted token.';
+			item.appendChild(hintAC);
 		} else if (kind === 'bearer') {
 			makeField(item, 'Bearer Token', 'password', s.http.auth.token || '', function(v) {
 				if (!v) return;

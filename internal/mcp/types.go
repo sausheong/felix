@@ -26,13 +26,18 @@ type HTTPServerConfig struct {
 // chosen Kind need be populated; Manager dispatches on Kind to build the
 // right *http.Client.
 type HTTPAuthConfig struct {
-	Kind string // "oauth2_client_credentials" | "bearer" | "none"
+	Kind string // "oauth2_client_credentials" | "oauth2_authorization_code" | "bearer" | "none"
 
-	// oauth2_client_credentials
+	// oauth2_client_credentials, oauth2_authorization_code
 	TokenURL     string
 	ClientID     string
 	ClientSecret string
 	Scope        string
+
+	// oauth2_authorization_code
+	AuthURL        string // IdP authorize endpoint
+	RedirectURI    string // must be loopback per RFC 8252
+	TokenStorePath string // absolute path to per-server token cache file
 
 	// bearer
 	BearerToken string

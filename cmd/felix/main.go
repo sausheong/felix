@@ -59,6 +59,7 @@ func main() {
 		onboardCmd(),
 		doctorCmd(),
 		modelCmd(),
+		mcpCmd(),
 		gtHarnessCmd(),
 	)
 

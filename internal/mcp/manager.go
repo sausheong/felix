@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -53,7 +54,7 @@ func connectOne(ctx context.Context, cfg ManagerServerConfig) (*Client, error) {
 		if cfg.HTTP == nil {
 			return nil, fmt.Errorf("http transport requires HTTP block")
 		}
-		httpClient, err := buildHTTPClient(cfg.HTTP.Auth)
+		httpClient, err := buildHTTPClient(ctx, cfg.HTTP.Auth)
 		if err != nil {
 			return nil, fmt.Errorf("build http client: %w", err)
 		}
@@ -68,7 +69,7 @@ func connectOne(ctx context.Context, cfg ManagerServerConfig) (*Client, error) {
 	}
 }
 
-func buildHTTPClient(auth HTTPAuthConfig) (*http.Client, error) {
+func buildHTTPClient(ctx context.Context, auth HTTPAuthConfig) (*http.Client, error) {
 	switch auth.Kind {
 	case "oauth2_client_credentials":
 		return NewClientCredentialsHTTPClient(ClientCredentialsConfig{
@@ -77,6 +78,23 @@ func buildHTTPClient(auth HTTPAuthConfig) (*http.Client, error) {
 			ClientSecret: auth.ClientSecret,
 			Scope:        auth.Scope,
 		}), nil
+	case "oauth2_authorization_code":
+		client, err := NewAuthCodePKCEHTTPClient(ctx, AuthCodePKCEConfig{
+			AuthURL:      auth.AuthURL,
+			TokenURL:     auth.TokenURL,
+			ClientID:     auth.ClientID,
+			ClientSecret: auth.ClientSecret,
+			Scope:        auth.Scope,
+			RedirectURI:  auth.RedirectURI,
+			StorePath:    auth.TokenStorePath,
+		})
+		if errors.Is(err, ErrInteractiveLoginRequired) {
+			// Daemon-friendly: the gateway shouldn't pop a browser at
+			// startup if no token is cached. Tell the user how to get
+			// one and skip this server.
+			return nil, fmt.Errorf("no cached token at %s — run `felix mcp login <id>` first", auth.TokenStorePath)
+		}
+		return client, err
 	case "bearer":
 		return NewBearerHTTPClient(auth.BearerToken), nil
 	case "none", "":

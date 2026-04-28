@@ -86,18 +86,30 @@ type MCPStdioBlock struct {
 // Supported Kinds:
 //   - "oauth2_client_credentials": client-credentials grant; uses TokenURL,
 //     ClientID, and one of ClientSecret/ClientSecretEnv (literal wins).
+//   - "oauth2_authorization_code": authorization-code + PKCE (RFC 7636) with
+//     a loopback redirect (RFC 8252). Uses AuthURL, TokenURL, ClientID,
+//     RedirectURI, and one of ClientSecret/ClientSecretEnv (Cognito-style
+//     confidential PKCE clients require a secret; pure public clients can
+//     leave it empty). On first use Felix opens the OS browser; tokens are
+//     persisted under <data-dir>/mcp-tokens/<id>.json and refreshed via the
+//     refresh_token grant. Scope defaults to "openid offline_access" so the
+//     IdP issues a refresh token.
 //   - "bearer": static bearer token; uses one of Token/TokenEnv (literal
 //     wins).
 //   - "none": no Authorization header.
 type MCPAuthConfig struct {
 	Kind string `json:"kind"`
 
-	// oauth2_client_credentials
+	// oauth2_client_credentials, oauth2_authorization_code
 	TokenURL        string `json:"token_url,omitempty"`
 	ClientID        string `json:"client_id,omitempty"`
 	ClientSecret    string `json:"client_secret,omitempty"`     // literal secret value
 	ClientSecretEnv string `json:"client_secret_env,omitempty"` // env var NAME holding the secret
 	Scope           string `json:"scope,omitempty"`
+
+	// oauth2_authorization_code
+	AuthURL     string `json:"auth_url,omitempty"`     // IdP authorize endpoint
+	RedirectURI string `json:"redirect_uri,omitempty"` // must be loopback (http://localhost:PORT/...) and registered with the IdP
 
 	// bearer
 	Token    string `json:"token,omitempty"`     // literal bearer token
@@ -255,6 +267,16 @@ func DefaultDataDir() string {
 // DefaultConfigPath returns the default config file path.
 func DefaultConfigPath() string {
 	return filepath.Join(DefaultDataDir(), "felix.json5")
+}
+
+// DataDir returns the directory holding Felix state for this Config. Derived
+// from the loaded config-file path (its parent directory). Falls back to
+// DefaultDataDir() when the path is unset, e.g. for in-memory test configs.
+func (c *Config) DataDir() string {
+	if c == nil || c.path == "" {
+		return DefaultDataDir()
+	}
+	return filepath.Dir(c.path)
 }
 
 // Load reads and parses a Felix config file. It supports JSON5 by
@@ -657,7 +679,7 @@ func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 
 		switch transport {
 		case "http":
-			httpBlock, skip, err := resolveHTTPBlock(s)
+			httpBlock, skip, err := resolveHTTPBlock(s, c.DataDir())
 			if err != nil {
 				return nil, err
 			}
@@ -697,7 +719,11 @@ func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 // URL+Auth layout, validates required fields, and resolves auth secrets.
 // Returns (block, skip, err): skip=true means the entry should be silently
 // dropped (e.g. missing-secret on a bearer/oauth2 server).
-func resolveHTTPBlock(s MCPServerConfig) (*mcp.HTTPServerConfig, bool, error) {
+//
+// dataDir is the resolved Felix data directory; it's used only by the
+// oauth2_authorization_code branch to compute the per-server token cache
+// path under <dataDir>/mcp-tokens/<id>.json.
+func resolveHTTPBlock(s MCPServerConfig, dataDir string) (*mcp.HTTPServerConfig, bool, error) {
 	url := ""
 	auth := MCPAuthConfig{}
 	switch {
@@ -738,6 +764,36 @@ func resolveHTTPBlock(s MCPServerConfig) (*mcp.HTTPServerConfig, bool, error) {
 		resolved.ClientID = auth.ClientID
 		resolved.ClientSecret = secret
 		resolved.Scope = auth.Scope
+
+	case "oauth2_authorization_code":
+		if auth.AuthURL == "" || auth.TokenURL == "" || auth.ClientID == "" || auth.RedirectURI == "" {
+			return nil, false, fmt.Errorf("mcp_servers[%s]: oauth2_authorization_code requires auth_url, token_url, client_id, redirect_uri", s.ID)
+		}
+		// Secret is optional here — pure public PKCE clients don't have one,
+		// while Cognito-style confidential PKCE clients do. The IdP will
+		// reject the token exchange if a secret was required and missing,
+		// surfacing a clear error to the user.
+		secret := auth.ClientSecret
+		if secret == "" && auth.ClientSecretEnv != "" {
+			secret = os.Getenv(auth.ClientSecretEnv)
+		}
+		scope := auth.Scope
+		if scope == "" {
+			// offline_access asks the IdP for a refresh token so we don't
+			// pop the browser every hour. openid is the universally accepted
+			// minimal scope. Override by setting auth.scope explicitly.
+			scope = "openid offline_access"
+		}
+		if dataDir == "" {
+			dataDir = DefaultDataDir()
+		}
+		resolved.AuthURL = auth.AuthURL
+		resolved.TokenURL = auth.TokenURL
+		resolved.ClientID = auth.ClientID
+		resolved.ClientSecret = secret
+		resolved.Scope = scope
+		resolved.RedirectURI = auth.RedirectURI
+		resolved.TokenStorePath = filepath.Join(dataDir, "mcp-tokens", s.ID+".json")
 
 	case "bearer":
 		token := auth.Token
