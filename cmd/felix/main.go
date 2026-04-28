@@ -287,22 +287,20 @@ func runChat(agentID, configPath, modelOverride string) error {
 		memMgr.Load()
 	}
 
-	// Init Cortex knowledge graph
+	// Init Cortex knowledge graph as a per-agent factory. CLI chat mode only
+	// uses one agent at a time, but the same Provider keeps the wiring
+	// consistent with the gateway path.
+	var cxProvider *cortexadapter.Provider
 	var cx *cortex.Cortex
 	if cfg.Cortex.Enabled {
+		cxProvider = cortexadapter.NewProvider(cfg.Cortex, cfg.Memory, cfg.GetProvider)
+		defer func() {
+			cortexadapter.Drain()
+			cxProvider.Close()
+		}()
 		var cxErr error
-		defaultAgentModel := ""
-		if len(cfg.Agents.List) > 0 {
-			defaultAgentModel = cfg.Agents.List[0].Model
-		}
-		cx, cxErr = cortexadapter.Init(cfg.Cortex, cfg.Memory, defaultAgentModel, cfg.GetProvider)
-		if cxErr != nil {
+		if cx, cxErr = cxProvider.For(agentCfg.Model); cxErr != nil {
 			slog.Warn("failed to init cortex", "error", cxErr)
-		} else {
-			defer func() {
-				cortexadapter.Drain()
-				cx.Close()
-			}()
 		}
 	}
 

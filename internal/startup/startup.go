@@ -439,27 +439,27 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		}
 	}
 
-	// Init Cortex knowledge graph
-	var cx *cortex.Cortex
+	// Init Cortex knowledge graph as a per-agent factory. Each chatting agent
+	// gets its own *cortex.Cortex (cached) wired with the same provider/model
+	// it uses for chat, so cortex's LLM extraction stays consistent with the
+	// conversation. All clients share the same SQLite DB.
+	var cxProvider *cortexadapter.Provider
 	if cfg.Cortex.Enabled {
-		var initErr error
-		defaultAgentModel := ""
+		cxProvider = cortexadapter.NewProvider(cfg.Cortex, cfg.Memory, cfg.GetProvider)
+		// Pre-warm the default agent's cortex so the first chat doesn't pay
+		// a ~4–11s cold-search penalty. Other agents warm lazily on first use.
 		if len(cfg.Agents.List) > 0 {
-			defaultAgentModel = cfg.Agents.List[0].Model
-		}
-		cx, initErr = cortexadapter.Init(cfg.Cortex, cfg.Memory, defaultAgentModel, cfg.GetProvider)
-		if initErr != nil {
-			slog.Warn("failed to init cortex", "error", initErr)
-		} else if cx != nil {
-			// Pre-warm Cortex: a tiny background recall warms the embedder,
-			// chromem index, and any per-process caches so the first user
-			// request doesn't pay a ~4–11s cold-search penalty.
+			defaultAgentModel := cfg.Agents.List[0].Model
 			go func() {
+				cx, err := cxProvider.For(defaultAgentModel)
+				if err != nil {
+					slog.Warn("failed to init cortex", "error", err)
+					return
+				}
 				warmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				start := time.Now()
-				_, err := cx.Recall(warmCtx, "hello", cortex.WithLimit(1))
-				if err != nil {
+				if _, err := cx.Recall(warmCtx, "hello", cortex.WithLimit(1)); err != nil {
 					slog.Debug("cortex warmup error", "error", err)
 				} else {
 					slog.Info("cortex warmed", "dur_ms", time.Since(start).Milliseconds())
@@ -478,11 +478,27 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		}
 	}()
 
+	// resolveCortex returns the *cortex.Cortex for a given chat-agent model
+	// (or nil if cortex is disabled / build fails). Used by the heartbeat,
+	// cron, and cron-tool agent factories so each agent's cortex extractor
+	// matches its chat model.
+	resolveCortex := func(agentModel string) *cortex.Cortex {
+		if cxProvider == nil {
+			return nil
+		}
+		cx, err := cxProvider.For(agentModel)
+		if err != nil {
+			slog.Warn("cortex resolve failed", "model", agentModel, "error", err)
+			return nil
+		}
+		return cx
+	}
+
 	// Init WebSocket handler
 	wsHandler := gateway.NewWebSocketHandler(providers, toolReg, sessionStore, cfg)
 	wsHandler.SetSkills(skillLoader)
 	wsHandler.SetMemory(memMgr)
-	wsHandler.SetCortex(cx)
+	wsHandler.SetCortexProvider(cxProvider)
 
 	// Config hot-reload — rebuild LLM provider clients from the new config
 	// and push them into the WebSocket handler. Without the provider rebuild,
@@ -563,7 +579,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					SystemPrompt: agentSystemPrompt,
 					Skills:       skillLoader,
 					Memory:       memMgr,
-					Cortex:       cx,
+					Cortex:       resolveCortex(agentCfg.Model),
 					Compaction:   startupCompactionMgr,
 					IngestSource: "heartbeat",
 				}
@@ -619,7 +635,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					SystemPrompt: agentSystemPrompt,
 					Skills:       skillLoader,
 					Memory:       memMgr,
-					Cortex:       cx,
+					Cortex:       resolveCortex(agentCfg.Model),
 					Compaction:   startupCompactionMgr,
 					IngestSource: "cron",
 				}
@@ -673,7 +689,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					SystemPrompt: defaultCfg.SystemPrompt,
 					Skills:       skillLoader,
 					Memory:       memMgr,
-					Cortex:       cx,
+					Cortex:       resolveCortex(defaultCfg.Model),
 					Compaction:   startupCompactionMgr,
 					IngestSource: "cron",
 				}
@@ -740,9 +756,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		if configWatcher != nil {
 			configWatcher.Stop()
 		}
-		if cx != nil {
+		if cxProvider != nil {
 			cortexadapter.Drain()
-			cx.Close()
+			cxProvider.Close()
 		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

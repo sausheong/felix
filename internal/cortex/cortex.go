@@ -44,36 +44,96 @@ func Drain() {
 	ingestWG.Wait()
 }
 
-// resolveCortexModel returns the (provider, model) cortex.Init should use.
-// When both cfg.Provider and cfg.LLMModel are empty, it mirrors the default
-// agent's model (e.g. "local/gemma4:latest" → "local", "gemma4:latest").
-// Otherwise it returns the explicit values verbatim — no half-mirroring.
-func resolveCortexModel(cfg config.CortexConfig, defaultAgentModel string) (provider, model string) {
-	if cfg.Provider == "" && cfg.LLMModel == "" {
-		return llm.ParseProviderModel(defaultAgentModel)
+// resolveCortexModel chooses the (provider, model) for a given chat agent.
+// If cfg.Provider AND cfg.LLMModel are both set, that's a hard pin and is
+// used regardless of the agent. Otherwise cortex mirrors the chatting
+// agent's model so its LLM extraction stays consistent with the conversation
+// (e.g. chatting with anthropic/sonnet → cortex extracts via Sonnet, not
+// whatever model the *default* agent happens to use).
+func resolveCortexModel(cfg config.CortexConfig, agentModel string) (provider, model string) {
+	if cfg.Provider != "" && cfg.LLMModel != "" {
+		return cfg.Provider, cfg.LLMModel
 	}
-	return cfg.Provider, cfg.LLMModel
+	return llm.ParseProviderModel(agentModel)
 }
 
-// Init opens (or creates) a Cortex knowledge graph using the provided config.
-// When cfg.Provider and cfg.LLMModel are both empty, the function mirrors
-// defaultAgentModel: e.g. "local/gemma4:latest" wires cortex through bundled
-// Ollama with the same model the default agent uses. getProvider is used to
-// look up the resolved provider's API key + base URL.
-func Init(cfg config.CortexConfig, memCfg config.MemoryConfig, defaultAgentModel string, getProvider func(name string) config.ProviderConfig) (*cortex.Cortex, error) {
+// Provider builds and caches per-agent *cortex.Cortex clients, all sharing
+// the same SQLite DB path. SQLite WAL mode permits multiple connection pools
+// against the same file, so each agent gets a client wired to its own LLM
+// extractor without interfering with the others.
+type Provider struct {
+	dbPath      string
+	cfg         config.CortexConfig
+	memCfg      config.MemoryConfig
+	getProvider func(string) config.ProviderConfig
+
+	mu      sync.Mutex
+	clients map[string]*cortex.Cortex // key: "provider/model"
+}
+
+// NewProvider returns a factory that lazily builds a *cortex.Cortex per
+// chatting agent. Call For(agentModel) at chat time; the same agentModel
+// always returns the same client (so per-instance caches stay warm).
+func NewProvider(cfg config.CortexConfig, memCfg config.MemoryConfig, getProvider func(string) config.ProviderConfig) *Provider {
 	dbPath := cfg.DBPath
 	if dbPath == "" {
 		dbPath = filepath.Join(config.DefaultDataDir(), "brain.db")
 	}
+	return &Provider{
+		dbPath:      dbPath,
+		cfg:         cfg,
+		memCfg:      memCfg,
+		getProvider: getProvider,
+		clients:     make(map[string]*cortex.Cortex),
+	}
+}
 
-	provider, model := resolveCortexModel(cfg, defaultAgentModel)
-	pcfg := getProvider(provider)
+// For returns the cortex client for the given chat-agent model
+// (e.g. "anthropic/claude-sonnet-4-6-asia-southeast1"). On first call for
+// a given (resolved provider, model) it opens a new cortex client; later
+// calls return the cached one.
+func (p *Provider) For(agentModel string) (*cortex.Cortex, error) {
+	provider, model := resolveCortexModel(p.cfg, agentModel)
+	key := provider + "/" + model
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if cx, ok := p.clients[key]; ok {
+		return cx, nil
+	}
+	cx, err := p.build(provider, model)
+	if err != nil {
+		return nil, err
+	}
+	p.clients[key] = cx
+	slog.Info("cortex client built",
+		"agent_model", agentModel,
+		"resolved_provider", provider,
+		"resolved_model", model,
+		"db", p.dbPath)
+	return cx, nil
+}
+
+// Close closes every cached cortex client. Safe to call multiple times.
+func (p *Provider) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var firstErr error
+	for k, cx := range p.clients {
+		if err := cx.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(p.clients, k)
+	}
+	return firstErr
+}
+
+// build opens a single *cortex.Cortex wired with the right LLM/embedder/
+// extractor for (provider, model). All builds share p.dbPath.
+func (p *Provider) build(provider, model string) (*cortex.Cortex, error) {
+	pcfg := p.getProvider(provider)
 	apiKey := pcfg.APIKey
 	baseURL := pcfg.BaseURL
-	slog.Info("cortex auto-mirror",
-		"agent_model", defaultAgentModel,
-		"resolved_provider", provider,
-		"resolved_model", model)
 
 	var opts []cortex.Option
 
@@ -89,13 +149,8 @@ func Init(cfg config.CortexConfig, memCfg config.MemoryConfig, defaultAgentModel
 			// (gemma4, qwen, llama3.2) frequently return malformed JSON for
 			// the structured-extraction prompt, and each failed call can tie
 			// up Ollama for 30–90s — blocking both /api/embeddings and the
-			// next user chat turn since Ollama serializes per-model. Until
-			// the cortex library learns Ollama JSON-mode constraint, this
-			// is the right trade-off for the bundled deployment.
-			//
-			// Users who want LLM-augmented extraction can set
-			// cortex.provider = "anthropic" or "openai" in felix.json5.
-			embModel, embDims := localpkg.EmbeddingDims(memCfg.EmbeddingModel)
+			// next user chat turn since Ollama serializes per-model.
+			embModel, embDims := localpkg.EmbeddingDims(p.memCfg.EmbeddingModel)
 			embedder := cortexoai.NewEmbedder("",
 				cortexoai.WithEmbedderBaseURL(baseURL),
 				cortexoai.WithEmbeddingModel(goopenai.EmbeddingModel(embModel), embDims))
@@ -108,7 +163,11 @@ func Init(cfg config.CortexConfig, memCfg config.MemoryConfig, defaultAgentModel
 			if model == "" {
 				model = "claude-sonnet-4-5-20250929"
 			}
-			llmClient := cortexanthropic.NewLLM(apiKey, cortexanthropic.WithModel(model))
+			anthOpts := []cortexanthropic.LLMOption{cortexanthropic.WithModel(model)}
+			if baseURL != "" {
+				anthOpts = append(anthOpts, cortexanthropic.WithBaseURL(baseURL))
+			}
+			llmClient := cortexanthropic.NewLLM(apiKey, anthOpts...)
 			extractor := hybrid.New(detExt, llmext.New(llmClient))
 			opts = append(opts,
 				cortex.WithLLM(llmClient),
@@ -119,7 +178,11 @@ func Init(cfg config.CortexConfig, memCfg config.MemoryConfig, defaultAgentModel
 			if model == "" {
 				model = "gpt-5.4-mini"
 			}
-			llmClient := cortexoai.NewLLM(apiKey, cortexoai.WithModel(model))
+			oaiOpts := []cortexoai.LLMOption{cortexoai.WithModel(model)}
+			if baseURL != "" {
+				oaiOpts = append(oaiOpts, cortexoai.WithBaseURL(baseURL))
+			}
+			llmClient := cortexoai.NewLLM(apiKey, oaiOpts...)
 			embedder := cortexoai.NewEmbedder(apiKey)
 			extractor := hybrid.New(detExt, llmext.New(llmClient))
 			opts = append(opts,
@@ -130,12 +193,10 @@ func Init(cfg config.CortexConfig, memCfg config.MemoryConfig, defaultAgentModel
 		}
 	}
 
-	cx, err := cortex.Open(dbPath, opts...)
+	cx, err := cortex.Open(p.dbPath, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("cortex init: %w", err)
 	}
-
-	slog.Info("cortex knowledge graph initialized", "db", dbPath)
 	return cx, nil
 }
 

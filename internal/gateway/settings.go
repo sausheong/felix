@@ -1553,22 +1553,11 @@ html.dark .error-state { background: #450a0a; }
 		makeField(cxSec, 'Enabled', 'toggle', cxEnabled, function(v) {
 			cfg.cortex.enabled = v;
 		});
-		makeField(cxSec, 'DB Path', 'text', cx.dbPath || '', function(v) {
-			if (!cfg.cortex) cfg.cortex = {};
-			cfg.cortex.dbPath = v;
-		});
-		var cxRow = makeRow(cxSec);
-		makeField(cxRow, 'Provider', 'select', {
-			value: cx.provider || '',
-			options: Object.keys(cfg.providers || {})
-		}, function(v) {
-			if (!cfg.cortex) cfg.cortex = {};
-			cfg.cortex.provider = v;
-		});
-		makeField(cxRow, 'LLM Model', 'text', cx.llmModel || '', function(v) {
-			if (!cfg.cortex) cfg.cortex = {};
-			cfg.cortex.llmModel = v;
-		});
+		// DB Path, Provider, and LLM Model are intentionally not editable here.
+		// Cortex stores its DB at ~/.felix/brain.db and mirrors the chatting
+		// agent's provider+model so its LLM extraction stays in lock-step with
+		// the conversation. Power users can override any of these via
+		// cortex.dbPath / cortex.provider / cortex.llmModel in felix.json5.
 
 	}
 

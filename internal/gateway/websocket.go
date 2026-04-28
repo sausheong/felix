@@ -14,6 +14,7 @@ import (
 	"github.com/sausheong/felix/internal/agent"
 	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/config"
+	cortexadapter "github.com/sausheong/felix/internal/cortex"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
@@ -43,11 +44,11 @@ type WebSocketHandler struct {
 	tools             *tools.Registry
 	sessionStore      *session.Store
 	config            *config.Config
-	compactionMgr     *compaction.Manager // shared across all chat runtimes; rebuilt in UpdateConfig
+	compactionProv    *compaction.Provider // per-agent compaction manager factory; rebuilt in UpdateConfig
 	jobScheduler      tools.JobScheduler
 	skills            *skill.Loader
 	memory            *memory.Manager
-	cortex            *cortex.Cortex
+	cortexProvider    *cortexadapter.Provider // per-agent cortex client factory
 	activeRuns        map[*websocket.Conn]context.CancelFunc
 	activeSessionKeys map[*websocket.Conn]map[string]string // conn → agentID → sessionKey
 	upgrader          websocket.Upgrader
@@ -66,7 +67,7 @@ func NewWebSocketHandler(
 		tools:             toolReg,
 		sessionStore:      sessionStore,
 		config:            cfg,
-		compactionMgr:     compaction.BuildManager(cfg),
+		compactionProv:    compaction.NewProvider(cfg),
 		activeRuns:        make(map[*websocket.Conn]context.CancelFunc),
 		activeSessionKeys: make(map[*websocket.Conn]map[string]string),
 		upgrader: websocket.Upgrader{
@@ -87,9 +88,10 @@ func (h *WebSocketHandler) UpdateConfig(cfg *config.Config) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.config = cfg
-	// Rebuild the shared compaction Manager so config changes (enable/disable,
-	// model swap, threshold tweak) take effect on the next chat turn.
-	h.compactionMgr = compaction.BuildManager(cfg)
+	// Rebuild the per-agent compaction provider so config changes
+	// (enable/disable, model swap, threshold tweak) take effect on the
+	// next chat turn.
+	h.compactionProv = compaction.NewProvider(cfg)
 }
 
 // UpdateProviders swaps the LLM provider map atomically. Called by the config
@@ -110,11 +112,13 @@ func (h *WebSocketHandler) SetJobScheduler(js tools.JobScheduler) {
 	h.jobScheduler = js
 }
 
-// SetCortex sets the Cortex knowledge graph instance.
-func (h *WebSocketHandler) SetCortex(cx *cortex.Cortex) {
+// SetCortexProvider sets the per-agent Cortex factory. The handler resolves
+// a *cortex.Cortex per chat turn via cxProvider.For(agentModel) so cortex's
+// LLM extraction stays in lock-step with the chatting agent.
+func (h *WebSocketHandler) SetCortexProvider(p *cortexadapter.Provider) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.cortex = cx
+	h.cortexProvider = p
 }
 
 // SetSkills sets the skill loader for the WebSocket handler.
@@ -321,13 +325,23 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		})
 	}
 
-	// Run agent
+	// Run agent. Resolve cortex + compaction per agent so both use the same
+	// LLM as the chat itself (instead of mirroring whatever model the default
+	// agent happens to use at startup).
 	h.mu.RLock()
-	cx := h.cortex
+	cxProv := h.cortexProvider
 	sk := h.skills
 	mem := h.memory
-	compactionMgr := h.compactionMgr
+	compProv := h.compactionProv
 	h.mu.RUnlock()
+	var cx *cortex.Cortex
+	if cxProv != nil {
+		var err error
+		if cx, err = cxProv.For(agentCfg.Model); err != nil {
+			slog.Warn("cortex resolve failed", "agent", agentCfg.ID, "model", agentCfg.Model, "error", err)
+		}
+	}
+	compactionMgr := compProv.For(agentCfg.Model)
 
 	reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
 	if err != nil {
@@ -480,10 +494,22 @@ func (h *WebSocketHandler) handleChatCompact(conn *websocket.Conn, req JSONRPCRe
 		params.AgentID = "default"
 	}
 
+	// Resolve compaction Manager for the agent's model so manual compaction
+	// uses the same LLM the agent chats with.
 	h.mu.RLock()
-	mgr := h.compactionMgr
+	compProv := h.compactionProv
+	cfg := h.config
 	h.mu.RUnlock()
-
+	agentCfg, ok := cfg.GetAgent(params.AgentID)
+	if !ok {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "agent not found: " + params.AgentID},
+			ID:      req.ID,
+		})
+		return
+	}
+	mgr := compProv.For(agentCfg.Model)
 	if mgr == nil {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
