@@ -727,7 +727,18 @@ func TestRun_AbortMidDispatchProducesPairedSession(t *testing.T) {
 
 	events, err := r.Run(ctx, "go", nil)
 	require.NoError(t, err)
-	for range events { /* drain */ }
+
+	var toolResultEvents, abortedEvents int
+	for ev := range events {
+		switch ev.Type {
+		case EventToolResult:
+			toolResultEvents++
+		case EventAborted:
+			abortedEvents++
+		}
+	}
+	require.Equal(t, 1, toolResultEvents, "exactly one EventToolResult expected (only tc_0 dispatched)")
+	require.Equal(t, 1, abortedEvents, "exactly one EventAborted expected")
 
 	// Walk the final session: every ToolCall must be immediately followed by a
 	// ToolResult with the matching tool_call_id. Tools that were never
@@ -741,6 +752,17 @@ func TestRun_AbortMidDispatchProducesPairedSession(t *testing.T) {
 			next := entries[i+1]
 			require.Equal(t, session.EntryTypeToolResult, next.Type, "ToolCall must be paired with ToolResult")
 			results++
+
+			// Decode call + result, assert ID match and that tc_0's result is marked aborted.
+			var callData session.ToolCallData
+			require.NoError(t, json.Unmarshal(e.Data, &callData))
+			var resultData session.ToolResultData
+			require.NoError(t, json.Unmarshal(next.Data, &resultData))
+			require.Equal(t, callData.ID, resultData.ToolCallID, "tool_call_id must match across call/result pair")
+			if callData.ID == "tc_0" {
+				require.True(t, resultData.Aborted, "tc_0 result must be marked Aborted")
+				require.True(t, resultData.IsError, "tc_0 result must be marked IsError")
+			}
 		}
 	}
 	require.Equal(t, calls, results, "every tool_use must have a paired tool_result")
@@ -786,6 +808,9 @@ func (f *threeToolCallLLM) ChatStream(_ context.Context, _ llm.ChatRequest) (<-c
 
 // cancelOnNthExecutor cancels the provided context after the nth Execute call
 // completes (1-indexed: n=1 means cancel after the first call). Output is "ok".
+//
+// NOTE: count is mutated without a lock — single-goroutine use only. Phase B
+// parallel-dispatch tests must use atomic.Int32 or a mutex.
 type cancelOnNthExecutor struct {
 	n      int
 	cancel context.CancelFunc

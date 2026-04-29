@@ -403,9 +403,8 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// one ToolResultEntry per tc, on every exit path (clean / error /
 			// deny / aborted). Cortex thread accumulation is atomic alongside the
 			// session writes — both land or neither does.
-			for i := range toolCalls {
-				tc := toolCalls[i]
-				result, aborted := r.dispatchTool(ctx, tc, cortexThreadPtr(r.Cortex, &thread))
+			for _, tc := range toolCalls {
+				result, aborted := r.dispatchTool(ctx, tc, cortexThreadOrNil(r.Cortex, &thread))
 
 				tr.Mark("tool.exec",
 					"turn", turn,
@@ -573,9 +572,9 @@ func convertToolResultImages(imgs []llm.ImageContent) []session.ImageData {
 	return out
 }
 
-// cortexThreadPtr returns a pointer to the cortex thread if Cortex is enabled,
+// cortexThreadOrNil returns a pointer to the cortex thread if Cortex is enabled,
 // else nil. dispatchTool treats a nil pointer as "skip cortex updates".
-func cortexThreadPtr(cx *cortex.Cortex, thread *[]conversation.Message) *[]conversation.Message {
+func cortexThreadOrNil(cx *cortex.Cortex, thread *[]conversation.Message) *[]conversation.Message {
 	if cx == nil {
 		return nil
 	}
