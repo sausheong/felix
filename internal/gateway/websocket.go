@@ -290,7 +290,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 
 	// Resolve LLM provider — read under RLock so a concurrent UpdateProviders
 	// (triggered by a Settings save / config hot-reload) can't tear the map.
-	providerName, modelName := llm.ParseProviderModel(agentCfg.Model)
+	providerName, _ := llm.ParseProviderModel(agentCfg.Model)
 	h.mu.RLock()
 	provider, ok := h.providers[providerName]
 	h.mu.RUnlock()
@@ -349,30 +349,17 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	}
 	compactionMgr := compProv.For(agentCfg.Model)
 
-	reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
-	if err != nil {
-		slog.Error("invalid reasoning mode in agent config; defaulting to off",
-			"agent", agentCfg.ID, "value", agentCfg.Reasoning, "err", err)
-		reasoning = llm.ReasoningOff
-	}
-
-	rt := &agent.Runtime{
-		LLM:          provider,
-		Tools:        executor,
-		Session:      sess,
-		AgentID:      agentCfg.ID,
-		AgentName:    agentCfg.Name,
-		Model:        modelName,
-		Reasoning:    reasoning,
-		Workspace:    agentCfg.Workspace,
-		MaxTurns:     agentCfg.MaxTurns,
-		SystemPrompt: agentCfg.SystemPrompt,
-		Skills:       sk,
-		Memory:       mem,
-		Cortex:       cx,
-		Permission:   perm,
-		Compaction:   compactionMgr,
-	}
+	rt, _ := agent.BuildRuntimeForAgent(agent.RuntimeDeps{
+		Skills:     sk,
+		Memory:     mem,
+		Permission: perm,
+		CortexFn:   func(_ string) *cortex.Cortex { return cx },
+	}, agent.RuntimeInputs{
+		Provider:   provider,
+		Tools:      executor,
+		Session:    sess,
+		Compaction: compactionMgr,
+	}, agentCfg)
 
 	runCtx, runCancel := context.WithCancel(context.Background())
 

@@ -348,13 +348,6 @@ func runChat(agentID, configPath, modelOverride string) error {
 
 	ctx := context.Background()
 
-	reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
-	if err != nil {
-		slog.Error("invalid reasoning mode in agent config; defaulting to off",
-			"agent", agentCfg.ID, "value", agentCfg.Reasoning, "err", err)
-		reasoning = llm.ReasoningOff
-	}
-
 	// Init cron scheduler for chat mode so the agent can use the cron tool
 	cronScheduler := cron.NewScheduler()
 
@@ -362,6 +355,25 @@ func runChat(agentID, configPath, modelOverride string) error {
 	// constructions in this chat session. The Manager's per-session mutex
 	// map only serializes correctly when the same Manager instance is reused.
 	compactionMgr := compaction.BuildManager(cfg)
+
+	// Resolve a per-Runtime AgentConfig that reflects the (possibly
+	// overridden) provider/model from --model. BuildRuntimeForAgent re-parses
+	// AgentConfig.Model to compute Runtime.Model, so we need the effective
+	// model to live on the AgentConfig we hand it. The original literal
+	// passed `modelName` (from modelStr) directly, so this preserves that.
+	rtAgentCfg := *agentCfg
+	rtAgentCfg.Model = providerName + "/" + modelName
+
+	// Shared Runtime dependencies for both the cron-factory Runtime and the
+	// interactive REPL Runtime. CLI chat mode uses a single resolved cortex
+	// instance for the whole session — return it from CortexFn regardless of
+	// the model arg, mirroring the prior literal behaviour (Cortex: cx).
+	runtimeDeps := agent.RuntimeDeps{
+		Skills:     skillLoader,
+		Memory:     memMgr,
+		Permission: permission,
+		CortexFn:   func(_ string) *cortex.Cortex { return cx },
+	}
 
 	// Build an agent factory for dynamic cron jobs — each job gets its own
 	// session and runtime so it can actually execute the prompt via the LLM.
@@ -375,24 +387,13 @@ func runChat(agentID, configPath, modelOverride string) error {
 			if _, err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
 				return "", fmt.Errorf("register mcp tools for cron: %w", err)
 			}
-			cronRT := &agent.Runtime{
-				LLM:          provider,
+			cronRT, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+				Provider:     provider,
 				Tools:        cronToolReg,
 				Session:      cronSess,
-				AgentID:      agentCfg.ID,
-				AgentName:    agentCfg.Name,
-				Model:        modelName,
-				Reasoning:    reasoning,
-				Workspace:    agentCfg.Workspace,
-				MaxTurns:     agentCfg.MaxTurns,
-				SystemPrompt: agentCfg.SystemPrompt,
-				Skills:       skillLoader,
-				Memory:       memMgr,
-				Cortex:       cx,
-				Permission:   permission,
 				Compaction:   compactionMgr,
 				IngestSource: "cron",
-			}
+			}, &rtAgentCfg)
 			return cronRT.RunSync(ctx, prompt, nil)
 		}
 	}
@@ -430,23 +431,12 @@ func runChat(agentID, configPath, modelOverride string) error {
 		cronScheduler.Start(ctx)
 	}
 
-	rt := &agent.Runtime{
-		LLM:          provider,
-		Tools:        toolExecutor,
-		Session:      sess,
-		AgentID:      agentCfg.ID,
-		AgentName:    agentCfg.Name,
-		Model:        modelName,
-		Reasoning:    reasoning,
-		Workspace:    agentCfg.Workspace,
-		MaxTurns:     agentCfg.MaxTurns,
-		SystemPrompt: agentCfg.SystemPrompt,
-		Skills:       skillLoader,
-		Memory:       memMgr,
-		Cortex:       cx,
-		Permission:   permission,
-		Compaction:   compactionMgr,
-	}
+	rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+		Provider:   provider,
+		Tools:      toolExecutor,
+		Session:    sess,
+		Compaction: compactionMgr,
+	}, &rtAgentCfg)
 
 	// Track current session key for switching
 	currentSessionKey := "cli_local"
