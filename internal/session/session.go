@@ -201,6 +201,8 @@ func (s *Session) LeafID() string {
 
 // Branch moves the leaf pointer to the specified entry ID, creating a branch.
 // New entries appended after this will have the branch point as their parent.
+//
+// NOTE: not lock-guarded — see Phase B spec, runs during /resume or DAG branching, never from parallel dispatch goroutines.
 func (s *Session) Branch(entryID string) error {
 	if _, ok := s.entryMap[entryID]; !ok {
 		return fmt.Errorf("entry %q not found in session", entryID)
