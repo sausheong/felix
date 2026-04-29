@@ -162,6 +162,14 @@ type Tool interface {
 	Description() string
 	Parameters() json.RawMessage // JSON Schema
 	Execute(ctx context.Context, input json.RawMessage) (ToolResult, error)
+	// IsConcurrencySafe reports whether this tool can be invoked in parallel
+	// with other concurrency-safe tools in the same dispatch batch. Pure-read
+	// tools should return true; anything that mutates state or has ordering
+	// sensitivity should return false. The input parameter is plumbed for
+	// future input-aware classifiers (e.g., bash subcommand-specific safety);
+	// current impls may ignore it. Implementations MUST NOT panic on weird
+	// input — the partitioner treats panics as unsafe via recover().
+	IsConcurrencySafe(input json.RawMessage) bool
 }
 
 // ToolResult holds the output of a tool execution.

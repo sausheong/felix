@@ -429,6 +429,7 @@ func (t *mockTool) Description() string { return "mock tool" }
 func (t *mockTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{}}`)
 }
+func (t *mockTool) IsConcurrencySafe(_ json.RawMessage) bool { return false }
 func (t *mockTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{Output: t.output}, nil
 }

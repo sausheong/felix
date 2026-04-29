@@ -46,6 +46,9 @@ func (t *EditFileTool) Parameters() json.RawMessage {
 	}`)
 }
 
+// IsConcurrencySafe returns false — edit_file mutates the filesystem.
+func (t *EditFileTool) IsConcurrencySafe(_ json.RawMessage) bool { return false }
+
 func (t *EditFileTool) Execute(_ context.Context, input json.RawMessage) (ToolResult, error) {
 	var in editFileInput
 	if err := json.Unmarshal(input, &in); err != nil {

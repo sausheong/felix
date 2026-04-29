@@ -115,6 +115,9 @@ func (t *SendMessageTool) Parameters() json.RawMessage {
 	}`)
 }
 
+// IsConcurrencySafe returns false — message ordering is user-visible.
+func (t *SendMessageTool) IsConcurrencySafe(_ json.RawMessage) bool { return false }
+
 func (t *SendMessageTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
 	var in sendMessageInput
 	if err := json.Unmarshal(input, &in); err != nil {

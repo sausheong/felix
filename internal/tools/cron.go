@@ -74,6 +74,9 @@ func (t *CronTool) Parameters() json.RawMessage {
 	}`)
 }
 
+// IsConcurrencySafe returns false — cron mutates the scheduler's job list.
+func (t *CronTool) IsConcurrencySafe(_ json.RawMessage) bool { return false }
+
 func (t *CronTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
 	var in cronInput
 	if err := json.Unmarshal(input, &in); err != nil {

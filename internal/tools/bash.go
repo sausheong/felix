@@ -164,6 +164,9 @@ func extractCommands(cmd string) []string {
 	return cmds
 }
 
+// IsConcurrencySafe returns false — bash runs arbitrary commands with side effects.
+func (t *BashTool) IsConcurrencySafe(_ json.RawMessage) bool { return false }
+
 func (t *BashTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
 	var in bashInput
 	if err := json.Unmarshal(input, &in); err != nil {

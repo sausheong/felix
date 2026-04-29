@@ -50,6 +50,9 @@ func (t *WebFetchTool) Parameters() json.RawMessage {
 	}`)
 }
 
+// IsConcurrencySafe returns true — web_fetch is a pure read.
+func (t *WebFetchTool) IsConcurrencySafe(_ json.RawMessage) bool { return true }
+
 func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
 	var in webFetchInput
 	if err := json.Unmarshal(input, &in); err != nil {

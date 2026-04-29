@@ -67,6 +67,9 @@ func detectImageMIMEFromBytes(data []byte, hint string) string {
 	return hint
 }
 
+// IsConcurrencySafe returns true — read_file is a pure read.
+func (t *ReadFileTool) IsConcurrencySafe(_ json.RawMessage) bool { return true }
+
 func (t *ReadFileTool) Execute(_ context.Context, input json.RawMessage) (ToolResult, error) {
 	var in readFileInput
 	if err := json.Unmarshal(input, &in); err != nil {

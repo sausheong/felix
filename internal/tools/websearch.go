@@ -45,6 +45,9 @@ func (t *WebSearchTool) Parameters() json.RawMessage {
 	}`)
 }
 
+// IsConcurrencySafe returns true — web_search is a pure read.
+func (t *WebSearchTool) IsConcurrencySafe(_ json.RawMessage) bool { return true }
+
 func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
 	var in webSearchInput
 	if err := json.Unmarshal(input, &in); err != nil {

@@ -216,6 +216,10 @@ func (t *BrowserTool) Shutdown() {
 	}
 }
 
+// IsConcurrencySafe returns false — browser sessions are stateful (navigation,
+// cookies, scroll position) and not safe to drive concurrently.
+func (t *BrowserTool) IsConcurrencySafe(_ json.RawMessage) bool { return false }
+
 func (t *BrowserTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
 	var in browserInput
 	if err := json.Unmarshal(input, &in); err != nil {

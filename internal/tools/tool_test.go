@@ -13,9 +13,10 @@ type stubTool struct {
 	name string
 }
 
-func (s *stubTool) Name() string                { return s.name }
-func (s *stubTool) Description() string         { return s.name + " description" }
-func (s *stubTool) Parameters() json.RawMessage { return json.RawMessage(`{}`) }
+func (s *stubTool) Name() string                              { return s.name }
+func (s *stubTool) Description() string                       { return s.name + " description" }
+func (s *stubTool) Parameters() json.RawMessage               { return json.RawMessage(`{}`) }
+func (s *stubTool) IsConcurrencySafe(_ json.RawMessage) bool  { return false }
 func (s *stubTool) Execute(ctx context.Context, in json.RawMessage) (ToolResult, error) {
 	return ToolResult{}, nil
 }

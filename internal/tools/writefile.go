@@ -41,6 +41,9 @@ func (t *WriteFileTool) Parameters() json.RawMessage {
 	}`)
 }
 
+// IsConcurrencySafe returns false — write_file mutates the filesystem.
+func (t *WriteFileTool) IsConcurrencySafe(_ json.RawMessage) bool { return false }
+
 func (t *WriteFileTool) Execute(_ context.Context, input json.RawMessage) (ToolResult, error) {
 	var in writeFileInput
 	if err := json.Unmarshal(input, &in); err != nil {

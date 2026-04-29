@@ -223,9 +223,10 @@ type customMockTool struct {
 	output string
 }
 
-func (t *customMockTool) Name() string                { return t.name }
-func (t *customMockTool) Description() string         { return "custom mock tool" }
-func (t *customMockTool) Parameters() json.RawMessage { return json.RawMessage(t.schema) }
+func (t *customMockTool) Name() string                              { return t.name }
+func (t *customMockTool) Description() string                       { return "custom mock tool" }
+func (t *customMockTool) Parameters() json.RawMessage               { return json.RawMessage(t.schema) }
+func (t *customMockTool) IsConcurrencySafe(_ json.RawMessage) bool  { return false }
 func (t *customMockTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{Output: t.output}, nil
 }

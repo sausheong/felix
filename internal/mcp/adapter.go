@@ -35,6 +35,11 @@ func (a *mcpToolAdapter) Name() string                { return a.fullName }
 func (a *mcpToolAdapter) Description() string         { return a.description }
 func (a *mcpToolAdapter) Parameters() json.RawMessage { return a.schema }
 
+// IsConcurrencySafe returns false — remote MCP tools have unknown side effects;
+// conservatively treat them as unsafe to parallelize. A future enhancement
+// could read a server-declared annotation to opt specific tools into safe mode.
+func (a *mcpToolAdapter) IsConcurrencySafe(_ json.RawMessage) bool { return false }
+
 func (a *mcpToolAdapter) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var args map[string]any
 	if len(input) > 0 {
