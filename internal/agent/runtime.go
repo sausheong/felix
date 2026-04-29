@@ -38,7 +38,12 @@ const (
 
 // AgentEvent is a single streaming event from the agent.
 type AgentEvent struct {
-	Type       EventType
+	Type EventType
+	// AgentID is the emitter's agent identifier. Empty for top-level
+	// (Parent==nil) runtimes; populated by Runtime.emit when forwarding a
+	// subagent's event up to its parent. Existing readers that ignore the
+	// field are unaffected — this is purely additive.
+	AgentID    string
 	Text       string
 	ToolCall   *llm.ToolCall
 	Result     *tools.ToolResult
@@ -67,6 +72,23 @@ type Runtime struct {
 	// (matches the no-policy default).
 	Permission tools.PermissionChecker
 
+	// Depth is the recursion level: 0 for top-level chat/cron/heartbeat agents;
+	// subagents get parent.Depth + 1. Used by maxAgentDepth() enforcement in
+	// the subagent factory.
+	Depth int
+
+	// Parent points to the Runtime that invoked this Runtime as a subagent.
+	// nil for top-level agents. When non-nil, every event emitted via emit()
+	// is forwarded (with AgentID set) to Parent.events before being sent to
+	// this Runtime's own events channel.
+	Parent *Runtime
+
+	// events is the channel returned by Run for the current invocation. It
+	// is assigned at the very start of Run (replacing the previous local
+	// variable) so that the emit() helper can route forwarded events to the
+	// parent. Buffered (100). Read by the caller; written only by Run/emit.
+	events chan AgentEvent
+
 	// cortexMu serializes appends to the per-Run cortex thread slice when
 	// Phase B's parallel runner invokes dispatchTool from multiple goroutines.
 	// Held briefly only around the slice append; never around tool execution.
@@ -83,15 +105,38 @@ type Runtime struct {
 	calibrator *tokens.Calibrator
 }
 
+// emit sends ev to this runtime's events channel. When this runtime has a
+// Parent (i.e., it's a subagent), emit also forwards a copy of the event
+// (with AgentID populated to this runtime's AgentID) to Parent.events.
+//
+// The forward is non-blocking via select+default: if the parent's channel
+// is full (because the parent is mid-tool-execution — TaskTool is what
+// invoked us — and not draining), the forwarded event is dropped. This
+// avoids a backpressure deadlock. The final result still lands via TaskTool's
+// drain of this runtime's events channel.
+func (r *Runtime) emit(ev AgentEvent) {
+	if r.Parent != nil {
+		forward := ev
+		forward.AgentID = r.AgentID
+		select {
+		case r.Parent.events <- forward:
+		default:
+			// parent's channel full — drop forwarded event; this subagent's
+			// own channel still gets the event so its caller (TaskTool) sees it.
+		}
+	}
+	r.events <- ev
+}
+
 // Run executes the agent loop for a user message, returning a channel of events.
 // images is an optional slice of image attachments to include with the user message.
 func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageContent) (<-chan AgentEvent, error) {
-	events := make(chan AgentEvent, 100)
+	r.events = make(chan AgentEvent, 100)
 	tr := TraceFrom(ctx)
 	tr.Mark("agent.run.start", "user_msg_len", len(userMsg), "images", len(images))
 
 	go func() {
-		defer close(events)
+		defer close(r.events)
 		defer tr.Summary()
 
 		// Append user message to session (with optional images)
@@ -178,7 +223,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 		for turn := 0; turn < maxTurns; turn++ {
 			// Check for cancellation at the top of each turn
 			if ctx.Err() != nil {
-				events <- AgentEvent{Type: EventAborted}
+				r.emit(AgentEvent{Type: EventAborted})
 				return
 			}
 
@@ -295,16 +340,16 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				msgCap := r.Compaction.MessageCap
 				countHit := msgCap > 0 && len(msgs) > msgCap
 				if thresholdHit || countHit {
-					events <- AgentEvent{Type: EventCompactionStart}
+					r.emit(AgentEvent{Type: EventCompactionStart})
 					res, _ := r.Compaction.MaybeCompact(ctx, r.Session, compaction.ReasonPreventive, "")
 					if res.Compacted {
-						events <- AgentEvent{Type: EventCompactionDone, Compaction: &res}
+						r.emit(AgentEvent{Type: EventCompactionDone, Compaction: &res})
 						// Re-assemble messages after compaction.
 						history = r.Session.View()
 						msgs = assembleMessages(history)
 						pruneToolResults(msgs, maxToolResultLen)
 					} else {
-						events <- AgentEvent{Type: EventCompactionSkipped, Compaction: &res}
+						r.emit(AgentEvent{Type: EventCompactionSkipped, Compaction: &res})
 					}
 				}
 			}
@@ -328,10 +373,10 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			stream, err := r.LLM.ChatStream(ctx, req)
 			if err != nil {
 				if compaction.IsContextOverflow(err) && r.Compaction != nil {
-					events <- AgentEvent{Type: EventCompactionStart}
+					r.emit(AgentEvent{Type: EventCompactionStart})
 					res, _ := r.Compaction.MaybeCompact(ctx, r.Session, compaction.ReasonReactive, "")
 					if res.Compacted {
-						events <- AgentEvent{Type: EventCompactionDone, Compaction: &res}
+						r.emit(AgentEvent{Type: EventCompactionDone, Compaction: &res})
 						// Re-assemble + retry once.
 						history = r.Session.View()
 						msgs = assembleMessages(history)
@@ -339,11 +384,11 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 						req.Messages = msgs
 						stream, err = r.LLM.ChatStream(ctx, req)
 					} else {
-						events <- AgentEvent{Type: EventCompactionSkipped, Compaction: &res}
+						r.emit(AgentEvent{Type: EventCompactionSkipped, Compaction: &res})
 					}
 				}
 				if err != nil {
-					events <- AgentEvent{Type: EventError, Error: fmt.Errorf("llm error: %w", err)}
+					r.emit(AgentEvent{Type: EventError, Error: fmt.Errorf("llm error: %w", err)})
 					return
 				}
 			}
@@ -361,14 +406,14 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 						tr.Mark("llm.first_token", "turn", turn, "ttft_ms", time.Since(llmStart).Milliseconds())
 					}
 					textContent.WriteString(event.Text)
-					events <- AgentEvent{Type: EventTextDelta, Text: event.Text}
+					r.emit(AgentEvent{Type: EventTextDelta, Text: event.Text})
 
 				case llm.EventToolCallStart:
 					if !gotFirstToken {
 						gotFirstToken = true
 						tr.Mark("llm.first_token", "turn", turn, "ttft_ms", time.Since(llmStart).Milliseconds(), "kind", "tool_call")
 					}
-					events <- AgentEvent{Type: EventToolCallStart, ToolCall: event.ToolCall}
+					r.emit(AgentEvent{Type: EventToolCallStart, ToolCall: event.ToolCall})
 
 				case llm.EventToolCallDone:
 					if event.ToolCall != nil {
@@ -381,7 +426,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					}
 
 				case llm.EventError:
-					events <- AgentEvent{Type: EventError, Error: event.Error}
+					r.emit(AgentEvent{Type: EventError, Error: event.Error})
 					return
 				}
 			}
@@ -404,7 +449,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// If no tool calls, we're done
 			if len(toolCalls) == 0 {
 				tr.Mark("agent.done", "turn", turn, "reason", "no_tool_calls")
-				events <- AgentEvent{Type: EventDone}
+				r.emit(AgentEvent{Type: EventDone})
 				return
 			}
 
@@ -412,8 +457,8 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// calls run in parallel via runBatch; unsafe calls run sequentially.
 			batches := partitionToolCalls(toolCalls, r.Tools)
 			for _, b := range batches {
-				if r.runBatch(ctx, b, cortexThreadOrNil(r.Cortex, &thread), events, turn, tr) {
-					events <- AgentEvent{Type: EventAborted}
+				if r.runBatch(ctx, b, cortexThreadOrNil(r.Cortex, &thread), turn, tr) {
+					r.emit(AgentEvent{Type: EventAborted})
 					return
 				}
 			}
@@ -421,13 +466,13 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// Loop back for next LLM turn with tool results
 		}
 
-		events <- AgentEvent{
+		r.emit(AgentEvent{
 			Type:  EventError,
 			Error: fmt.Errorf("agent exceeded maximum turns (%d)", maxTurns),
-		}
+		})
 	}()
 
-	return events, nil
+	return r.events, nil
 }
 
 // RunSync is a convenience method that runs the agent and collects the full text response.
