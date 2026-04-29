@@ -415,6 +415,19 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	}
 	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
 
+	// Build a single PermissionChecker covering every agent in cfg. Same
+	// checker, different agent IDs per Runtime — StaticChecker keys on
+	// AgentID. An agent absent from the map is treated as allow-all, matching
+	// today's behavior when no policy is configured.
+	agentPolicies := map[string]tools.Policy{}
+	for _, a := range cfg.Agents.List {
+		agentPolicies[a.ID] = tools.Policy{
+			Allow: a.Tools.Allow,
+			Deny:  a.Tools.Deny,
+		}
+	}
+	permission := tools.NewStaticChecker(agentPolicies)
+
 	// Init skill loader
 	skillLoader := skill.NewLoader()
 	skillDirs := []string{filepath.Join(dataDir, "skills")}
@@ -499,6 +512,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	wsHandler.SetSkills(skillLoader)
 	wsHandler.SetMemory(memMgr)
 	wsHandler.SetCortexProvider(cxProvider)
+	wsHandler.SetPermission(permission)
 
 	// Config hot-reload — rebuild LLM provider clients from the new config
 	// and push them into the WebSocket handler. Without the provider rebuild,
@@ -580,6 +594,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Skills:       skillLoader,
 					Memory:       memMgr,
 					Cortex:       resolveCortex(agentCfg.Model),
+					Permission:   permission,
 					Compaction:   startupCompactionMgr,
 					IngestSource: "heartbeat",
 				}
@@ -636,6 +651,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Skills:       skillLoader,
 					Memory:       memMgr,
 					Cortex:       resolveCortex(agentCfg.Model),
+					Permission:   permission,
 					Compaction:   startupCompactionMgr,
 					IngestSource: "cron",
 				}
@@ -690,6 +706,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Skills:       skillLoader,
 					Memory:       memMgr,
 					Cortex:       resolveCortex(defaultCfg.Model),
+					Permission:   permission,
 					Compaction:   startupCompactionMgr,
 					IngestSource: "cron",
 				}

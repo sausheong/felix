@@ -340,6 +340,19 @@ func runChat(agentID, configPath, modelOverride string) error {
 	}
 	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
 
+	// Build a single PermissionChecker covering every agent in cfg. Same
+	// checker, different agent IDs per Runtime — StaticChecker keys on
+	// AgentID. An agent absent from the map is treated as allow-all, matching
+	// today's behavior when no policy is configured.
+	agentPolicies := map[string]tools.Policy{}
+	for _, a := range cfg.Agents.List {
+		agentPolicies[a.ID] = tools.Policy{
+			Allow: a.Tools.Allow,
+			Deny:  a.Tools.Deny,
+		}
+	}
+	permission := tools.NewStaticChecker(agentPolicies)
+
 	ctx := context.Background()
 
 	reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
@@ -383,6 +396,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 				Skills:       skillLoader,
 				Memory:       memMgr,
 				Cortex:       cx,
+				Permission:   permission,
 				Compaction:   compactionMgr,
 				IngestSource: "cron",
 			}
@@ -442,6 +456,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		Skills:       skillLoader,
 		Memory:       memMgr,
 		Cortex:       cx,
+		Permission:   permission,
 		Compaction:   compactionMgr,
 	}
 

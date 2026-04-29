@@ -49,6 +49,7 @@ type WebSocketHandler struct {
 	skills            *skill.Loader
 	memory            *memory.Manager
 	cortexProvider    *cortexadapter.Provider // per-agent cortex client factory
+	permission        tools.PermissionChecker // dispatch-time tool gate; nil → allow-all
 	activeRuns        map[*websocket.Conn]context.CancelFunc
 	activeSessionKeys map[*websocket.Conn]map[string]string // conn → agentID → sessionKey
 	upgrader          websocket.Upgrader
@@ -119,6 +120,14 @@ func (h *WebSocketHandler) SetCortexProvider(p *cortexadapter.Provider) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cortexProvider = p
+}
+
+// SetPermission installs the dispatch-time tool permission gate. nil means
+// allow-all (matches today's behavior when no policy is configured).
+func (h *WebSocketHandler) SetPermission(p tools.PermissionChecker) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.permission = p
 }
 
 // SetSkills sets the skill loader for the WebSocket handler.
@@ -333,6 +342,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	sk := h.skills
 	mem := h.memory
 	compProv := h.compactionProv
+	perm := h.permission
 	h.mu.RUnlock()
 	var cx *cortex.Cortex
 	if cxProv != nil {
@@ -364,6 +374,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		Skills:       sk,
 		Memory:       mem,
 		Cortex:       cx,
+		Permission:   perm,
 		Compaction:   compactionMgr,
 	}
 
