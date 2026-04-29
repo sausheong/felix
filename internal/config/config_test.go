@@ -1,11 +1,13 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/sausheong/felix/internal/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -684,4 +686,42 @@ func TestAgentConfigReasoningValidation(t *testing.T) {
 			assert.Error(t, err, "input %q should error", in)
 		}
 	}
+}
+
+func TestConfig_BuildPermissionChecker(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{
+					ID: "agent_allow",
+					Tools: ToolPolicy{
+						Allow: []string{"read_file", "web_fetch"},
+					},
+				},
+				{
+					ID: "agent_deny",
+					Tools: ToolPolicy{
+						Deny: []string{"bash"},
+					},
+				},
+			},
+		},
+	}
+
+	checker := cfg.BuildPermissionChecker()
+	require.NotNil(t, checker)
+
+	ctx := context.Background()
+	emptyInput := json.RawMessage(`{}`)
+
+	// agent_allow: read_file allowed, bash denied (not in allow list)
+	require.Equal(t, tools.DecisionAllow, checker.Check(ctx, "agent_allow", "read_file", emptyInput).Behavior)
+	require.Equal(t, tools.DecisionDeny, checker.Check(ctx, "agent_allow", "bash", emptyInput).Behavior)
+
+	// agent_deny: bash denied, read_file allowed (no allow-list constraint)
+	require.Equal(t, tools.DecisionDeny, checker.Check(ctx, "agent_deny", "bash", emptyInput).Behavior)
+	require.Equal(t, tools.DecisionAllow, checker.Check(ctx, "agent_deny", "read_file", emptyInput).Behavior)
+
+	// Unknown agent: allow-all default
+	require.Equal(t, tools.DecisionAllow, checker.Check(ctx, "unknown", "anything", emptyInput).Behavior)
 }

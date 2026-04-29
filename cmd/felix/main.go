@@ -344,14 +344,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 	// checker, different agent IDs per Runtime — StaticChecker keys on
 	// AgentID. An agent absent from the map is treated as allow-all, matching
 	// today's behavior when no policy is configured.
-	agentPolicies := map[string]tools.Policy{}
-	for _, a := range cfg.Agents.List {
-		agentPolicies[a.ID] = tools.Policy{
-			Allow: a.Tools.Allow,
-			Deny:  a.Tools.Deny,
-		}
-	}
-	permission := tools.NewStaticChecker(agentPolicies)
+	permission := cfg.BuildPermissionChecker()
 
 	ctx := context.Background()
 

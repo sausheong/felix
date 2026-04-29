@@ -419,14 +419,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// checker, different agent IDs per Runtime — StaticChecker keys on
 	// AgentID. An agent absent from the map is treated as allow-all, matching
 	// today's behavior when no policy is configured.
-	agentPolicies := map[string]tools.Policy{}
-	for _, a := range cfg.Agents.List {
-		agentPolicies[a.ID] = tools.Policy{
-			Allow: a.Tools.Allow,
-			Deny:  a.Tools.Deny,
-		}
-	}
-	permission := tools.NewStaticChecker(agentPolicies)
+	permission := cfg.BuildPermissionChecker()
 
 	// Init skill loader
 	skillLoader := skill.NewLoader()
@@ -527,14 +520,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			// Rebuild the permission checker from the new config and re-inject.
 			// Without this, edits to agent Tools.Allow/Deny in felix.json5
 			// silently no-op the dispatch-time gate until restart.
-			newPolicies := map[string]tools.Policy{}
-			for _, a := range newCfg.Agents.List {
-				newPolicies[a.ID] = tools.Policy{
-					Allow: a.Tools.Allow,
-					Deny:  a.Tools.Deny,
-				}
-			}
-			wsHandler.SetPermission(tools.NewStaticChecker(newPolicies))
+			wsHandler.SetPermission(newCfg.BuildPermissionChecker())
 			wsHandler.UpdateConfig(newCfg)
 			wsHandler.UpdateProviders(newProviders)
 			slog.Info("config hot-reloaded", "providers", len(newProviders))

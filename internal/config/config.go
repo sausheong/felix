@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/sausheong/felix/internal/mcp"
+	"github.com/sausheong/felix/internal/tools"
 )
 
 // Config is the top-level Felix configuration.
@@ -535,6 +536,24 @@ func (c *Config) GetAgent(id string) (*AgentConfig, bool) {
 		}
 	}
 	return nil, false
+}
+
+// BuildPermissionChecker returns a tools.PermissionChecker covering every
+// agent in the config. Single source of truth — used at startup and on
+// hot-reload by both entry points (startup.go and cmd/felix/main.go).
+//
+// An empty Policy{} (no Allow, no Deny) for an agent allows all tools,
+// matching the existing FilterToolDefs/Check semantics for the allow-all
+// default.
+func (c *Config) BuildPermissionChecker() tools.PermissionChecker {
+	policies := map[string]tools.Policy{}
+	for _, a := range c.Agents.List {
+		policies[a.ID] = tools.Policy{
+			Allow: a.Tools.Allow,
+			Deny:  a.Tools.Deny,
+		}
+	}
+	return tools.NewStaticChecker(policies)
 }
 
 // Path returns the file path this config was loaded from.
