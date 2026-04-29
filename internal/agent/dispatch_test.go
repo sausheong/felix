@@ -203,6 +203,33 @@ func TestDispatchTool_CancelledAfterExecute(t *testing.T) {
 	require.Empty(t, d.Output)
 }
 
+func TestDispatchTool_ExecutorReturnsCtxErrIsRecordedAsAborted(t *testing.T) {
+	// A ctx-aware tool that returns ctx.Err() when cancelled. dispatchTool
+	// must record this as an abort (Aborted=true), not a normal error,
+	// because the user pressed Ctrl-C — the tool didn't fail organically.
+	ctx, cancel := context.WithCancel(context.Background())
+
+	exec := &fakeExecutor{
+		onExecute: func(c context.Context) {
+			cancel()
+		},
+		err: context.Canceled, // simulates a ctx-aware tool returning ctx.Err()
+	}
+	r := newDispatchRuntime(exec, nil)
+
+	result, aborted := r.dispatchTool(ctx, sampleToolCall(), nil)
+
+	require.True(t, aborted, "must report aborted when ctx is cancelled, even if executor surfaced ctx.Err()")
+	require.True(t, exec.called)
+	require.Equal(t, "aborted by user", result.Error, "result must carry the abort reason, not the executor's error")
+
+	entries := lastEntries(r.Session, 2)
+	d := decodeToolResult(t, entries[1])
+	require.True(t, d.Aborted, "session entry must be marked Aborted")
+	require.Equal(t, "aborted by user", d.Error)
+	require.Empty(t, d.Output)
+}
+
 func TestDispatchTool_CortexThreadAtomicWithSession(t *testing.T) {
 	// Verifies the cortex thread receives matching messages in lockstep
 	// with the session writes — this is the atomicity contract dispatchTool

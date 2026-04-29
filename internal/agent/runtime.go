@@ -513,8 +513,11 @@ func (r *Runtime) dispatchTool(
 		result = tools.ToolResult{Error: err.Error()}
 	}
 
-	// 5. Post-execute cancel check. The user pressed Ctrl-C — discard real output.
-	if ctx.Err() != nil && result.Error == "" {
+	// 5. Post-execute cancel check. The user pressed Ctrl-C — discard the
+	// tool's result (whether it returned cleanly or surfaced ctx.Err()
+	// itself) and write the synthetic abort marker so /resume can render
+	// it as cancelled rather than as a normal failure.
+	if ctx.Err() != nil {
 		return r.appendAbortedResult(tc.ID, cortexThread), true
 	}
 
