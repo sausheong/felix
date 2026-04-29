@@ -399,46 +399,21 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				return
 			}
 
-			// Save tool calls to session and accumulate in Cortex thread.
-			for _, tc := range toolCalls {
-				r.Session.Append(session.ToolCallEntry(tc.ID, tc.Name, tc.Input))
-				if r.Cortex != nil {
-					thread = append(thread, conversation.Message{
-						Role:    "assistant",
-						Content: fmt.Sprintf("[tool: %s]\n%s", tc.Name, string(tc.Input)),
-					})
-				}
-			}
+			// Dispatch each tool call. dispatchTool guarantees one ToolCallEntry +
+			// one ToolResultEntry per tc, on every exit path (clean / error /
+			// deny / aborted). Cortex thread accumulation is atomic alongside the
+			// session writes — both land or neither does.
+			for i := range toolCalls {
+				tc := toolCalls[i]
+				result, aborted := r.dispatchTool(ctx, tc, cortexThreadPtr(r.Cortex, &thread))
 
-			// Execute tools
-			for _, tc := range toolCalls {
-				// Check for cancellation before each tool
-				if ctx.Err() != nil {
-					events <- AgentEvent{Type: EventAborted}
-					return
-				}
-
-				slog.Debug("executing tool", "tool", tc.Name, "id", tc.ID, "input", string(tc.Input))
-
-				toolStart := time.Now()
-				result, err := r.Tools.Execute(ctx, tc.Name, tc.Input)
-				if err != nil {
-					result = tools.ToolResult{Error: err.Error()}
-				}
 				tr.Mark("tool.exec",
 					"turn", turn,
 					"tool", tc.Name,
-					"dur_ms_local", time.Since(toolStart).Milliseconds(),
 					"err", result.Error != "",
-					"output_chars", len(result.Output))
+					"output_chars", len(result.Output),
+					"aborted", aborted)
 
-				// Check for cancellation after tool execution
-				if ctx.Err() != nil {
-					events <- AgentEvent{Type: EventAborted}
-					return
-				}
-
-				// Log tool result
 				if result.Error != "" {
 					slog.Warn("tool error", "tool", tc.Name, "id", tc.ID, "error", result.Error)
 				} else {
@@ -449,29 +424,15 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					slog.Debug("tool result", "tool", tc.Name, "id", tc.ID, "output_len", len(result.Output), "output", outPreview)
 				}
 
-				// Convert tool result images to session image data
-				var imgData []session.ImageData
-				for _, img := range result.Images {
-					imgData = append(imgData, session.ImageData{
-						MimeType: img.MimeType,
-						Data:     base64.StdEncoding.EncodeToString(img.Data),
-					})
-				}
-
-				// Save tool result to session and accumulate in Cortex thread.
-				r.Session.Append(session.ToolResultEntry(tc.ID, result.Output, result.Error, imgData))
-				if r.Cortex != nil {
-					content := result.Output
-					if result.Error != "" {
-						content = "[error] " + result.Error
-					}
-					thread = append(thread, conversation.Message{Role: "user", Content: content})
-				}
-
 				events <- AgentEvent{
 					Type:     EventToolResult,
 					ToolCall: &tc,
 					Result:   &result,
+				}
+
+				if aborted {
+					events <- AgentEvent{Type: EventAborted}
+					return
 				}
 			}
 
@@ -610,4 +571,13 @@ func convertToolResultImages(imgs []llm.ImageContent) []session.ImageData {
 		})
 	}
 	return out
+}
+
+// cortexThreadPtr returns a pointer to the cortex thread if Cortex is enabled,
+// else nil. dispatchTool treats a nil pointer as "skip cortex updates".
+func cortexThreadPtr(cx *cortex.Cortex, thread *[]conversation.Message) *[]conversation.Message {
+	if cx == nil {
+		return nil
+	}
+	return thread
 }

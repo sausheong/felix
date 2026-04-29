@@ -699,3 +699,106 @@ func (f *cannedSummarizer) ChatStream(ctx context.Context, req llm.ChatRequest) 
 	return ch, nil
 }
 
+
+// TestRun_AbortMidDispatchProducesPairedSession verifies that when ctx is
+// cancelled while iterating over a multi-tool batch, the loop breaks at the
+// first abort and the session ends with consistent tool_use/tool_result
+// pairing. Tools never dispatched do NOT appear in the session.
+func TestRun_AbortMidDispatchProducesPairedSession(t *testing.T) {
+	threeToolCalls := []llm.ToolCall{
+		{ID: "tc_0", Name: "noop", Input: json.RawMessage(`{}`)},
+		{ID: "tc_1", Name: "noop", Input: json.RawMessage(`{}`)},
+		{ID: "tc_2", Name: "noop", Input: json.RawMessage(`{}`)},
+	}
+	llmFake := &threeToolCallLLM{toolCalls: threeToolCalls}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	count := 0
+	exec := &cancelOnNthExecutor{n: 1, cancel: cancel, count: &count}
+
+	r := &Runtime{
+		LLM:      llmFake,
+		Tools:    exec,
+		Session:  session.NewSession("a", "k"),
+		AgentID:  "a",
+		Model:    "test-model",
+		MaxTurns: 5,
+	}
+
+	events, err := r.Run(ctx, "go", nil)
+	require.NoError(t, err)
+	for range events { /* drain */ }
+
+	// Walk the final session: every ToolCall must be immediately followed by a
+	// ToolResult with the matching tool_call_id. Tools that were never
+	// dispatched (tc_1, tc_2) must NOT appear in the session.
+	entries := r.Session.View()
+	var calls, results int
+	for i, e := range entries {
+		if e.Type == session.EntryTypeToolCall {
+			calls++
+			require.Less(t, i+1, len(entries), "ToolCallEntry has no following entry")
+			next := entries[i+1]
+			require.Equal(t, session.EntryTypeToolResult, next.Type, "ToolCall must be paired with ToolResult")
+			results++
+		}
+	}
+	require.Equal(t, calls, results, "every tool_use must have a paired tool_result")
+
+	for _, e := range entries {
+		if e.Type == session.EntryTypeToolCall {
+			var d session.ToolCallData
+			require.NoError(t, json.Unmarshal(e.Data, &d))
+			require.NotEqual(t, "tc_1", d.ID, "undispatched tool tc_1 must not be saved")
+			require.NotEqual(t, "tc_2", d.ID, "undispatched tool tc_2 must not be saved")
+		}
+	}
+}
+
+// threeToolCallLLM emits the configured tool_calls as one assistant turn,
+// then EventDone. On the next call (after tool results, if the runtime
+// loops back), emits only EventDone with no tool_calls so Run terminates.
+//
+// Embeds llmtest.Base for the boilerplate Models / NormalizeToolSchema methods.
+type threeToolCallLLM struct {
+	llmtest.Base
+	toolCalls []llm.ToolCall
+	calls     int
+}
+
+func (f *threeToolCallLLM) ChatStream(_ context.Context, _ llm.ChatRequest) (<-chan llm.ChatEvent, error) {
+	ch := make(chan llm.ChatEvent, len(f.toolCalls)*2+2)
+	first := f.calls == 0
+	f.calls++
+	go func() {
+		defer close(ch)
+		if first {
+			for i := range f.toolCalls {
+				tc := f.toolCalls[i]
+				ch <- llm.ChatEvent{Type: llm.EventToolCallStart, ToolCall: &tc}
+				ch <- llm.ChatEvent{Type: llm.EventToolCallDone, ToolCall: &tc}
+			}
+		}
+		ch <- llm.ChatEvent{Type: llm.EventDone}
+	}()
+	return ch, nil
+}
+
+// cancelOnNthExecutor cancels the provided context after the nth Execute call
+// completes (1-indexed: n=1 means cancel after the first call). Output is "ok".
+type cancelOnNthExecutor struct {
+	n      int
+	cancel context.CancelFunc
+	count  *int
+}
+
+func (e *cancelOnNthExecutor) Execute(_ context.Context, _ string, _ json.RawMessage) (tools.ToolResult, error) {
+	*e.count++
+	if *e.count == e.n {
+		e.cancel()
+	}
+	return tools.ToolResult{Output: "ok"}, nil
+}
+func (e *cancelOnNthExecutor) ToolDefs() []llm.ToolDef       { return []llm.ToolDef{{Name: "noop"}} }
+func (e *cancelOnNthExecutor) Names() []string               { return []string{"noop"} }
+func (e *cancelOnNthExecutor) Get(string) (tools.Tool, bool) { return nil, false }
