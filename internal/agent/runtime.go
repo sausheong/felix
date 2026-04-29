@@ -62,6 +62,10 @@ type Runtime struct {
 	Cortex       *cortex.Cortex      // optional: Cortex knowledge graph for recall/ingest
 	Compaction   *compaction.Manager // optional; nil → no compaction
 
+	// Permission gates tool execution at dispatch time. nil → allow-all
+	// (matches the no-policy default).
+	Permission tools.PermissionChecker
+
 	// IngestSource controls whether this run's thread is ingested into Cortex.
 	// "chat" (or empty for backward compatibility) ingests; "cron" / "heartbeat"
 	// / any other value skips ingest. Recall always runs regardless — only the
@@ -501,4 +505,105 @@ func (r *Runtime) RunSync(ctx context.Context, userMsg string, images []llm.Imag
 	}
 
 	return response.String(), nil
+}
+
+// dispatchTool executes one tool call with strict tool_use ↔ tool_result
+// pairing. It always appends a ToolCallEntry then exactly one ToolResultEntry
+// (real, error, denial, or aborted) before returning, on every code path.
+//
+// The returned tools.ToolResult is for event emission to the caller. When
+// aborted=true, the caller MUST stop dispatching subsequent tool calls in
+// this turn and emit EventAborted.
+//
+// cortexThread, when non-nil, is appended to atomically alongside the
+// session writes — both call+result land or neither does.
+func (r *Runtime) dispatchTool(
+	ctx context.Context,
+	tc llm.ToolCall,
+	cortexThread *[]conversation.Message,
+) (result tools.ToolResult, aborted bool) {
+	// 1. Save tool call (paired ownership begins here).
+	r.Session.Append(session.ToolCallEntry(tc.ID, tc.Name, tc.Input))
+	if cortexThread != nil {
+		*cortexThread = append(*cortexThread, conversation.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("[tool: %s]\n%s", tc.Name, string(tc.Input)),
+		})
+	}
+
+	// 2. Permission gate.
+	if r.Permission != nil {
+		if d := r.Permission.Check(ctx, r.AgentID, tc.Name, tc.Input); d.Behavior == tools.DecisionDeny {
+			return r.appendDenialResult(tc.ID, d.Reason, cortexThread), false
+		}
+	}
+
+	// 3. Pre-execute cancel check.
+	if ctx.Err() != nil {
+		return r.appendAbortedResult(tc.ID, cortexThread), true
+	}
+
+	// 4. Execute.
+	result, err := r.Tools.Execute(ctx, tc.Name, tc.Input)
+	if err != nil {
+		result = tools.ToolResult{Error: err.Error()}
+	}
+
+	// 5. Post-execute cancel check. The user pressed Ctrl-C — discard real output.
+	if ctx.Err() != nil && result.Error == "" {
+		return r.appendAbortedResult(tc.ID, cortexThread), true
+	}
+
+	// 6. Save paired tool result.
+	imgData := convertToolResultImages(result.Images)
+	r.Session.Append(session.ToolResultEntry(tc.ID, result.Output, result.Error, imgData))
+	if cortexThread != nil {
+		content := result.Output
+		if result.Error != "" {
+			content = "[error] " + result.Error
+		}
+		*cortexThread = append(*cortexThread, conversation.Message{Role: "user", Content: content})
+	}
+
+	return result, false
+}
+
+// appendDenialResult writes the tool-result entry for a denied tool call and
+// returns a tools.ToolResult mirroring it. Centralised so the deny path stays
+// consistent with the result-emit format.
+func (r *Runtime) appendDenialResult(toolCallID, reason string, cortexThread *[]conversation.Message) tools.ToolResult {
+	r.Session.Append(session.ToolResultEntry(toolCallID, "", reason, nil))
+	if cortexThread != nil {
+		*cortexThread = append(*cortexThread, conversation.Message{
+			Role: "user", Content: "[error] " + reason,
+		})
+	}
+	return tools.ToolResult{Error: reason}
+}
+
+// appendAbortedResult writes the synthetic abort entry and returns the
+// matching tools.ToolResult. Used for both pre- and post-execute cancellation.
+func (r *Runtime) appendAbortedResult(toolCallID string, cortexThread *[]conversation.Message) tools.ToolResult {
+	r.Session.Append(session.AbortedToolResultEntry(toolCallID))
+	if cortexThread != nil {
+		*cortexThread = append(*cortexThread, conversation.Message{
+			Role: "user", Content: "[error] aborted by user",
+		})
+	}
+	return tools.ToolResult{Error: "aborted by user"}
+}
+
+// convertToolResultImages adapts tool image attachments to session ImageData.
+func convertToolResultImages(imgs []llm.ImageContent) []session.ImageData {
+	if len(imgs) == 0 {
+		return nil
+	}
+	out := make([]session.ImageData, 0, len(imgs))
+	for _, img := range imgs {
+		out = append(out, session.ImageData{
+			MimeType: img.MimeType,
+			Data:     base64.StdEncoding.EncodeToString(img.Data),
+		})
+	}
+	return out
 }
