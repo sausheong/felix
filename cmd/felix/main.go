@@ -375,6 +375,43 @@ func runChat(agentID, configPath, modelOverride string) error {
 		CortexFn:   func(_ string) *cortex.Cortex { return cx },
 	}
 
+	// Shared provider resolver for subagent dispatch. CLI chat mode only
+	// pre-builds the provider for the chatting agent; subagents may target a
+	// different provider/model, so we resolve on-demand from the config.
+	resolveSubagentProvider := func(model string) (llm.LLMProvider, error) {
+		pName, _ := llm.ParseProviderModel(model)
+		if pName == "" {
+			return nil, fmt.Errorf("invalid model %q (no provider prefix)", model)
+		}
+		opts := startup.ResolveProviderOpts(pName, cfg)
+		if opts.APIKey == "" && pName != "local" {
+			return nil, fmt.Errorf("no API key set for provider %q", pName)
+		}
+		return llm.NewProvider(pName, opts)
+	}
+
+	// Subagent input builder used by both the cron-factory and interactive
+	// REPL TaskTool registrations. Builds a fresh tool registry + provider +
+	// in-memory session for whichever subagent the parent dispatches to.
+	buildSubagentInputs := func(a *config.AgentConfig) (agent.RuntimeInputs, error) {
+		p, err := resolveSubagentProvider(a.Model)
+		if err != nil {
+			return agent.RuntimeInputs{}, err
+		}
+		reg := tools.NewRegistry()
+		tools.RegisterCoreTools(reg, a.Workspace, execPolicy)
+		if _, err := mcp.RegisterTools(reg, mcpMgr); err != nil {
+			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
+		}
+		return agent.RuntimeInputs{
+			Provider:     p,
+			Tools:        reg,
+			Session:      agent.NewSubagentSession(a.ID),
+			Compaction:   compactionMgr,
+			IngestSource: "",
+		}, nil
+	}
+
 	// Build an agent factory for dynamic cron jobs — each job gets its own
 	// session and runtime so it can actually execute the prompt via the LLM.
 	agentFactory := func(jobName string) func(context.Context, string) (string, error) {
@@ -394,6 +431,11 @@ func runChat(agentID, configPath, modelOverride string) error {
 				Compaction:   compactionMgr,
 				IngestSource: "cron",
 			}, &rtAgentCfg)
+			// Wire task tool so cron-launched runs can also dispatch to subagents.
+			if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+				factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, cronRT)
+				cronToolReg.Register(tools.NewTaskTool(factory, cronRT.Depth, eligible))
+			}
 			return cronRT.RunSync(ctx, prompt, nil)
 		}
 	}
@@ -437,6 +479,13 @@ func runChat(agentID, configPath, modelOverride string) error {
 		Session:    sess,
 		Compaction: compactionMgr,
 	}, &rtAgentCfg)
+
+	// Wire task tool so the interactive REPL can dispatch to subagents.
+	// Idempotent: re-registering on the same toolReg overwrites by name.
+	if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+		factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+		toolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
+	}
 
 	// Track current session key for switching
 	currentSessionKey := "cli_local"

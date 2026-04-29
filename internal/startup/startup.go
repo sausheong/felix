@@ -541,7 +541,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	startupCompactionMgr := compaction.BuildManager(cfg)
 
 	// Shared Runtime dependencies for every Runtime built in this process —
-	// heartbeat, cron-static, cron-adapter (and, in T6, the subagent factory).
+	// heartbeat, cron-static, cron-adapter, and the subagent factory.
 	// Per-call inputs (provider, tools, session, ingest-source) are passed via
 	// agent.RuntimeInputs at each call site below.
 	runtimeDeps := agent.RuntimeDeps{
@@ -550,6 +550,37 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		Permission: permission,
 		CortexFn:   resolveCortex,
 	}
+
+	// Subagent input builder shared by all three call sites in this file
+	// (heartbeat, cron-static, cron-adapter). Builds a fresh per-subagent
+	// tool registry + provider lookup + in-memory session. Subagents do NOT
+	// ingest into Cortex (IngestSource="") since they're short-lived and
+	// would otherwise flood the graph with tool-use chatter.
+	buildSubagentInputs := func(a *config.AgentConfig) (agent.RuntimeInputs, error) {
+		pName, _ := llm.ParseProviderModel(a.Model)
+		p, ok := providers[pName]
+		if !ok {
+			return agent.RuntimeInputs{}, fmt.Errorf("provider %q not configured for subagent %q", pName, a.ID)
+		}
+		reg := tools.NewRegistry()
+		tools.RegisterCoreTools(reg, a.Workspace, execPolicy)
+		if _, err := mcp.RegisterTools(reg, mcpMgr); err != nil {
+			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
+		}
+		tools.RegisterSendMessage(reg, sendMsgConfigFn)
+		return agent.RuntimeInputs{
+			Provider:     p,
+			Tools:        reg,
+			Session:      agent.NewSubagentSession(a.ID),
+			Compaction:   startupCompactionMgr,
+			IngestSource: "",
+		}, nil
+	}
+
+	// Wire the subagent builder into the websocket handler so chat sessions
+	// can dispatch to subagents via the task tool. The same builder closure
+	// is reused across all chat connections.
+	wsHandler.SetSubagentBuilder(buildSubagentInputs)
 
 	// Start heartbeat daemon for each agent if enabled
 	var heartbeats []*heartbeat.Daemon
@@ -583,6 +614,10 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Compaction:   startupCompactionMgr,
 					IngestSource: "heartbeat",
 				}, &agentCfg)
+				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+					hbToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
+				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
 
@@ -618,6 +653,10 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Compaction:   startupCompactionMgr,
 					IngestSource: "cron",
 				}, &agentCfg)
+				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+					cronToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
+				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
 
@@ -656,6 +695,10 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					Compaction:   startupCompactionMgr,
 					IngestSource: "cron",
 				}, &defaultCfg)
+				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+					cronToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
+				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
 		},
