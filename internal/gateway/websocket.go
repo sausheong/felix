@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -50,6 +51,7 @@ type WebSocketHandler struct {
 	memory            *memory.Manager
 	cortexProvider    *cortexadapter.Provider // per-agent cortex client factory
 	permission        tools.PermissionChecker // dispatch-time tool gate; nil → allow-all
+	subagentBuild     agent.SubagentBuildFn   // builds RuntimeInputs for subagent dispatch via task tool
 	activeRuns        map[*websocket.Conn]context.CancelFunc
 	activeSessionKeys map[*websocket.Conn]map[string]string // conn → agentID → sessionKey
 	upgrader          websocket.Upgrader
@@ -142,6 +144,16 @@ func (h *WebSocketHandler) SetMemory(m *memory.Manager) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.memory = m
+}
+
+// SetSubagentBuilder installs the per-call SubagentBuildFn used by handleChatSend
+// to construct task-tool subagent runtimes. nil disables subagent dispatch from
+// the websocket path. Called once at startup wiring (the builder closes over
+// the long-lived providers/MCP/policy state from the gateway scope).
+func (h *WebSocketHandler) SetSubagentBuilder(fn agent.SubagentBuildFn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.subagentBuild = fn
 }
 
 // Handle upgrades an HTTP connection to WebSocket and processes messages.
@@ -290,7 +302,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 
 	// Resolve LLM provider — read under RLock so a concurrent UpdateProviders
 	// (triggered by a Settings save / config hot-reload) can't tear the map.
-	providerName, modelName := llm.ParseProviderModel(agentCfg.Model)
+	providerName, _ := llm.ParseProviderModel(agentCfg.Model)
 	h.mu.RLock()
 	provider, ok := h.providers[providerName]
 	h.mu.RUnlock()
@@ -328,7 +340,12 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	// Tool policy enforcement is now handled by PermissionChecker:
 	// FilterToolDefs hides denied tools from the model, and Check
 	// short-circuits any deny attempts at dispatch time.
-	executor := h.tools
+	//
+	// We wrap the shared registry in a per-chat layer so the per-call task
+	// tool (which captures THIS chat's parent runtime) doesn't leak into
+	// other chats' tool definitions. The wrapper falls through to h.tools
+	// for everything else.
+	var executor tools.Executor = h.tools
 
 	// Run agent. Resolve cortex + compaction per agent so both use the same
 	// LLM as the chat itself (instead of mirroring whatever model the default
@@ -339,6 +356,8 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	mem := h.memory
 	compProv := h.compactionProv
 	perm := h.permission
+	subagentBuild := h.subagentBuild
+	cfg := h.config
 	h.mu.RUnlock()
 	var cx *cortex.Cortex
 	if cxProv != nil {
@@ -349,29 +368,31 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	}
 	compactionMgr := compProv.For(agentCfg.Model)
 
-	reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
-	if err != nil {
-		slog.Error("invalid reasoning mode in agent config; defaulting to off",
-			"agent", agentCfg.ID, "value", agentCfg.Reasoning, "err", err)
-		reasoning = llm.ReasoningOff
+	runtimeDeps := agent.RuntimeDeps{
+		Skills:     sk,
+		Memory:     mem,
+		Permission: perm,
+		CortexFn:   func(_ string) *cortex.Cortex { return cx },
 	}
 
-	rt := &agent.Runtime{
-		LLM:          provider,
-		Tools:        executor,
-		Session:      sess,
-		AgentID:      agentCfg.ID,
-		AgentName:    agentCfg.Name,
-		Model:        modelName,
-		Reasoning:    reasoning,
-		Workspace:    agentCfg.Workspace,
-		MaxTurns:     agentCfg.MaxTurns,
-		SystemPrompt: agentCfg.SystemPrompt,
-		Skills:       sk,
-		Memory:       mem,
-		Cortex:       cx,
-		Permission:   perm,
-		Compaction:   compactionMgr,
+	rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+		Provider:   provider,
+		Tools:      executor,
+		Session:    sess,
+		Compaction: compactionMgr,
+	}, agentCfg)
+
+	// Wire the task tool for subagent dispatch. The shared h.tools registry
+	// can't hold the per-call task tool (which captures THIS rt as Parent),
+	// so we overlay it via a per-chat executor that adds "task" on top of
+	// the shared registry. Activation requires both an installed builder
+	// and at least one eligible subagent in the live config.
+	if subagentBuild != nil && cfg != nil {
+		if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+			factory := agent.MakeSubagentFactory(cfg, runtimeDeps, subagentBuild, rt)
+			taskTool := tools.NewTaskTool(factory, rt.Depth, eligible)
+			rt.Tools = &taskOverlayExecutor{base: h.tools, task: taskTool}
+		}
 	}
 
 	runCtx, runCancel := context.WithCancel(context.Background())
@@ -1066,4 +1087,48 @@ func writeJSON(conn *websocket.Conn, v any) {
 	if err := conn.WriteJSON(v); err != nil {
 		slog.Error("websocket write error", "error", err)
 	}
+}
+
+// taskOverlayExecutor wraps the shared tools.Registry and adds the per-chat
+// "task" tool on top. The shared registry can't hold the task tool because
+// each chat needs its own task tool with its own parent Runtime captured;
+// registering on the shared registry would either race-clobber other chats
+// or cross-wire parents. The overlay is read-through for everything except
+// the "task" name.
+type taskOverlayExecutor struct {
+	base *tools.Registry
+	task *tools.TaskTool
+}
+
+func (e *taskOverlayExecutor) Execute(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
+	if name == e.task.Name() {
+		return e.task.Execute(ctx, input)
+	}
+	return e.base.Execute(ctx, name, input)
+}
+
+func (e *taskOverlayExecutor) ToolDefs() []llm.ToolDef {
+	defs := e.base.ToolDefs()
+	defs = append(defs, llm.ToolDef{
+		Name:        e.task.Name(),
+		Description: e.task.Description(),
+		Parameters:  e.task.Parameters(),
+	})
+	// Re-sort to keep prompt-cache-stable ordering — see Registry.ToolDefs.
+	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
+	return defs
+}
+
+func (e *taskOverlayExecutor) Names() []string {
+	names := e.base.Names()
+	names = append(names, e.task.Name())
+	sort.Strings(names)
+	return names
+}
+
+func (e *taskOverlayExecutor) Get(name string) (tools.Tool, bool) {
+	if name == e.task.Name() {
+		return e.task, true
+	}
+	return e.base.Get(name)
 }

@@ -414,6 +414,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		return nil, fmt.Errorf("register mcp tools: %w", err)
 	}
 	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
+	cfg.ApplyTaskToolToAllowlists()
 
 	// Build a single PermissionChecker covering every agent in cfg. Same
 	// checker, different agent IDs per Runtime — StaticChecker keys on
@@ -540,6 +541,48 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// map only serializes correctly when the same instance is reused.
 	startupCompactionMgr := compaction.BuildManager(cfg)
 
+	// Shared Runtime dependencies for every Runtime built in this process —
+	// heartbeat, cron-static, cron-adapter, and the subagent factory.
+	// Per-call inputs (provider, tools, session, ingest-source) are passed via
+	// agent.RuntimeInputs at each call site below.
+	runtimeDeps := agent.RuntimeDeps{
+		Skills:     skillLoader,
+		Memory:     memMgr,
+		Permission: permission,
+		CortexFn:   resolveCortex,
+	}
+
+	// Subagent input builder shared by all three call sites in this file
+	// (heartbeat, cron-static, cron-adapter). Builds a fresh per-subagent
+	// tool registry + provider lookup + in-memory session. Subagents do NOT
+	// ingest into Cortex (IngestSource="") since they're short-lived and
+	// would otherwise flood the graph with tool-use chatter.
+	buildSubagentInputs := func(a *config.AgentConfig) (agent.RuntimeInputs, error) {
+		pName, _ := llm.ParseProviderModel(a.Model)
+		p, ok := providers[pName]
+		if !ok {
+			return agent.RuntimeInputs{}, fmt.Errorf("provider %q not configured for subagent %q", pName, a.ID)
+		}
+		reg := tools.NewRegistry()
+		tools.RegisterCoreTools(reg, a.Workspace, execPolicy)
+		if _, err := mcp.RegisterTools(reg, mcpMgr); err != nil {
+			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
+		}
+		tools.RegisterSendMessage(reg, sendMsgConfigFn)
+		return agent.RuntimeInputs{
+			Provider:     p,
+			Tools:        reg,
+			Session:      agent.NewSubagentSession(a.ID),
+			Compaction:   startupCompactionMgr,
+			IngestSource: "",
+		}, nil
+	}
+
+	// Wire the subagent builder into the websocket handler so chat sessions
+	// can dispatch to subagents via the task tool. The same builder closure
+	// is reused across all chat connections.
+	wsHandler.SetSubagentBuilder(buildSubagentInputs)
+
 	// Start heartbeat daemon for each agent if enabled
 	var heartbeats []*heartbeat.Daemon
 	if cfg.Heartbeat.Enabled {
@@ -549,51 +592,32 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		}
 
 		for _, agentCfg := range cfg.Agents.List {
-			providerName, modelName := llm.ParseProviderModel(agentCfg.Model)
+			providerName, _ := llm.ParseProviderModel(agentCfg.Model)
 			provider, ok := providers[providerName]
 			if !ok {
 				continue
 			}
 
-			agentWorkspace := agentCfg.Workspace
-			agentID := agentCfg.ID
-			agentMaxTurns := agentCfg.MaxTurns
-
-			agentSystemPrompt := agentCfg.SystemPrompt
-			agentName := agentCfg.Name
+			agentCfg := agentCfg
 			agentFn := func(ctx context.Context, prompt string) (string, error) {
-				sess := session.NewSession(agentID, "heartbeat")
+				sess := session.NewSession(agentCfg.ID, "heartbeat")
 				hbToolReg := tools.NewRegistry()
-				tools.RegisterCoreTools(hbToolReg, agentWorkspace, execPolicy)
+				tools.RegisterCoreTools(hbToolReg, agentCfg.Workspace, execPolicy)
 				if _, err := mcp.RegisterTools(hbToolReg, mcpMgr); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(hbToolReg, sendMsgConfigFn)
 
-				reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
-				if err != nil {
-					slog.Error("invalid reasoning mode in agent config; defaulting to off",
-						"agent", agentCfg.ID, "value", agentCfg.Reasoning, "err", err)
-					reasoning = llm.ReasoningOff
-				}
-
-				rt := &agent.Runtime{
-					LLM:          provider,
+				rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+					Provider:     provider,
 					Tools:        hbToolReg,
 					Session:      sess,
-					AgentID:      agentID,
-					AgentName:    agentName,
-					Model:        modelName,
-					Reasoning:    reasoning,
-					Workspace:    agentWorkspace,
-					MaxTurns:     agentMaxTurns,
-					SystemPrompt: agentSystemPrompt,
-					Skills:       skillLoader,
-					Memory:       memMgr,
-					Cortex:       resolveCortex(agentCfg.Model),
-					Permission:   permission,
 					Compaction:   startupCompactionMgr,
 					IngestSource: "heartbeat",
+				}, &agentCfg)
+				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+					hbToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -608,49 +632,31 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	cronScheduler := cron.NewScheduler()
 	for _, agentCfg := range cfg.Agents.List {
 		for _, cronJob := range agentCfg.Cron {
-			providerName, modelName := llm.ParseProviderModel(agentCfg.Model)
+			providerName, _ := llm.ParseProviderModel(agentCfg.Model)
 			provider, ok := providers[providerName]
 			if !ok {
 				continue
 			}
-			agentWorkspace := agentCfg.Workspace
-			agentID := agentCfg.ID
-			agentMaxTurns := agentCfg.MaxTurns
-			jobPrompt := cronJob.Prompt
-
-			agentSystemPrompt := agentCfg.SystemPrompt
-			agentName := agentCfg.Name
+			agentCfg := agentCfg
+			cronJob := cronJob
 			agentFn := func(ctx context.Context, prompt string) (string, error) {
-				sess := session.NewSession(agentID, "cron_"+cronJob.Name)
+				sess := session.NewSession(agentCfg.ID, "cron_"+cronJob.Name)
 				cronToolReg := tools.NewRegistry()
-				tools.RegisterCoreTools(cronToolReg, agentWorkspace, execPolicy)
+				tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace, execPolicy)
 				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
-				reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
-				if err != nil {
-					slog.Error("invalid reasoning mode in agent config; defaulting to off",
-						"agent", agentCfg.ID, "value", agentCfg.Reasoning, "err", err)
-					reasoning = llm.ReasoningOff
-				}
-				rt := &agent.Runtime{
-					LLM:          provider,
+				rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+					Provider:     provider,
 					Tools:        cronToolReg,
 					Session:      sess,
-					AgentID:      agentID,
-					AgentName:    agentName,
-					Model:        modelName,
-					Reasoning:    reasoning,
-					Workspace:    agentWorkspace,
-					MaxTurns:     agentMaxTurns,
-					SystemPrompt: agentSystemPrompt,
-					Skills:       skillLoader,
-					Memory:       memMgr,
-					Cortex:       resolveCortex(agentCfg.Model),
-					Permission:   permission,
 					Compaction:   startupCompactionMgr,
 					IngestSource: "cron",
+				}, &agentCfg)
+				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+					cronToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}
@@ -658,7 +664,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			cronScheduler.Add(cron.Job{
 				Name:     cronJob.Name,
 				Schedule: cronJob.Schedule,
-				Prompt:   jobPrompt,
+				Prompt:   cronJob.Prompt,
 				AgentFn:  agentFn,
 			})
 		}
@@ -671,7 +677,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		AgentFactory: func(jobName string) func(context.Context, string) (string, error) {
 			return func(ctx context.Context, prompt string) (string, error) {
 				defaultCfg := cfg.Agents.List[0]
-				pName, mName := llm.ParseProviderModel(defaultCfg.Model)
+				pName, _ := llm.ParseProviderModel(defaultCfg.Model)
 				p, ok := providers[pName]
 				if !ok {
 					return "", fmt.Errorf("provider %q not available", pName)
@@ -683,29 +689,16 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
-				reasoning, err := llm.ParseReasoningMode(defaultCfg.Reasoning)
-				if err != nil {
-					slog.Error("invalid reasoning mode in agent config; defaulting to off",
-						"agent", defaultCfg.ID, "value", defaultCfg.Reasoning, "err", err)
-					reasoning = llm.ReasoningOff
-				}
-				rt := &agent.Runtime{
-					LLM:          p,
+				rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+					Provider:     p,
 					Tools:        cronToolReg,
 					Session:      cronSess,
-					AgentID:      defaultCfg.ID,
-					AgentName:    defaultCfg.Name,
-					Model:        mName,
-					Reasoning:    reasoning,
-					Workspace:    defaultCfg.Workspace,
-					MaxTurns:     defaultCfg.MaxTurns,
-					SystemPrompt: defaultCfg.SystemPrompt,
-					Skills:       skillLoader,
-					Memory:       memMgr,
-					Cortex:       resolveCortex(defaultCfg.Model),
-					Permission:   permission,
 					Compaction:   startupCompactionMgr,
 					IngestSource: "cron",
+				}, &defaultCfg)
+				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+					cronToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
 				}
 				return rt.RunSync(ctx, prompt, nil)
 			}

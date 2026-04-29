@@ -314,13 +314,17 @@ func runChat(agentID, configPath, modelOverride string) error {
 		Allowlist: cfg.Security.ExecApprovals.Allowlist,
 	}
 	tools.RegisterCoreTools(toolReg, agentCfg.Workspace, execPolicy)
-	tools.RegisterSendMessage(toolReg, func() tools.SendMessageRegistration {
+	// Capture send_message wiring once so both the parent and subagent tool
+	// registries register the same configuration. Subagents inherit the
+	// parent's ability to push to Telegram/WhatsApp (matching startup.go).
+	sendMsgConfigFn := func() tools.SendMessageRegistration {
 		return tools.SendMessageRegistration{
 			TelegramEnabled:       cfg.Telegram.Enabled,
 			TelegramBotToken:      cfg.Telegram.BotToken,
 			TelegramDefaultChatID: cfg.Telegram.DefaultChatID,
 		}
-	})
+	}
+	tools.RegisterSendMessage(toolReg, sendMsgConfigFn)
 
 	// Connect to configured MCP servers and register their tools alongside core tools.
 	mcpServerCfgs, err := cfg.ResolveMCPServers()
@@ -339,6 +343,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		return fmt.Errorf("register mcp tools: %w", err)
 	}
 	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
+	cfg.ApplyTaskToolToAllowlists()
 
 	// Build a single PermissionChecker covering every agent in cfg. Same
 	// checker, different agent IDs per Runtime — StaticChecker keys on
@@ -348,13 +353,6 @@ func runChat(agentID, configPath, modelOverride string) error {
 
 	ctx := context.Background()
 
-	reasoning, err := llm.ParseReasoningMode(agentCfg.Reasoning)
-	if err != nil {
-		slog.Error("invalid reasoning mode in agent config; defaulting to off",
-			"agent", agentCfg.ID, "value", agentCfg.Reasoning, "err", err)
-		reasoning = llm.ReasoningOff
-	}
-
 	// Init cron scheduler for chat mode so the agent can use the cron tool
 	cronScheduler := cron.NewScheduler()
 
@@ -362,6 +360,63 @@ func runChat(agentID, configPath, modelOverride string) error {
 	// constructions in this chat session. The Manager's per-session mutex
 	// map only serializes correctly when the same Manager instance is reused.
 	compactionMgr := compaction.BuildManager(cfg)
+
+	// Resolve a per-Runtime AgentConfig that reflects the (possibly
+	// overridden) provider/model from --model. BuildRuntimeForAgent re-parses
+	// AgentConfig.Model to compute Runtime.Model, so we need the effective
+	// model to live on the AgentConfig we hand it. The original literal
+	// passed `modelName` (from modelStr) directly, so this preserves that.
+	rtAgentCfg := *agentCfg
+	rtAgentCfg.Model = providerName + "/" + modelName
+
+	// Shared Runtime dependencies for both the cron-factory Runtime and the
+	// interactive REPL Runtime. CLI chat mode uses a single resolved cortex
+	// instance for the whole session — return it from CortexFn regardless of
+	// the model arg, mirroring the prior literal behaviour (Cortex: cx).
+	runtimeDeps := agent.RuntimeDeps{
+		Skills:     skillLoader,
+		Memory:     memMgr,
+		Permission: permission,
+		CortexFn:   func(_ string) *cortex.Cortex { return cx },
+	}
+
+	// Shared provider resolver for subagent dispatch. CLI chat mode only
+	// pre-builds the provider for the chatting agent; subagents may target a
+	// different provider/model, so we resolve on-demand from the config.
+	resolveSubagentProvider := func(model string) (llm.LLMProvider, error) {
+		pName, _ := llm.ParseProviderModel(model)
+		if pName == "" {
+			return nil, fmt.Errorf("invalid model %q (no provider prefix)", model)
+		}
+		opts := startup.ResolveProviderOpts(pName, cfg)
+		if opts.APIKey == "" && pName != "local" {
+			return nil, fmt.Errorf("no API key set for provider %q", pName)
+		}
+		return llm.NewProvider(pName, opts)
+	}
+
+	// Subagent input builder used by both the cron-factory and interactive
+	// REPL TaskTool registrations. Builds a fresh tool registry + provider +
+	// in-memory session for whichever subagent the parent dispatches to.
+	buildSubagentInputs := func(a *config.AgentConfig) (agent.RuntimeInputs, error) {
+		p, err := resolveSubagentProvider(a.Model)
+		if err != nil {
+			return agent.RuntimeInputs{}, err
+		}
+		reg := tools.NewRegistry()
+		tools.RegisterCoreTools(reg, a.Workspace, execPolicy)
+		if _, err := mcp.RegisterTools(reg, mcpMgr); err != nil {
+			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
+		}
+		tools.RegisterSendMessage(reg, sendMsgConfigFn)
+		return agent.RuntimeInputs{
+			Provider:     p,
+			Tools:        reg,
+			Session:      agent.NewSubagentSession(a.ID),
+			Compaction:   compactionMgr,
+			IngestSource: "",
+		}, nil
+	}
 
 	// Build an agent factory for dynamic cron jobs — each job gets its own
 	// session and runtime so it can actually execute the prompt via the LLM.
@@ -375,23 +430,17 @@ func runChat(agentID, configPath, modelOverride string) error {
 			if _, err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
 				return "", fmt.Errorf("register mcp tools for cron: %w", err)
 			}
-			cronRT := &agent.Runtime{
-				LLM:          provider,
+			cronRT, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+				Provider:     provider,
 				Tools:        cronToolReg,
 				Session:      cronSess,
-				AgentID:      agentCfg.ID,
-				AgentName:    agentCfg.Name,
-				Model:        modelName,
-				Reasoning:    reasoning,
-				Workspace:    agentCfg.Workspace,
-				MaxTurns:     agentCfg.MaxTurns,
-				SystemPrompt: agentCfg.SystemPrompt,
-				Skills:       skillLoader,
-				Memory:       memMgr,
-				Cortex:       cx,
-				Permission:   permission,
 				Compaction:   compactionMgr,
 				IngestSource: "cron",
+			}, &rtAgentCfg)
+			// Wire task tool so cron-launched runs can also dispatch to subagents.
+			if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+				factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, cronRT)
+				cronToolReg.Register(tools.NewTaskTool(factory, cronRT.Depth, eligible))
 			}
 			return cronRT.RunSync(ctx, prompt, nil)
 		}
@@ -430,22 +479,18 @@ func runChat(agentID, configPath, modelOverride string) error {
 		cronScheduler.Start(ctx)
 	}
 
-	rt := &agent.Runtime{
-		LLM:          provider,
-		Tools:        toolExecutor,
-		Session:      sess,
-		AgentID:      agentCfg.ID,
-		AgentName:    agentCfg.Name,
-		Model:        modelName,
-		Reasoning:    reasoning,
-		Workspace:    agentCfg.Workspace,
-		MaxTurns:     agentCfg.MaxTurns,
-		SystemPrompt: agentCfg.SystemPrompt,
-		Skills:       skillLoader,
-		Memory:       memMgr,
-		Cortex:       cx,
-		Permission:   permission,
-		Compaction:   compactionMgr,
+	rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+		Provider:   provider,
+		Tools:      toolExecutor,
+		Session:    sess,
+		Compaction: compactionMgr,
+	}, &rtAgentCfg)
+
+	// Wire task tool so the interactive REPL can dispatch to subagents.
+	// Idempotent: re-registering on the same toolReg overwrites by name.
+	if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+		factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+		toolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
 	}
 
 	// Track current session key for switching

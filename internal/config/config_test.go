@@ -653,6 +653,57 @@ func TestStripMCPAutoAdded_NoSnapshot(t *testing.T) {
 	assert.ElementsMatch(t, []string{"bash", "ltm_x"}, incoming.Agents.List[0].Tools.Allow)
 }
 
+func TestConfig_ApplyTaskToolToAllowlists(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "parent", Model: "x/y", Tools: ToolPolicy{Allow: []string{"read_file", "bash"}}},
+				{ID: "researcher", Model: "x/y", Subagent: true, Description: "Web", Tools: ToolPolicy{Allow: []string{"web_fetch"}}},
+				{ID: "free", Model: "x/y"}, // empty Allow list — left alone
+				{ID: "already_has", Model: "x/y", Tools: ToolPolicy{Allow: []string{"read_file", "task"}}},
+			},
+		},
+	}
+
+	cfg.ApplyTaskToolToAllowlists()
+
+	// parent gained "task"
+	assert.Contains(t, cfg.Agents.List[0].Tools.Allow, "task")
+	// researcher gained "task" too — even subagents themselves
+	assert.Contains(t, cfg.Agents.List[1].Tools.Allow, "task")
+	// free agent (empty Allow) untouched — empty = allow-all
+	assert.Empty(t, cfg.Agents.List[2].Tools.Allow)
+	// already_has: no duplicate
+	assert.Equal(t, []string{"read_file", "task"}, cfg.Agents.List[3].Tools.Allow)
+}
+
+func TestConfig_ApplyTaskToolToAllowlists_NoSubagents(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "parent", Model: "x/y", Tools: ToolPolicy{Allow: []string{"read_file"}}},
+			},
+		},
+	}
+	cfg.ApplyTaskToolToAllowlists()
+	// No subagents → no augmentation
+	assert.Equal(t, []string{"read_file"}, cfg.Agents.List[0].Tools.Allow)
+}
+
+func TestConfig_ApplyTaskToolToAllowlists_Idempotent(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "parent", Model: "x/y", Tools: ToolPolicy{Allow: []string{"read_file"}}},
+				{ID: "sub", Model: "x/y", Subagent: true, Description: "x"},
+			},
+		},
+	}
+	cfg.ApplyTaskToolToAllowlists()
+	cfg.ApplyTaskToolToAllowlists() // call twice
+	assert.Equal(t, []string{"read_file", "task"}, cfg.Agents.List[0].Tools.Allow) // no duplicate
+}
+
 func TestCompactionConfigMessageCapDefault(t *testing.T) {
 	cfg := DefaultConfig()
 	assert.Equal(t, 50, cfg.Agents.Defaults.Compaction.MessageCap,
@@ -686,6 +737,62 @@ func TestAgentConfigReasoningValidation(t *testing.T) {
 			assert.Error(t, err, "input %q should error", in)
 		}
 	}
+}
+
+func TestConfig_SubagentRequiresDescription(t *testing.T) {
+	// Failure case: Subagent=true with empty Description must fail validation
+	// and the error must mention both the agent ID and "description".
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{{
+				ID:       "worker",
+				Model:    "openai/gpt-4o",
+				Subagent: true,
+			}},
+		},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worker")
+	assert.Contains(t, err.Error(), "description")
+
+	// Success case: same config but Description is non-empty.
+	cfg.Agents.List[0].Description = "Web research subagent"
+	require.NoError(t, cfg.Validate())
+}
+
+func TestConfig_EligibleSubagents(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "worker", Model: "openai/gpt-4o", Subagent: true, Description: "Web research"},
+				{ID: "summarizer", Model: "openai/gpt-4o", Subagent: true, Description: "Summarizes long text"},
+				{ID: "default", Model: "openai/gpt-4o", Subagent: false},
+			},
+		},
+	}
+
+	got := cfg.EligibleSubagents()
+	assert.Equal(t, map[string]string{
+		"worker":     "Web research",
+		"summarizer": "Summarizes long text",
+	}, got)
+	_, ok := got["default"]
+	assert.False(t, ok, "non-subagent must not appear in EligibleSubagents")
+}
+
+func TestConfig_EligibleSubagents_NoneEligible(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "default", Model: "openai/gpt-4o"},
+			},
+		},
+	}
+
+	got := cfg.EligibleSubagents()
+	assert.NotNil(t, got, "EligibleSubagents must return non-nil map for len() gating")
+	assert.Equal(t, 0, len(got))
 }
 
 func TestConfig_BuildPermissionChecker(t *testing.T) {

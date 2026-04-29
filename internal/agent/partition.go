@@ -79,14 +79,14 @@ func maxToolConcurrency() int {
 // ctx cancel). Reads are independent; a failed web_fetch should not invalidate
 // a parallel read_file.
 //
-// Event emission: each goroutine writes EventToolResult to events as it
+// Event emission: each goroutine emits EventToolResult via r.emit as it
 // completes (completion order, not input order). When this function returns,
-// every call in the batch has had its event emitted.
+// every call in the batch has had its event emitted. Subagent runtimes
+// forward each emission up to their parent's events channel.
 func (r *Runtime) runBatch(
 	ctx context.Context,
 	b batch,
 	cortexThread *[]conversation.Message,
-	events chan<- AgentEvent,
 	turn int,
 	tr *Trace,
 ) (aborted bool) {
@@ -94,7 +94,7 @@ func (r *Runtime) runBatch(
 	if len(b.calls) == 1 {
 		tc := b.calls[0]
 		result, abortedOne := r.dispatchTool(ctx, tc, cortexThread)
-		emitToolResult(events, tr, turn, tc, result, abortedOne)
+		r.emitToolResult(tr, turn, tc, result, abortedOne)
 		return abortedOne
 	}
 
@@ -113,7 +113,7 @@ func (r *Runtime) runBatch(
 			defer func() { <-sem }()
 
 			result, abortedOne := r.dispatchTool(ctx, tc, cortexThread)
-			emitToolResult(events, tr, turn, tc, result, abortedOne)
+			r.emitToolResult(tr, turn, tc, result, abortedOne)
 			if abortedOne {
 				anyAborted.Store(true)
 			}
@@ -125,8 +125,9 @@ func (r *Runtime) runBatch(
 
 // emitToolResult writes the per-call trace mark, log line, and EventToolResult.
 // Centralised so the parallel runBatch and the single-call path produce the
-// same event/log shape.
-func emitToolResult(events chan<- AgentEvent, tr *Trace, turn int, tc llm.ToolCall, result tools.ToolResult, aborted bool) {
+// same event/log shape. Routes through r.emit so subagent runtimes forward
+// the event to their parent's channel as well.
+func (r *Runtime) emitToolResult(tr *Trace, turn int, tc llm.ToolCall, result tools.ToolResult, aborted bool) {
 	tr.Mark("tool.exec",
 		"turn", turn,
 		"tool", tc.Name,
@@ -144,9 +145,9 @@ func emitToolResult(events chan<- AgentEvent, tr *Trace, turn int, tc llm.ToolCa
 		slog.Debug("tool result", "tool", tc.Name, "id", tc.ID, "output_len", len(result.Output), "output", outPreview)
 	}
 
-	events <- AgentEvent{
+	r.emit(AgentEvent{
 		Type:     EventToolResult,
 		ToolCall: &tc,
 		Result:   &result,
-	}
+	})
 }
