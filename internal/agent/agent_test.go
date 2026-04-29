@@ -921,3 +921,79 @@ func keysOf(m map[string]bool) []string {
 	}
 	return out
 }
+
+// TestRun_DenyPolicyShortCircuitsExecution drives the full Run loop with a
+// real StaticChecker that denies the tool the LLM tries to call. Verifies
+// the executor is never invoked and the session contains a single paired
+// call+deny entry.
+func TestRun_DenyPolicyShortCircuitsExecution(t *testing.T) {
+	denyChecker := tools.NewStaticChecker(map[string]tools.Policy{
+		"a": {Deny: []string{"noop"}},
+	})
+	executorCalled := false
+	exec := &recordingExecutor{
+		called:   &executorCalled,
+		toolDefs: []llm.ToolDef{{Name: "noop"}},
+	}
+
+	r := &Runtime{
+		LLM:        &threeToolCallLLM{toolCalls: []llm.ToolCall{{ID: "tc_0", Name: "noop", Input: json.RawMessage(`{}`)}}},
+		Tools:      exec,
+		Session:    session.NewSession("a", "k"),
+		AgentID:    "a",
+		Permission: denyChecker,
+		Model:      "test-model",
+		MaxTurns:   2,
+	}
+
+	events, err := r.Run(context.Background(), "go", nil)
+	require.NoError(t, err)
+
+	var resultEvents int
+	var lastResult *tools.ToolResult
+	for ev := range events {
+		if ev.Type == EventToolResult {
+			resultEvents++
+			lastResult = ev.Result
+		}
+	}
+
+	require.Equal(t, 1, resultEvents, "expected one EventToolResult for the denied call")
+	require.NotNil(t, lastResult)
+	require.Contains(t, lastResult.Error, "not allowed for agent")
+	require.False(t, executorCalled, "Execute must not run when StaticChecker denies")
+
+	entries := r.Session.View()
+	var hasCall, hasResult bool
+	for _, e := range entries {
+		if e.Type == session.EntryTypeToolCall {
+			hasCall = true
+		}
+		if e.Type == session.EntryTypeToolResult {
+			var trd session.ToolResultData
+			require.NoError(t, json.Unmarshal(e.Data, &trd))
+			require.True(t, trd.IsError, "denied result must be marked IsError")
+			require.False(t, trd.Aborted, "denied result must NOT be marked Aborted")
+			require.Contains(t, trd.Error, "not allowed for agent")
+			hasResult = true
+		}
+	}
+	require.True(t, hasCall, "session must contain the ToolCallEntry")
+	require.True(t, hasResult, "session must contain the paired denial ToolResultEntry")
+}
+
+// recordingExecutor records whether Execute was called. Differs from
+// fakeExecutor (in dispatch_test.go) by exposing a ToolDefs slice so the
+// runtime advertises the test tool to the LLM.
+type recordingExecutor struct {
+	called   *bool
+	toolDefs []llm.ToolDef
+}
+
+func (e *recordingExecutor) Execute(_ context.Context, _ string, _ json.RawMessage) (tools.ToolResult, error) {
+	*e.called = true
+	return tools.ToolResult{Output: "should not appear"}, nil
+}
+func (e *recordingExecutor) ToolDefs() []llm.ToolDef        { return e.toolDefs }
+func (e *recordingExecutor) Names() []string                { return []string{"noop"} }
+func (e *recordingExecutor) Get(string) (tools.Tool, bool)  { return nil, false }
