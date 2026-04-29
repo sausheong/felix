@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sausheong/cortex"
@@ -65,6 +66,11 @@ type Runtime struct {
 	// Permission gates tool execution at dispatch time. nil → allow-all
 	// (matches the no-policy default).
 	Permission tools.PermissionChecker
+
+	// cortexMu serializes appends to the per-Run cortex thread slice when
+	// Phase B's parallel runner invokes dispatchTool from multiple goroutines.
+	// Held briefly only around the slice append; never around tool execution.
+	cortexMu sync.Mutex
 
 	// IngestSource controls whether this run's thread is ingested into Cortex.
 	// "chat" (or empty for backward compatibility) ingests; "cron" / "heartbeat"
@@ -478,9 +484,9 @@ func (r *Runtime) RunSync(ctx context.Context, userMsg string, images []llm.Imag
 // cortexThread, when non-nil, is appended to atomically alongside the
 // session writes — both call+result land or neither does.
 //
-// NOTE: not safe for concurrent invocation on the same Runtime — Session.Append
-// is not mutex-guarded. Phase B (parallel tool dispatch) must serialize calls
-// or add locking to Session before invoking dispatchTool from multiple goroutines.
+// Safe for concurrent invocation on the same Runtime: Session.Append is
+// guarded by Session's own RWMutex (added in Phase B), and the cortex
+// thread append is guarded by r.cortexMu.
 func (r *Runtime) dispatchTool(
 	ctx context.Context,
 	tc llm.ToolCall,
@@ -489,10 +495,12 @@ func (r *Runtime) dispatchTool(
 	// 1. Save tool call (paired ownership begins here).
 	r.Session.Append(session.ToolCallEntry(tc.ID, tc.Name, tc.Input))
 	if cortexThread != nil {
+		r.cortexMu.Lock()
 		*cortexThread = append(*cortexThread, conversation.Message{
 			Role:    "assistant",
 			Content: fmt.Sprintf("[tool: %s]\n%s", tc.Name, string(tc.Input)),
 		})
+		r.cortexMu.Unlock()
 	}
 
 	// 2. Permission gate.
@@ -529,7 +537,9 @@ func (r *Runtime) dispatchTool(
 		if result.Error != "" {
 			content = "[error] " + result.Error
 		}
+		r.cortexMu.Lock()
 		*cortexThread = append(*cortexThread, conversation.Message{Role: "user", Content: content})
+		r.cortexMu.Unlock()
 	}
 
 	return result, false
@@ -541,9 +551,11 @@ func (r *Runtime) dispatchTool(
 func (r *Runtime) appendDenialResult(toolCallID, reason string, cortexThread *[]conversation.Message) tools.ToolResult {
 	r.Session.Append(session.ToolResultEntry(toolCallID, "", reason, nil))
 	if cortexThread != nil {
+		r.cortexMu.Lock()
 		*cortexThread = append(*cortexThread, conversation.Message{
 			Role: "user", Content: "[error] " + reason,
 		})
+		r.cortexMu.Unlock()
 	}
 	return tools.ToolResult{Error: reason}
 }
@@ -553,9 +565,11 @@ func (r *Runtime) appendDenialResult(toolCallID, reason string, cortexThread *[]
 func (r *Runtime) appendAbortedResult(toolCallID string, cortexThread *[]conversation.Message) tools.ToolResult {
 	r.Session.Append(session.AbortedToolResultEntry(toolCallID))
 	if cortexThread != nil {
+		r.cortexMu.Lock()
 		*cortexThread = append(*cortexThread, conversation.Message{
 			Role: "user", Content: "[error] aborted by user",
 		})
+		r.cortexMu.Unlock()
 	}
 	return tools.ToolResult{Error: "aborted by user"}
 }
