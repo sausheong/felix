@@ -414,6 +414,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		return nil, fmt.Errorf("register mcp tools: %w", err)
 	}
 	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
+	cfg.ApplyTaskToolToAllowlists()
 
 	// Build a single PermissionChecker covering every agent in cfg. Same
 	// checker, different agent IDs per Runtime — StaticChecker keys on

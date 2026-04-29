@@ -906,6 +906,73 @@ func (c *Config) ApplyMCPToolNamesToAllowlists(names []string) {
 	c.mcpAutoAddedNames = append(c.mcpAutoAddedNames[:0], names...)
 }
 
+// ApplyTaskToolToAllowlists augments each agent's Tools.Allow list with the
+// "task" tool name when at least one agent in the config is flagged
+// Subagent: true. Agents with an empty Allow list are left alone (empty =
+// allow all per Policy semantics). Without this augmentation, FilterToolDefs
+// would strip the task tool from agents whose Allow list omits it — silently
+// disabling subagent delegation for users who carefully curated their
+// allowlists.
+//
+// Modifies the in-memory Config only — not persisted to disk. Tracked in
+// mcpAutoAddedNames so StripMCPAutoAdded undoes it on UI save (use that same
+// snapshot since the augmentation has identical semantics — runtime-only,
+// re-applied next start).
+//
+// Idempotent: safe to call multiple times (no-op if "task" is already present).
+func (c *Config) ApplyTaskToolToAllowlists() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.hasSubagentLocked() {
+		return
+	}
+	const taskName = "task"
+	added := false
+	for i := range c.Agents.List {
+		agent := &c.Agents.List[i]
+		if len(agent.Tools.Allow) == 0 {
+			continue
+		}
+		present := false
+		for _, n := range agent.Tools.Allow {
+			if n == taskName {
+				present = true
+				break
+			}
+		}
+		if !present {
+			agent.Tools.Allow = append(agent.Tools.Allow, taskName)
+			added = true
+		}
+	}
+	if added {
+		// Track in the same snapshot used by the MCP path so StripMCPAutoAdded
+		// doesn't persist this either.
+		present := false
+		for _, n := range c.mcpAutoAddedNames {
+			if n == taskName {
+				present = true
+				break
+			}
+		}
+		if !present {
+			c.mcpAutoAddedNames = append(c.mcpAutoAddedNames, taskName)
+		}
+	}
+}
+
+// hasSubagentLocked reports whether any agent has Subagent: true. Caller must
+// hold c.mu (read or write). Lighter-weight than calling EligibleSubagents
+// just to check len > 0.
+func (c *Config) hasSubagentLocked() bool {
+	for _, a := range c.Agents.List {
+		if a.Subagent {
+			return true
+		}
+	}
+	return false
+}
+
 // StripMCPAutoAdded removes from `other`'s agent allowlists any tool names
 // that were auto-added to THIS Config by ApplyMCPToolNamesToAllowlists.
 // Used by the UI's SaveConfig handler so saving a config edited via the

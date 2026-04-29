@@ -653,6 +653,57 @@ func TestStripMCPAutoAdded_NoSnapshot(t *testing.T) {
 	assert.ElementsMatch(t, []string{"bash", "ltm_x"}, incoming.Agents.List[0].Tools.Allow)
 }
 
+func TestConfig_ApplyTaskToolToAllowlists(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "parent", Model: "x/y", Tools: ToolPolicy{Allow: []string{"read_file", "bash"}}},
+				{ID: "researcher", Model: "x/y", Subagent: true, Description: "Web", Tools: ToolPolicy{Allow: []string{"web_fetch"}}},
+				{ID: "free", Model: "x/y"}, // empty Allow list — left alone
+				{ID: "already_has", Model: "x/y", Tools: ToolPolicy{Allow: []string{"read_file", "task"}}},
+			},
+		},
+	}
+
+	cfg.ApplyTaskToolToAllowlists()
+
+	// parent gained "task"
+	assert.Contains(t, cfg.Agents.List[0].Tools.Allow, "task")
+	// researcher gained "task" too — even subagents themselves
+	assert.Contains(t, cfg.Agents.List[1].Tools.Allow, "task")
+	// free agent (empty Allow) untouched — empty = allow-all
+	assert.Empty(t, cfg.Agents.List[2].Tools.Allow)
+	// already_has: no duplicate
+	assert.Equal(t, []string{"read_file", "task"}, cfg.Agents.List[3].Tools.Allow)
+}
+
+func TestConfig_ApplyTaskToolToAllowlists_NoSubagents(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "parent", Model: "x/y", Tools: ToolPolicy{Allow: []string{"read_file"}}},
+			},
+		},
+	}
+	cfg.ApplyTaskToolToAllowlists()
+	// No subagents → no augmentation
+	assert.Equal(t, []string{"read_file"}, cfg.Agents.List[0].Tools.Allow)
+}
+
+func TestConfig_ApplyTaskToolToAllowlists_Idempotent(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "parent", Model: "x/y", Tools: ToolPolicy{Allow: []string{"read_file"}}},
+				{ID: "sub", Model: "x/y", Subagent: true, Description: "x"},
+			},
+		},
+	}
+	cfg.ApplyTaskToolToAllowlists()
+	cfg.ApplyTaskToolToAllowlists() // call twice
+	assert.Equal(t, []string{"read_file", "task"}, cfg.Agents.List[0].Tools.Allow) // no duplicate
+}
+
 func TestCompactionConfigMessageCapDefault(t *testing.T) {
 	cfg := DefaultConfig()
 	assert.Equal(t, 50, cfg.Agents.Defaults.Compaction.MessageCap,
