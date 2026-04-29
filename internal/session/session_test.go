@@ -240,3 +240,29 @@ func TestCompactionEntryHasCorrectFields(t *testing.T) {
 	assert.Equal(t, 250, cd.TokensEstimatedAfter)
 	assert.Equal(t, 12, cd.TurnsCompacted)
 }
+
+func TestToolResultData_AbortedFieldRoundTrip(t *testing.T) {
+	entry := AbortedToolResultEntry("tc_abc")
+	require.Equal(t, EntryTypeToolResult, entry.Type)
+
+	var data ToolResultData
+	require.NoError(t, json.Unmarshal(entry.Data, &data))
+
+	require.Equal(t, "tc_abc", data.ToolCallID)
+	require.Equal(t, "aborted by user", data.Error)
+	require.True(t, data.IsError)
+	require.True(t, data.Aborted)
+	require.Empty(t, data.Output)
+}
+
+func TestToolResultData_OldJSONLWithoutAbortedField(t *testing.T) {
+	// Simulate an old session entry written before the Aborted field existed.
+	oldJSON := []byte(`{"tool_call_id":"tc_old","output":"hello","is_error":false}`)
+	var data ToolResultData
+	require.NoError(t, json.Unmarshal(oldJSON, &data))
+
+	require.Equal(t, "tc_old", data.ToolCallID)
+	require.Equal(t, "hello", data.Output)
+	require.False(t, data.IsError)
+	require.False(t, data.Aborted, "missing field must default to false")
+}

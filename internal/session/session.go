@@ -54,6 +54,7 @@ type ToolResultData struct {
 	Output     string      `json:"output"`
 	Error      string      `json:"error,omitempty"`
 	IsError    bool        `json:"is_error,omitempty"`
+	Aborted    bool        `json:"aborted,omitempty"` // true when the user cancelled mid-dispatch
 	Images     []ImageData `json:"images,omitempty"`
 }
 
@@ -319,6 +320,22 @@ func ToolResultEntry(toolCallID, output, errMsg string, images []ImageData) Sess
 		Error:      errMsg,
 		IsError:    errMsg != "",
 		Images:     images,
+	})
+	return SessionEntry{
+		Type: EntryTypeToolResult,
+		Data: data,
+	}
+}
+
+// AbortedToolResultEntry creates a synthetic tool result for a tool call that
+// was cancelled before completion. Pairs with a previously-appended ToolCallEntry
+// to satisfy the API invariant that every tool_use has a matching tool_result.
+func AbortedToolResultEntry(toolCallID string) SessionEntry {
+	data, _ := json.Marshal(ToolResultData{
+		ToolCallID: toolCallID,
+		Error:      "aborted by user",
+		IsError:    true,
+		Aborted:    true,
 	})
 	return SessionEntry{
 		Type: EntryTypeToolResult,
