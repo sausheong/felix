@@ -43,6 +43,10 @@ func (c *fakeChecker) Check(_ context.Context, _, _ string, _ json.RawMessage) t
 	return c.decision
 }
 
+func (c *fakeChecker) FilterToolDefs(toolDefs []llm.ToolDef, _ string) []llm.ToolDef {
+	return toolDefs
+}
+
 // newDispatchRuntime returns a Runtime sufficient for dispatchTool tests.
 func newDispatchRuntime(exec tools.Executor, perm tools.PermissionChecker) *Runtime {
 	return &Runtime{

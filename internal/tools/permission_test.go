@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/sausheong/felix/internal/llm"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,4 +49,64 @@ func TestStaticChecker_NilCheckerNotPossible(t *testing.T) {
 	c := NewStaticChecker(nil)
 	d := c.Check(context.Background(), "any", "any", nil)
 	require.Equal(t, DecisionAllow, d.Behavior)
+}
+
+func TestStaticChecker_FilterToolDefs_UnknownAgentReturnsFullList(t *testing.T) {
+	c := NewStaticChecker(map[string]Policy{
+		"agent1": {Allow: []string{"read_file"}},
+	})
+	defs := []llm.ToolDef{{Name: "read_file"}, {Name: "bash"}}
+	out := c.FilterToolDefs(defs, "unknown_agent")
+	require.Equal(t, defs, out, "unknown agent must see the full toolset")
+}
+
+func TestStaticChecker_FilterToolDefs_AllowList(t *testing.T) {
+	c := NewStaticChecker(map[string]Policy{
+		"agent1": {Allow: []string{"read_file", "bash"}},
+	})
+	defs := []llm.ToolDef{
+		{Name: "read_file"},
+		{Name: "write_file"}, // not in allow list
+		{Name: "bash"},
+	}
+	out := c.FilterToolDefs(defs, "agent1")
+	require.Len(t, out, 2)
+	require.Equal(t, "read_file", out[0].Name)
+	require.Equal(t, "bash", out[1].Name)
+}
+
+func TestStaticChecker_FilterToolDefs_DenyList(t *testing.T) {
+	c := NewStaticChecker(map[string]Policy{
+		"agent1": {Deny: []string{"bash"}},
+	})
+	defs := []llm.ToolDef{
+		{Name: "read_file"},
+		{Name: "bash"}, // denied
+		{Name: "web_fetch"},
+	}
+	out := c.FilterToolDefs(defs, "agent1")
+	require.Len(t, out, 2)
+	require.Equal(t, "read_file", out[0].Name)
+	require.Equal(t, "web_fetch", out[1].Name)
+}
+
+func TestStaticChecker_FilterToolDefs_EmptyInput(t *testing.T) {
+	c := NewStaticChecker(map[string]Policy{
+		"agent1": {Allow: []string{"read_file"}},
+	})
+	out := c.FilterToolDefs([]llm.ToolDef{}, "agent1")
+	require.Empty(t, out)
+}
+
+func TestStaticChecker_FilterToolDefs_OrderPreserved(t *testing.T) {
+	c := NewStaticChecker(map[string]Policy{
+		"agent1": {}, // no policy → allow-all
+	})
+	defs := []llm.ToolDef{
+		{Name: "z_tool"},
+		{Name: "a_tool"},
+		{Name: "m_tool"},
+	}
+	out := c.FilterToolDefs(defs, "agent1")
+	require.Equal(t, defs, out, "order must be preserved")
 }

@@ -1268,3 +1268,87 @@ func (e *cancelOnFirstSafeExecutor) Names() []string { return []string{"safe_rea
 func (e *cancelOnFirstSafeExecutor) Get(name string) (tools.Tool, bool) {
 	return &simpleTool{name: name, safe: true}, true
 }
+
+// TestRun_FilterToolDefsHidesDeniedTools verifies that the LLM only sees
+// tools the agent is permitted to call. Captures the ChatRequest.Tools list
+// passed to the LLM and asserts a denied tool is absent.
+func TestRun_FilterToolDefsHidesDeniedTools(t *testing.T) {
+	denyChecker := tools.NewStaticChecker(map[string]tools.Policy{
+		"a": {Deny: []string{"bash"}},
+	})
+
+	// Capture the tools list the LLM sees.
+	var capturedTools []llm.ToolDef
+	capturingLLM := &capturingLLMStub{
+		onChatStream: func(req llm.ChatRequest) {
+			capturedTools = req.Tools
+		},
+	}
+
+	// Executor advertises both tools.
+	exec := &advertisingExecutor{
+		toolDefs: []llm.ToolDef{
+			{Name: "read_file"},
+			{Name: "bash"},
+		},
+	}
+
+	r := &Runtime{
+		LLM:        capturingLLM,
+		Tools:      exec,
+		Session:    session.NewSession("a", "k"),
+		AgentID:    "a",
+		Permission: denyChecker,
+		Model:      "test-model",
+		MaxTurns:   1,
+	}
+
+	events, err := r.Run(context.Background(), "go", nil)
+	require.NoError(t, err)
+	for range events {
+	}
+
+	require.NotEmpty(t, capturedTools, "LLM must see at least one tool")
+	for _, td := range capturedTools {
+		require.NotEqual(t, "bash", td.Name, "denied tool must not be advertised to the LLM")
+	}
+	require.Equal(t, "read_file", capturedTools[0].Name)
+}
+
+// capturingLLMStub records the ChatRequest then returns an immediate
+// EventDone (no tool calls, terminating Run after one turn).
+type capturingLLMStub struct {
+	llmtest.Base
+	onChatStream func(req llm.ChatRequest)
+}
+
+func (s *capturingLLMStub) ChatStream(_ context.Context, req llm.ChatRequest) (<-chan llm.ChatEvent, error) {
+	if s.onChatStream != nil {
+		s.onChatStream(req)
+	}
+	ch := make(chan llm.ChatEvent, 1)
+	ch <- llm.ChatEvent{Type: llm.EventDone}
+	close(ch)
+	return ch, nil
+}
+
+// advertisingExecutor returns the configured ToolDefs but its Get always
+// returns a simple safe tool. Execute is never called in this test.
+type advertisingExecutor struct {
+	toolDefs []llm.ToolDef
+}
+
+func (e *advertisingExecutor) Execute(_ context.Context, _ string, _ json.RawMessage) (tools.ToolResult, error) {
+	return tools.ToolResult{}, nil
+}
+func (e *advertisingExecutor) ToolDefs() []llm.ToolDef { return e.toolDefs }
+func (e *advertisingExecutor) Names() []string {
+	out := make([]string, len(e.toolDefs))
+	for i, td := range e.toolDefs {
+		out[i] = td.Name
+	}
+	return out
+}
+func (e *advertisingExecutor) Get(_ string) (tools.Tool, bool) {
+	return &simpleTool{name: "simple", safe: true}, true
+}

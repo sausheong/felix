@@ -250,6 +250,9 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			pruneToolResults(msgs, maxToolResultLen)
 
 			toolDefs := r.Tools.ToolDefs()
+			if r.Permission != nil {
+				toolDefs = r.Permission.FilterToolDefs(toolDefs, r.AgentID)
+			}
 			toolDefs, diags := r.LLM.NormalizeToolSchema(toolDefs)
 			// Info, not Warn: stripping is the expected pre-flight transform
 			// (e.g. Gemini drops format/anyOf on every web_fetch call). Warn

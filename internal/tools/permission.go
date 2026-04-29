@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/sausheong/felix/internal/llm"
 )
 
 // DecisionBehavior is the outcome of a permission check.
@@ -30,6 +32,11 @@ type Decision struct {
 // change.
 type PermissionChecker interface {
 	Check(ctx context.Context, agentID, toolName string, input json.RawMessage) Decision
+	// FilterToolDefs returns the subset of toolDefs visible to the given
+	// agent. The order of the input is preserved. Used at tool-list-assembly
+	// time so the LLM only advertises tools the agent is permitted to call.
+	// Implementations must be safe for concurrent use.
+	FilterToolDefs(toolDefs []llm.ToolDef, agentID string) []llm.ToolDef
 }
 
 // StaticChecker is the default PermissionChecker. It wraps existing per-agent
@@ -58,4 +65,21 @@ func (c *StaticChecker) Check(_ context.Context, agentID, toolName string, _ jso
 		Behavior: DecisionDeny,
 		Reason:   fmt.Sprintf("tool %q is not allowed for agent %q", toolName, agentID),
 	}
+}
+
+// FilterToolDefs implements PermissionChecker. Unknown agents see the full
+// toolDefs list (matches Check's allow-all default). Known agents have their
+// list filtered through Policy.IsAllowed.
+func (c *StaticChecker) FilterToolDefs(toolDefs []llm.ToolDef, agentID string) []llm.ToolDef {
+	p, ok := c.perAgent[agentID]
+	if !ok {
+		return toolDefs // unknown agent → allow-all (matches Check)
+	}
+	out := make([]llm.ToolDef, 0, len(toolDefs))
+	for _, td := range toolDefs {
+		if p.IsAllowed(td.Name) {
+			out = append(out, td)
+		}
+	}
+	return out
 }
