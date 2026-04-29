@@ -857,10 +857,28 @@ func TestRun_ResumeAfterAbortIsValidAPIRequest(t *testing.T) {
 
 	events, err := r.Run(ctx, "go", nil)
 	require.NoError(t, err)
-	for range events { /* drain */
-	}
 
-	// Simulate /resume: feed the saved session back into assembleMessages.
+	// Count events to harden against double-emit / swallow regressions.
+	var toolResultEvents, abortedEvents int
+	for ev := range events {
+		switch ev.Type {
+		case EventToolResult:
+			toolResultEvents++
+		case EventAborted:
+			abortedEvents++
+		}
+	}
+	require.Equal(t, 1, toolResultEvents, "exactly one EventToolResult expected (only tc_0 was dispatched)")
+	require.Equal(t, 1, abortedEvents, "exactly one EventAborted expected")
+
+	// Simulate /resume: append the user's next prompt AFTER the abort. This
+	// pushes any orphan tool_calls into the MIDDLE of history, where
+	// assembleMessages's end-of-history rescue (injectMissingToolResults)
+	// does NOT patch them. Under Phase A's atomic pairing the session
+	// already has no orphans; under pre-Phase-A behavior the assembled
+	// sequence would have unpaired tool_calls and this test would fail.
+	r.Session.Append(session.UserMessageEntry("continue"))
+
 	msgs := assembleMessages(r.Session.View())
 
 	// Walk the assembled message sequence. For every assistant message with
