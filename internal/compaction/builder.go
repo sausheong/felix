@@ -77,7 +77,11 @@ func buildManagerForModel(cfg *config.Config, modelStr string) *Manager {
 		provider = "local"
 	}
 	pcfg, ok := cfg.Providers[provider]
-	if !ok || pcfg.BaseURL == "" {
+	// "Configured enough to talk to" means we have either an API key (native
+	// SDKs like anthropic/openai/gemini work without a baseURL) or a baseURL
+	// (local Ollama, openai-compatible proxies). Requiring baseURL alone
+	// silently disabled compaction for native anthropic.
+	if !ok || (pcfg.APIKey == "" && pcfg.BaseURL == "") {
 		slog.Warn("compaction disabled: provider not configured", "provider", provider, "model", modelStr)
 		return nil
 	}
