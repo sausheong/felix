@@ -730,6 +730,20 @@ func TestConfig_EligibleSubagents(t *testing.T) {
 	assert.False(t, ok, "non-subagent must not appear in EligibleSubagents")
 }
 
+func TestConfig_EligibleSubagents_NoneEligible(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "default", Model: "openai/gpt-4o"},
+			},
+		},
+	}
+
+	got := cfg.EligibleSubagents()
+	assert.NotNil(t, got, "EligibleSubagents must return non-nil map for len() gating")
+	assert.Equal(t, 0, len(got))
+}
+
 func TestConfig_BuildPermissionChecker(t *testing.T) {
 	cfg := &Config{
 		Agents: AgentsConfig{
