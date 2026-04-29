@@ -177,6 +177,14 @@ type AgentConfig struct {
 	SystemPrompt string       `json:"system_prompt,omitempty"` // inline system prompt (overrides IDENTITY.md)
 	Tools        ToolPolicy   `json:"tools"`
 	Cron         []CronConfig `json:"cron,omitempty"`
+	// Subagent marks this agent as opt-in for invocation via the task tool.
+	// When true, parent agents can dispatch work to it as a subagent.
+	// Defaults to false so existing agents are unaffected.
+	Subagent bool `json:"subagent,omitempty"`
+	// Description is shown to a parent agent's LLM in the task tool's
+	// description so it knows which subagent to pick. Required when
+	// Subagent is true.
+	Description string `json:"description,omitempty"`
 }
 
 type CronConfig struct {
@@ -521,9 +529,27 @@ func (c *Config) Validate() error {
 		if err := ValidateReasoningMode(a.Reasoning); err != nil {
 			return fmt.Errorf("agent %q: %w", a.ID, err)
 		}
+		if a.Subagent && a.Description == "" {
+			return fmt.Errorf("agent %q: subagent=true requires non-empty description", a.ID)
+		}
 	}
 
 	return nil
+}
+
+// EligibleSubagents returns a map of agent_id → description for all agents
+// flagged as subagents. Used by the task tool to advertise available subagents
+// to a parent LLM and to enforce that only opt-in agents are invocable.
+func (c *Config) EligibleSubagents() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := map[string]string{}
+	for _, a := range c.Agents.List {
+		if a.Subagent {
+			out[a.ID] = a.Description
+		}
+	}
+	return out
 }
 
 // GetAgent returns the agent config for the given ID.

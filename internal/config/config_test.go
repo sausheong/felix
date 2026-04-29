@@ -688,6 +688,48 @@ func TestAgentConfigReasoningValidation(t *testing.T) {
 	}
 }
 
+func TestConfig_SubagentRequiresDescription(t *testing.T) {
+	// Failure case: Subagent=true with empty Description must fail validation
+	// and the error must mention both the agent ID and "description".
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{{
+				ID:       "worker",
+				Model:    "openai/gpt-4o",
+				Subagent: true,
+			}},
+		},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worker")
+	assert.Contains(t, err.Error(), "description")
+
+	// Success case: same config but Description is non-empty.
+	cfg.Agents.List[0].Description = "Web research subagent"
+	require.NoError(t, cfg.Validate())
+}
+
+func TestConfig_EligibleSubagents(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "worker", Model: "openai/gpt-4o", Subagent: true, Description: "Web research"},
+				{ID: "summarizer", Model: "openai/gpt-4o", Subagent: true, Description: "Summarizes long text"},
+				{ID: "default", Model: "openai/gpt-4o", Subagent: false},
+			},
+		},
+	}
+
+	got := cfg.EligibleSubagents()
+	assert.Equal(t, map[string]string{
+		"worker":     "Web research",
+		"summarizer": "Summarizes long text",
+	}, got)
+	_, ok := got["default"]
+	assert.False(t, ok, "non-subagent must not appear in EligibleSubagents")
+}
+
 func TestConfig_BuildPermissionChecker(t *testing.T) {
 	cfg := &Config{
 		Agents: AgentsConfig{
