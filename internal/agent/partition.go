@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"strconv"
+	"sync"
+	"sync/atomic"
 
+	conversation "github.com/sausheong/cortex/connector/conversation"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/tools"
 )
@@ -63,4 +67,86 @@ func maxToolConcurrency() int {
 		}
 	}
 	return 10
+}
+
+// runBatch dispatches the calls in a batch. Concurrency-safe batches with len
+// > 1 fan out via sync.WaitGroup + semaphore (capped by maxToolConcurrency()).
+// Single-call batches (any safety) call dispatchTool directly. Returns true
+// if any call was aborted, in which case Run should break the outer loop.
+//
+// Sibling cancellation: parallel goroutines see the parent ctx. They are NOT
+// cancelled by sibling errors or sibling aborts — only by user abort (parent
+// ctx cancel). Reads are independent; a failed web_fetch should not invalidate
+// a parallel read_file.
+//
+// Event emission: each goroutine writes EventToolResult to events as it
+// completes (completion order, not input order). When this function returns,
+// every call in the batch has had its event emitted.
+func (r *Runtime) runBatch(
+	ctx context.Context,
+	b batch,
+	cortexThread *[]conversation.Message,
+	events chan<- AgentEvent,
+	turn int,
+	tr *Trace,
+) (aborted bool) {
+	// Single-call batch (safe or unsafe): direct synchronous dispatch.
+	if len(b.calls) == 1 {
+		tc := b.calls[0]
+		result, abortedOne := r.dispatchTool(ctx, tc, cortexThread)
+		emitToolResult(events, tr, turn, tc, result, abortedOne)
+		return abortedOne
+	}
+
+	// Parallel batch: WaitGroup + semaphore.
+	var (
+		wg         sync.WaitGroup
+		anyAborted atomic.Bool
+		sem        = make(chan struct{}, maxToolConcurrency())
+	)
+	wg.Add(len(b.calls))
+	for i := range b.calls {
+		tc := b.calls[i]
+		sem <- struct{}{} // block when at cap
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			result, abortedOne := r.dispatchTool(ctx, tc, cortexThread)
+			emitToolResult(events, tr, turn, tc, result, abortedOne)
+			if abortedOne {
+				anyAborted.Store(true)
+			}
+		}()
+	}
+	wg.Wait()
+	return anyAborted.Load()
+}
+
+// emitToolResult writes the per-call trace mark, log line, and EventToolResult.
+// Centralised so the parallel runBatch and the single-call path produce the
+// same event/log shape.
+func emitToolResult(events chan<- AgentEvent, tr *Trace, turn int, tc llm.ToolCall, result tools.ToolResult, aborted bool) {
+	tr.Mark("tool.exec",
+		"turn", turn,
+		"tool", tc.Name,
+		"err", result.Error != "",
+		"output_chars", len(result.Output),
+		"aborted", aborted)
+
+	if result.Error != "" {
+		slog.Warn("tool error", "tool", tc.Name, "id", tc.ID, "error", result.Error)
+	} else {
+		outPreview := result.Output
+		if len(outPreview) > 500 {
+			outPreview = outPreview[:500] + "...(truncated)"
+		}
+		slog.Debug("tool result", "tool", tc.Name, "id", tc.ID, "output_len", len(result.Output), "output", outPreview)
+	}
+
+	events <- AgentEvent{
+		Type:     EventToolResult,
+		ToolCall: &tc,
+		Result:   &result,
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -998,3 +999,272 @@ func (e *recordingExecutor) Execute(_ context.Context, _ string, _ json.RawMessa
 func (e *recordingExecutor) ToolDefs() []llm.ToolDef        { return e.toolDefs }
 func (e *recordingExecutor) Names() []string                { return []string{"noop"} }
 func (e *recordingExecutor) Get(string) (tools.Tool, bool)  { return nil, false }
+
+// TestRun_ParallelReadsExecuteConcurrently verifies that consecutive safe
+// tools dispatch in parallel — observed concurrency must reach >= 2 for a
+// 3-tool safe batch.
+func TestRun_ParallelReadsExecuteConcurrently(t *testing.T) {
+	threeReads := []llm.ToolCall{
+		{ID: "tc_0", Name: "safe_read", Input: json.RawMessage(`{}`)},
+		{ID: "tc_1", Name: "safe_read", Input: json.RawMessage(`{}`)},
+		{ID: "tc_2", Name: "safe_read", Input: json.RawMessage(`{}`)},
+	}
+
+	exec := newConcurrentExecutor(true) // safe
+	r := &Runtime{
+		LLM:      &threeToolCallLLM{toolCalls: threeReads},
+		Tools:    exec,
+		Session:  session.NewSession("a", "k"),
+		AgentID:  "a",
+		Model:    "test-model",
+		MaxTurns: 5,
+	}
+
+	events, err := r.Run(context.Background(), "go", nil)
+	require.NoError(t, err)
+	for range events {
+	}
+
+	require.GreaterOrEqual(t, exec.maxConcurrent.Load(), int32(2),
+		"expected at least 2 concurrent invocations in a 3-call safe batch")
+	require.Equal(t, int32(3), exec.totalCalls.Load(), "all 3 calls dispatched")
+}
+
+// TestRun_UnsafeToolBreaksBatch verifies an unsafe call breaks parallel
+// dispatch — when [safe, safe, unsafe, safe] is dispatched, no parallelism
+// should overlap with the unsafe call.
+func TestRun_UnsafeToolBreaksBatch(t *testing.T) {
+	mixed := []llm.ToolCall{
+		{ID: "tc_0", Name: "safe_read", Input: json.RawMessage(`{}`)},
+		{ID: "tc_1", Name: "safe_read", Input: json.RawMessage(`{}`)},
+		{ID: "tc_2", Name: "unsafe_write", Input: json.RawMessage(`{}`)},
+		{ID: "tc_3", Name: "safe_read", Input: json.RawMessage(`{}`)},
+	}
+
+	exec := newMixedConcurrentExecutor()
+	r := &Runtime{
+		LLM:      &threeToolCallLLM{toolCalls: mixed},
+		Tools:    exec,
+		Session:  session.NewSession("a", "k"),
+		AgentID:  "a",
+		Model:    "test-model",
+		MaxTurns: 5,
+	}
+
+	events, err := r.Run(context.Background(), "go", nil)
+	require.NoError(t, err)
+	for range events {
+	}
+
+	// The unsafe call must run alone — no concurrent invocation observed
+	// while it was executing.
+	require.False(t, exec.unsafeOverlapped.Load(),
+		"unsafe call must not run concurrently with any other call")
+	require.Equal(t, int32(4), exec.totalCalls.Load())
+}
+
+// TestRun_AbortDuringParallelBatch — three parallel safe reads; cancel ctx
+// after the first completes. Remaining two see cancellation; session ends
+// with three paired entries; loop emits exactly one EventAborted.
+func TestRun_AbortDuringParallelBatch(t *testing.T) {
+	threeReads := []llm.ToolCall{
+		{ID: "tc_0", Name: "safe_read", Input: json.RawMessage(`{}`)},
+		{ID: "tc_1", Name: "safe_read", Input: json.RawMessage(`{}`)},
+		{ID: "tc_2", Name: "safe_read", Input: json.RawMessage(`{}`)},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	exec := newCancelOnFirstSafeExecutor(cancel)
+	r := &Runtime{
+		LLM:      &threeToolCallLLM{toolCalls: threeReads},
+		Tools:    exec,
+		Session:  session.NewSession("a", "k"),
+		AgentID:  "a",
+		Model:    "test-model",
+		MaxTurns: 5,
+	}
+
+	events, err := r.Run(ctx, "go", nil)
+	require.NoError(t, err)
+
+	var resultEvents, abortedEvents int
+	for ev := range events {
+		switch ev.Type {
+		case EventToolResult:
+			resultEvents++
+		case EventAborted:
+			abortedEvents++
+		}
+	}
+
+	// All three calls must have been dispatched (each emits a tool result —
+	// real, error, or aborted). EventAborted fires exactly once.
+	require.Equal(t, 3, resultEvents, "expected 3 EventToolResult events")
+	require.Equal(t, 1, abortedEvents, "expected exactly one EventAborted")
+
+	// Session must have 3 ToolCallEntries and 3 matching ToolResultEntries.
+	// Parallel dispatch interleaves session writes (e.g. call,call,call,
+	// result,result,result), so we match by ID rather than position.
+	entries := r.Session.View()
+	callIDs := map[string]bool{}
+	resultIDs := map[string]bool{}
+	var aborted int
+	for _, e := range entries {
+		switch e.Type {
+		case session.EntryTypeToolCall:
+			var cd session.ToolCallData
+			require.NoError(t, json.Unmarshal(e.Data, &cd))
+			callIDs[cd.ID] = true
+		case session.EntryTypeToolResult:
+			var trd session.ToolResultData
+			require.NoError(t, json.Unmarshal(e.Data, &trd))
+			resultIDs[trd.ToolCallID] = true
+			if trd.Aborted {
+				aborted++
+			}
+		}
+	}
+	require.Equal(t, 3, len(callIDs), "expected 3 ToolCall entries")
+	require.Equal(t, 3, len(resultIDs), "expected 3 ToolResult entries")
+	for id := range callIDs {
+		require.True(t, resultIDs[id], "call %s has no matching result", id)
+	}
+	require.GreaterOrEqual(t, aborted, 2, "at least two of three results must be marked Aborted")
+}
+
+// concurrentExecutor implements tools.Executor and tracks concurrency.
+type concurrentExecutor struct {
+	safe            bool
+	currentInFlight atomic.Int32
+	maxConcurrent   atomic.Int32
+	totalCalls      atomic.Int32
+	// barrier delays Execute return until at least 2 calls are in flight (so
+	// the safe-batch test can deterministically observe concurrency without
+	// time-based assertions).
+	barrier chan struct{}
+}
+
+func newConcurrentExecutor(safe bool) *concurrentExecutor {
+	return &concurrentExecutor{safe: safe, barrier: make(chan struct{})}
+}
+
+func (e *concurrentExecutor) Execute(ctx context.Context, _ string, _ json.RawMessage) (tools.ToolResult, error) {
+	cur := e.currentInFlight.Add(1)
+	defer e.currentInFlight.Add(-1)
+	for {
+		max := e.maxConcurrent.Load()
+		if cur <= max || e.maxConcurrent.CompareAndSwap(max, cur) {
+			break
+		}
+	}
+	e.totalCalls.Add(1)
+
+	// Open the barrier once 2 calls are in flight (deterministic concurrency).
+	if cur >= 2 {
+		select {
+		case <-e.barrier:
+		default:
+			close(e.barrier)
+		}
+	}
+	// All goroutines wait for the barrier, then proceed.
+	select {
+	case <-e.barrier:
+	case <-ctx.Done():
+		return tools.ToolResult{}, ctx.Err()
+	}
+	return tools.ToolResult{Output: "ok"}, nil
+}
+
+func (e *concurrentExecutor) ToolDefs() []llm.ToolDef {
+	return []llm.ToolDef{{Name: "safe_read"}}
+}
+func (e *concurrentExecutor) Names() []string { return []string{"safe_read"} }
+func (e *concurrentExecutor) Get(name string) (tools.Tool, bool) {
+	return &simpleTool{name: name, safe: e.safe}, true
+}
+
+// simpleTool implements tools.Tool with a configurable IsConcurrencySafe.
+type simpleTool struct {
+	name string
+	safe bool
+}
+
+func (t *simpleTool) Name() string                { return t.name }
+func (t *simpleTool) Description() string         { return "" }
+func (t *simpleTool) Parameters() json.RawMessage { return nil }
+func (t *simpleTool) Execute(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+	return tools.ToolResult{}, nil
+}
+func (t *simpleTool) IsConcurrencySafe(_ json.RawMessage) bool { return t.safe }
+
+// mixedConcurrentExecutor — multi-tool variant for the unsafe-breaks-batch test.
+type mixedConcurrentExecutor struct {
+	currentInFlight  atomic.Int32
+	totalCalls       atomic.Int32
+	unsafeOverlapped atomic.Bool
+}
+
+func newMixedConcurrentExecutor() *mixedConcurrentExecutor {
+	return &mixedConcurrentExecutor{}
+}
+
+func (e *mixedConcurrentExecutor) Execute(ctx context.Context, name string, _ json.RawMessage) (tools.ToolResult, error) {
+	cur := e.currentInFlight.Add(1)
+	defer e.currentInFlight.Add(-1)
+	e.totalCalls.Add(1)
+
+	if name == "unsafe_write" {
+		// If anything else is in flight while we're running, the partitioner
+		// failed to break the batch — record the violation.
+		if cur > 1 {
+			e.unsafeOverlapped.Store(true)
+		}
+		// Brief delay so a sibling that wrongly batched would have a chance
+		// to overlap.
+		time.Sleep(10 * time.Millisecond)
+	}
+	return tools.ToolResult{Output: "ok"}, nil
+}
+
+func (e *mixedConcurrentExecutor) ToolDefs() []llm.ToolDef {
+	return []llm.ToolDef{{Name: "safe_read"}, {Name: "unsafe_write"}}
+}
+func (e *mixedConcurrentExecutor) Names() []string { return []string{"safe_read", "unsafe_write"} }
+func (e *mixedConcurrentExecutor) Get(name string) (tools.Tool, bool) {
+	if name == "safe_read" {
+		return &simpleTool{name: name, safe: true}, true
+	}
+	return &simpleTool{name: name, safe: false}, true
+}
+
+// cancelOnFirstSafeExecutor cancels ctx after the first call completes; rest
+// see cancellation. Used by the abort-during-parallel-batch test.
+type cancelOnFirstSafeExecutor struct {
+	cancel    context.CancelFunc
+	completed atomic.Int32
+}
+
+func newCancelOnFirstSafeExecutor(cancel context.CancelFunc) *cancelOnFirstSafeExecutor {
+	return &cancelOnFirstSafeExecutor{cancel: cancel}
+}
+
+func (e *cancelOnFirstSafeExecutor) Execute(ctx context.Context, _ string, _ json.RawMessage) (tools.ToolResult, error) {
+	if e.completed.Add(1) == 1 {
+		// First call: cancel ctx after a brief delay so siblings are in flight.
+		time.Sleep(5 * time.Millisecond)
+		e.cancel()
+		return tools.ToolResult{Output: "first"}, nil
+	}
+	// Subsequent calls: wait for ctx cancel, then return its error.
+	<-ctx.Done()
+	return tools.ToolResult{}, ctx.Err()
+}
+
+func (e *cancelOnFirstSafeExecutor) ToolDefs() []llm.ToolDef {
+	return []llm.ToolDef{{Name: "safe_read"}}
+}
+func (e *cancelOnFirstSafeExecutor) Names() []string { return []string{"safe_read"} }
+func (e *cancelOnFirstSafeExecutor) Get(name string) (tools.Tool, bool) {
+	return &simpleTool{name: name, safe: true}, true
+}

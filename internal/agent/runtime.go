@@ -405,37 +405,11 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				return
 			}
 
-			// Dispatch each tool call. dispatchTool guarantees one ToolCallEntry +
-			// one ToolResultEntry per tc, on every exit path (clean / error /
-			// deny / aborted). Cortex thread accumulation is atomic alongside the
-			// session writes — both land or neither does.
-			for _, tc := range toolCalls {
-				result, aborted := r.dispatchTool(ctx, tc, cortexThreadOrNil(r.Cortex, &thread))
-
-				tr.Mark("tool.exec",
-					"turn", turn,
-					"tool", tc.Name,
-					"err", result.Error != "",
-					"output_chars", len(result.Output),
-					"aborted", aborted)
-
-				if result.Error != "" {
-					slog.Warn("tool error", "tool", tc.Name, "id", tc.ID, "error", result.Error)
-				} else {
-					outPreview := result.Output
-					if len(outPreview) > 500 {
-						outPreview = outPreview[:500] + "...(truncated)"
-					}
-					slog.Debug("tool result", "tool", tc.Name, "id", tc.ID, "output_len", len(result.Output), "output", outPreview)
-				}
-
-				events <- AgentEvent{
-					Type:     EventToolResult,
-					ToolCall: &tc,
-					Result:   &result,
-				}
-
-				if aborted {
+			// Partition tool calls into batches. Concurrency-safe consecutive
+			// calls run in parallel via runBatch; unsafe calls run sequentially.
+			batches := partitionToolCalls(toolCalls, r.Tools)
+			for _, b := range batches {
+				if r.runBatch(ctx, b, cortexThreadOrNil(r.Cortex, &thread), events, turn, tr) {
 					events <- AgentEvent{Type: EventAborted}
 					return
 				}
