@@ -147,6 +147,14 @@ func (p *Provider) build(provider, model string) (*cortex.Cortex, error) {
 	// JSON for the structured-extraction prompt and tie up Ollama for 30–90s
 	// per failure. "anthropic" / "openai" get hybrid (deterministic + LLM)
 	// when an API key is present.
+	//
+	// Note: we intentionally do NOT call cortex.WithLLM(...). The cortex
+	// library only uses cfg.llm in Recall.decomposeQuery (an LLM round-trip
+	// to split the query into sub-queries), and that adds 1–3 s of latency
+	// to every chat turn — well beyond the 800 ms recall budget the agent
+	// runtime allows. Cortex's recall fallback (keyword + memory lookup)
+	// gives near-equivalent results without the round-trip. The extractor
+	// still embeds its own LLM client for ingest, which runs async.
 	switch provider {
 	case "local":
 		opts = append(opts, cortex.WithExtractor(detExt))
@@ -161,10 +169,7 @@ func (p *Provider) build(provider, model string) (*cortex.Cortex, error) {
 				anthOpts = append(anthOpts, cortexanthropic.WithBaseURL(baseURL))
 			}
 			llmClient := cortexanthropic.NewLLM(apiKey, anthOpts...)
-			opts = append(opts,
-				cortex.WithLLM(llmClient),
-				cortex.WithExtractor(hybrid.New(detExt, llmext.New(llmClient))),
-			)
+			opts = append(opts, cortex.WithExtractor(hybrid.New(detExt, llmext.New(llmClient))))
 		} else {
 			opts = append(opts, cortex.WithExtractor(detExt))
 		}
@@ -179,10 +184,7 @@ func (p *Provider) build(provider, model string) (*cortex.Cortex, error) {
 				oaiOpts = append(oaiOpts, cortexoai.WithBaseURL(baseURL))
 			}
 			llmClient := cortexoai.NewLLM(apiKey, oaiOpts...)
-			opts = append(opts,
-				cortex.WithLLM(llmClient),
-				cortex.WithExtractor(hybrid.New(detExt, llmext.New(llmClient))),
-			)
+			opts = append(opts, cortex.WithExtractor(hybrid.New(detExt, llmext.New(llmClient))))
 		} else {
 			opts = append(opts, cortex.WithExtractor(detExt))
 		}
@@ -229,10 +231,12 @@ const minRecallLen = 12
 // to bound the time the embedder is tied up.
 const maxIngestLen = 28000
 
-// ingestTimeout is the hard cap on a single IngestThread call. Even with
-// deterministic-only extraction the embedder still runs N HTTP calls per
-// chunk, so a runaway thread shouldn't be able to block forever.
-const ingestTimeout = 30 * time.Second
+// ingestTimeout is the hard cap on a single IngestThread call. Async, so
+// it doesn't block the user — but it does need to be long enough for an
+// LLM-backed extractor to finish. Sonnet/GPT-class extraction over a multi-
+// chunk thread can take 30–60 s; bumped from 30s after seeing repeated
+// "ingest timed out" warnings against anthropic-mirrored cortex.
+const ingestTimeout = 90 * time.Second
 
 // trivialPhrases are exact-match messages (lowercased) that are never
 // worth ingesting regardless of length.
