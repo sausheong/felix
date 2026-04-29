@@ -827,3 +827,79 @@ func (e *cancelOnNthExecutor) Execute(_ context.Context, _ string, _ json.RawMes
 func (e *cancelOnNthExecutor) ToolDefs() []llm.ToolDef       { return []llm.ToolDef{{Name: "noop"}} }
 func (e *cancelOnNthExecutor) Names() []string               { return []string{"noop"} }
 func (e *cancelOnNthExecutor) Get(string) (tools.Tool, bool) { return nil, false }
+
+// TestRun_ResumeAfterAbortIsValidAPIRequest persists a session aborted mid-
+// dispatch, reassembles it through assembleMessages (the same code path
+// /resume uses), and verifies the resulting llm.Message sequence is valid:
+// every assistant message with N tool_calls is followed by N user messages
+// whose ToolCallIDs cover every tc.ID in the assistant message.
+//
+// This guards against the pre-Phase-A bug where the pre-loop batch
+// ToolCallEntry save left orphan tool_use entries in the session that
+// produced an unpairable assembleMessages output and 400'd the next API
+// call on /resume.
+func TestRun_ResumeAfterAbortIsValidAPIRequest(t *testing.T) {
+	threeCalls := []llm.ToolCall{
+		{ID: "tc_0", Name: "noop", Input: json.RawMessage(`{}`)},
+		{ID: "tc_1", Name: "noop", Input: json.RawMessage(`{}`)},
+		{ID: "tc_2", Name: "noop", Input: json.RawMessage(`{}`)},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	count := 0
+	r := &Runtime{
+		LLM:      &threeToolCallLLM{toolCalls: threeCalls},
+		Tools:    &cancelOnNthExecutor{n: 1, cancel: cancel, count: &count},
+		Session:  session.NewSession("a", "k"),
+		AgentID:  "a",
+		Model:    "test-model",
+		MaxTurns: 5,
+	}
+
+	events, err := r.Run(ctx, "go", nil)
+	require.NoError(t, err)
+	for range events { /* drain */
+	}
+
+	// Simulate /resume: feed the saved session back into assembleMessages.
+	msgs := assembleMessages(r.Session.View())
+
+	// Walk the assembled message sequence. For every assistant message with
+	// tool_calls, the IMMEDIATELY following N messages must be user-role
+	// tool_result messages whose ToolCallIDs collectively cover every tool_call.
+	for i, m := range msgs {
+		if len(m.ToolCalls) == 0 {
+			continue
+		}
+		expected := map[string]bool{}
+		for _, tc := range m.ToolCalls {
+			expected[tc.ID] = true
+		}
+		end := i + 1 + len(m.ToolCalls)
+		require.LessOrEqual(t, end, len(msgs),
+			"assistant message at idx %d has %d tool_calls but only %d messages remain",
+			i, len(m.ToolCalls), len(msgs)-i-1)
+
+		for j := i + 1; j < end; j++ {
+			require.Equal(t, "user", msgs[j].Role,
+				"message at idx %d must be a user-role tool_result", j)
+			require.NotEmpty(t, msgs[j].ToolCallID,
+				"message at idx %d must carry a tool_call_id", j)
+			require.True(t, expected[msgs[j].ToolCallID],
+				"tool_call_id %q at idx %d does not match any tool_call in the preceding assistant message",
+				msgs[j].ToolCallID, j)
+			delete(expected, msgs[j].ToolCallID)
+		}
+		require.Empty(t, expected,
+			"assistant message at idx %d has tool_calls without paired tool_results: %v",
+			i, keysOf(expected))
+	}
+}
+
+// keysOf returns the keys of a map[string]bool as a slice, for assertion messages.
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
