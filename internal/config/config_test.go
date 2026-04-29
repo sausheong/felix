@@ -191,27 +191,44 @@ func TestDefaultConfigCortexEmbedDefaults(t *testing.T) {
 	if !cfg.Memory.Enabled {
 		t.Errorf("Memory.Enabled default should be true")
 	}
-	if got := cfg.Cortex.Provider; got != "local" {
-		t.Errorf("Cortex.Provider default = %q, want \"local\"", got)
+	// Cortex.Provider / LLMModel are deliberately empty by default so cortex
+	// mirrors the chatting agent's model. Setting them auto-fills a hard pin
+	// that defeats the mirror.
+	if got := cfg.Cortex.Provider; got != "" {
+		t.Errorf("Cortex.Provider default = %q, want \"\"", got)
 	}
-	if got := cfg.Cortex.LLMModel; got != "gemma4" {
-		t.Errorf("Cortex.LLMModel default = %q, want \"gemma4\"", got)
+	if got := cfg.Cortex.LLMModel; got != "" {
+		t.Errorf("Cortex.LLMModel default = %q, want \"\"", got)
 	}
 }
 
-func TestValidateBackfillsCortexProvider(t *testing.T) {
+func TestValidateStripsLegacyCortexAutofill(t *testing.T) {
+	// Older builds auto-filled provider="local" + llmModel="gemma4" into the
+	// user's config. Validate should strip that pair so cortex falls back to
+	// mirroring the chat agent.
 	cfg := DefaultConfig()
-	// Wipe the cortex provider/model and confirm Validate restores them.
-	cfg.Cortex.Provider = ""
-	cfg.Cortex.LLMModel = ""
+	cfg.Cortex.Provider = "local"
+	cfg.Cortex.LLMModel = "gemma4"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate failed: %v", err)
 	}
-	if cfg.Cortex.Provider != "local" {
-		t.Errorf("Validate should backfill Cortex.Provider to \"local\"; got %q", cfg.Cortex.Provider)
+	if cfg.Cortex.Provider != "" || cfg.Cortex.LLMModel != "" {
+		t.Errorf("legacy auto-fill should be stripped; got (%q, %q)",
+			cfg.Cortex.Provider, cfg.Cortex.LLMModel)
 	}
-	if cfg.Cortex.LLMModel != "gemma4" {
-		t.Errorf("Validate should backfill Cortex.LLMModel to \"gemma4\"; got %q", cfg.Cortex.LLMModel)
+}
+
+func TestValidatePreservesExplicitCortexPin(t *testing.T) {
+	// A non-legacy explicit pin (e.g. anthropic/sonnet) survives Validate.
+	cfg := DefaultConfig()
+	cfg.Cortex.Provider = "anthropic"
+	cfg.Cortex.LLMModel = "claude-sonnet-4-6"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	if cfg.Cortex.Provider != "anthropic" || cfg.Cortex.LLMModel != "claude-sonnet-4-6" {
+		t.Errorf("explicit pin should be preserved; got (%q, %q)",
+			cfg.Cortex.Provider, cfg.Cortex.LLMModel)
 	}
 }
 

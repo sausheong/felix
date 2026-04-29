@@ -431,9 +431,10 @@ func DefaultConfig() *Config {
 			EmbeddingModel:    "nomic-embed-text",
 		},
 		Cortex: CortexConfig{
-			Enabled:  true,
-			Provider: "local",
-			LLMModel: "gemma4",
+			Enabled: true,
+			// Provider/LLMModel intentionally empty — cortex mirrors the
+			// chatting agent's model. Set these in felix.json5 only to pin
+			// cortex to a specific provider regardless of the chat agent.
 		},
 		Security: SecurityConfig{
 			ExecApprovals: ExecApprovalsConfig{
@@ -482,16 +483,20 @@ func (c *Config) Validate() error {
 		c.Memory.EmbeddingModel = "nomic-embed-text"
 	}
 
-	// Same heuristic for Cortex.
+	// Same heuristic for Cortex, but Provider/LLMModel are deliberately not
+	// auto-filled — when both are empty cortex mirrors the chatting agent's
+	// model. Setting them here would persist a hard pin into felix.json5 and
+	// defeat that mirroring.
 	if c.Cortex == (CortexConfig{}) {
-		c.Cortex = DefaultConfig().Cortex
-	} else {
-		if c.Cortex.Provider == "" {
-			c.Cortex.Provider = "local"
-		}
-		if c.Cortex.LLMModel == "" {
-			c.Cortex.LLMModel = "gemma4"
-		}
+		c.Cortex = CortexConfig{Enabled: true}
+	}
+	// Migration: older builds auto-filled provider="local" + llmModel="gemma4"
+	// into the user's config. After the per-call mirror refactor those values
+	// became a hard pin that prevented cortex from following the chat agent.
+	// Strip the legacy default pair so the mirror kicks in.
+	if c.Cortex.Provider == "local" && c.Cortex.LLMModel == "gemma4" {
+		c.Cortex.Provider = ""
+		c.Cortex.LLMModel = ""
 	}
 
 	if len(c.Agents.List) == 0 {

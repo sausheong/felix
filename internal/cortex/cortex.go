@@ -128,38 +128,31 @@ func (p *Provider) Close() error {
 	return firstErr
 }
 
-// build opens a single *cortex.Cortex wired with the right LLM/embedder/
-// extractor for (provider, model). All builds share p.dbPath.
+// build opens a single *cortex.Cortex wired with the right LLM, extractor,
+// and embedder. The LLM/extractor mirror the chat agent's provider; the
+// embedder always mirrors memory's configured embedder so cortex and memory
+// share one vector space (no per-agent index drift, no model-not-found
+// errors when memory routes through a non-local provider). All builds share
+// p.dbPath.
 func (p *Provider) build(provider, model string) (*cortex.Cortex, error) {
 	pcfg := p.getProvider(provider)
 	apiKey := pcfg.APIKey
 	baseURL := pcfg.BaseURL
 
 	var opts []cortex.Option
+	detExt := deterministic.New()
 
-	// "local" needs no API key (bundled Ollama). Other providers require one
-	// to enable LLM-backed extraction; without a key cortex runs deterministic-
-	// only via cortex.Open's default extractor.
-	if provider == "local" || apiKey != "" {
-		detExt := deterministic.New()
+	// LLM + extractor: depend on the chat agent's provider. "local" stays on
+	// deterministic-only — small local models frequently return malformed
+	// JSON for the structured-extraction prompt and tie up Ollama for 30–90s
+	// per failure. "anthropic" / "openai" get hybrid (deterministic + LLM)
+	// when an API key is present.
+	switch provider {
+	case "local":
+		opts = append(opts, cortex.WithExtractor(detExt))
 
-		switch provider {
-		case "local":
-			// Deterministic-only extraction for local. Small local models
-			// (gemma4, qwen, llama3.2) frequently return malformed JSON for
-			// the structured-extraction prompt, and each failed call can tie
-			// up Ollama for 30–90s — blocking both /api/embeddings and the
-			// next user chat turn since Ollama serializes per-model.
-			embModel, embDims := localpkg.EmbeddingDims(p.memCfg.EmbeddingModel)
-			embedder := cortexoai.NewEmbedder("",
-				cortexoai.WithEmbedderBaseURL(baseURL),
-				cortexoai.WithEmbeddingModel(goopenai.EmbeddingModel(embModel), embDims))
-			opts = append(opts,
-				cortex.WithEmbedder(embedder),
-				cortex.WithExtractor(detExt),
-			)
-
-		case "anthropic":
+	case "anthropic":
+		if apiKey != "" {
 			if model == "" {
 				model = "claude-sonnet-4-5-20250929"
 			}
@@ -168,13 +161,16 @@ func (p *Provider) build(provider, model string) (*cortex.Cortex, error) {
 				anthOpts = append(anthOpts, cortexanthropic.WithBaseURL(baseURL))
 			}
 			llmClient := cortexanthropic.NewLLM(apiKey, anthOpts...)
-			extractor := hybrid.New(detExt, llmext.New(llmClient))
 			opts = append(opts,
 				cortex.WithLLM(llmClient),
-				cortex.WithExtractor(extractor),
+				cortex.WithExtractor(hybrid.New(detExt, llmext.New(llmClient))),
 			)
+		} else {
+			opts = append(opts, cortex.WithExtractor(detExt))
+		}
 
-		default: // "openai" and any unknown provider
+	default: // "openai" and any unknown provider
+		if apiKey != "" {
 			if model == "" {
 				model = "gpt-5.4-mini"
 			}
@@ -183,14 +179,29 @@ func (p *Provider) build(provider, model string) (*cortex.Cortex, error) {
 				oaiOpts = append(oaiOpts, cortexoai.WithBaseURL(baseURL))
 			}
 			llmClient := cortexoai.NewLLM(apiKey, oaiOpts...)
-			embedder := cortexoai.NewEmbedder(apiKey)
-			extractor := hybrid.New(detExt, llmext.New(llmClient))
 			opts = append(opts,
 				cortex.WithLLM(llmClient),
-				cortex.WithEmbedder(embedder),
-				cortex.WithExtractor(extractor),
+				cortex.WithExtractor(hybrid.New(detExt, llmext.New(llmClient))),
 			)
+		} else {
+			opts = append(opts, cortex.WithExtractor(detExt))
 		}
+	}
+
+	// Embedder: mirror memory's configuration so cortex's vector index lives
+	// in the same embedding space the user picked for memory. Skipped if
+	// memory has no embedding provider configured (cortex falls back to
+	// keyword search).
+	if p.memCfg.EmbeddingProvider != "" {
+		embPcfg := p.getProvider(p.memCfg.EmbeddingProvider)
+		embModel, embDims := localpkg.EmbeddingDims(p.memCfg.EmbeddingModel)
+		embOpts := []cortexoai.EmbedderOption{
+			cortexoai.WithEmbeddingModel(goopenai.EmbeddingModel(embModel), embDims),
+		}
+		if embPcfg.BaseURL != "" {
+			embOpts = append(embOpts, cortexoai.WithEmbedderBaseURL(embPcfg.BaseURL))
+		}
+		opts = append(opts, cortex.WithEmbedder(cortexoai.NewEmbedder(embPcfg.APIKey, embOpts...)))
 	}
 
 	cx, err := cortex.Open(p.dbPath, opts...)
