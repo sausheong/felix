@@ -203,5 +203,27 @@ func TestDispatchTool_CancelledAfterExecute(t *testing.T) {
 	require.Empty(t, d.Output)
 }
 
-// conversation import retained for use by future tests / fakes.
-var _ = conversation.Message{}
+func TestDispatchTool_CortexThreadAtomicWithSession(t *testing.T) {
+	// Verifies the cortex thread receives matching messages in lockstep
+	// with the session writes — this is the atomicity contract dispatchTool
+	// promises to Phase B/C/D parallel callers.
+	exec := &fakeExecutor{
+		result: tools.ToolResult{Output: "hello"},
+	}
+	r := newDispatchRuntime(exec, nil)
+
+	thread := []conversation.Message{}
+	_, aborted := r.dispatchTool(context.Background(), sampleToolCall(), &thread)
+
+	require.False(t, aborted)
+	require.Len(t, thread, 2, "cortex thread must receive one assistant message + one user message")
+
+	// First message: the assistant tool-call announcement.
+	require.Equal(t, "assistant", thread[0].Role)
+	require.Contains(t, thread[0].Content, "[tool: read_file]")
+	require.Contains(t, thread[0].Content, `"path":"/tmp/x"`)
+
+	// Second message: the user-side result. Clean output (no error prefix).
+	require.Equal(t, "user", thread[1].Role)
+	require.Equal(t, "hello", thread[1].Content)
+}

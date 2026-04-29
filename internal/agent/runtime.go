@@ -517,6 +517,10 @@ func (r *Runtime) RunSync(ctx context.Context, userMsg string, images []llm.Imag
 //
 // cortexThread, when non-nil, is appended to atomically alongside the
 // session writes — both call+result land or neither does.
+//
+// NOTE: not safe for concurrent invocation on the same Runtime — Session.Append
+// is not mutex-guarded. Phase B (parallel tool dispatch) must serialize calls
+// or add locking to Session before invoking dispatchTool from multiple goroutines.
 func (r *Runtime) dispatchTool(
 	ctx context.Context,
 	tc llm.ToolCall,
