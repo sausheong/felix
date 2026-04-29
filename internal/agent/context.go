@@ -270,31 +270,54 @@ func assembleMessages(history []session.SessionEntry) []llm.Message {
 	return msgs
 }
 
-// injectMissingToolResults checks if the last assistant message has tool calls
-// without corresponding tool results following it. If so, it injects synthetic
-// error results so the message sequence is valid for the LLM API.
+// injectMissingToolResults walks the message sequence and inserts synthetic
+// tool_result user messages for any assistant tool_calls that lack a matching
+// tool_result in the immediately-following user messages. Handles both
+// end-of-history orphans (the original case) and mid-history orphans (which
+// can occur when a Phase B parallel dispatch crashes mid-batch and the
+// session is later /resume'd).
+//
+// Algorithm: scan left-to-right; for each assistant message with ToolCalls,
+// collect the next k user messages' ToolCallIDs (where k = len(ToolCalls)).
+// Any tc.ID missing from that set gets a synthetic error tool_result inserted
+// immediately after the assistant message.
 func injectMissingToolResults(msgs []llm.Message) []llm.Message {
 	if len(msgs) == 0 {
 		return msgs
 	}
-	last := msgs[len(msgs)-1]
-	if last.Role != "assistant" || len(last.ToolCalls) == 0 {
-		return msgs
+	out := make([]llm.Message, 0, len(msgs))
+	i := 0
+	for i < len(msgs) {
+		m := msgs[i]
+		out = append(out, m)
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			i++
+			continue
+		}
+		// Collect tool_call_ids present in the next user-role messages
+		// immediately after this assistant turn. Stop when we hit a non-user
+		// message or a user message lacking ToolCallID (which means it's a
+		// regular user prompt, not a tool result).
+		seen := map[string]bool{}
+		j := i + 1
+		for j < len(msgs) && msgs[j].Role == "user" && msgs[j].ToolCallID != "" {
+			seen[msgs[j].ToolCallID] = true
+			j++
+		}
+		// For each tool_call without a matching result, append a synthetic.
+		for _, tc := range m.ToolCalls {
+			if !seen[tc.ID] {
+				out = append(out, llm.Message{
+					Role:       "user",
+					Content:    "(tool execution was interrupted)",
+					ToolCallID: tc.ID,
+					IsError:    true,
+				})
+			}
+		}
+		i++ // advance past this assistant; the for-loop will copy the user tool_results next iteration
 	}
-
-	// Collect tool call IDs that already have results after this assistant message.
-	// Since this is called before appending a non-tool-result message, any results
-	// would already be in msgs. We only need to check if results exist at all.
-	// The assistant message is the last one, so there are no results yet.
-	for _, tc := range last.ToolCalls {
-		msgs = append(msgs, llm.Message{
-			Role:       "user",
-			Content:    "(tool execution was interrupted)",
-			ToolCallID: tc.ID,
-			IsError:    true,
-		})
-	}
-	return msgs
+	return out
 }
 
 // truncationMarker uniquely identifies content that pruneToolResults has

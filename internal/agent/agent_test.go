@@ -1352,3 +1352,48 @@ func (e *advertisingExecutor) Names() []string {
 func (e *advertisingExecutor) Get(_ string) (tools.Tool, bool) {
 	return &simpleTool{name: "simple", safe: true}, true
 }
+
+// TestAssembleMessages_MidHistoryOrphansAreRescued verifies that
+// injectMissingToolResults patches orphan tool_calls in the MIDDLE of
+// history, not just at the end. This is the crash-recovery path: a Phase B
+// parallel dispatch can interleave session writes; if the process crashes
+// mid-batch, /resume reloads a session whose mid-history assistant turn
+// has tool_calls without matching results.
+func TestAssembleMessages_MidHistoryOrphansAreRescued(t *testing.T) {
+	// Construct a session that mimics a crash mid-parallel-batch:
+	//   - User: "go"
+	//   - Assistant: 3 tool_calls (tc_0, tc_1, tc_2)
+	//   - ONLY tc_0's result was persisted before the crash
+	//   - Then /resume: a new user message "continue" arrives
+	//
+	// Without the fix, tc_1 and tc_2 are mid-history orphans.
+	// With the fix, synthetic results are injected.
+	sess := session.NewSession("a", "k")
+	sess.Append(session.UserMessageEntry("go"))
+	sess.Append(session.ToolCallEntry("tc_0", "noop", json.RawMessage(`{}`)))
+	sess.Append(session.ToolCallEntry("tc_1", "noop", json.RawMessage(`{}`)))
+	sess.Append(session.ToolCallEntry("tc_2", "noop", json.RawMessage(`{}`)))
+	sess.Append(session.ToolResultEntry("tc_0", "ok", "", nil))
+	sess.Append(session.UserMessageEntry("continue"))
+
+	msgs := assembleMessages(sess.View())
+
+	// Walk msgs: every assistant.ToolCalls must have matching tool_results
+	// in the immediately-following user messages.
+	for i, m := range msgs {
+		if len(m.ToolCalls) == 0 {
+			continue
+		}
+		expected := map[string]bool{}
+		for _, tc := range m.ToolCalls {
+			expected[tc.ID] = true
+		}
+		// Collect IDs from following user-tool-result messages.
+		j := i + 1
+		for j < len(msgs) && msgs[j].Role == "user" && msgs[j].ToolCallID != "" {
+			delete(expected, msgs[j].ToolCallID)
+			j++
+		}
+		require.Empty(t, expected, "assistant at idx %d has unpaired tool_calls: %v", i, expected)
+	}
+}
