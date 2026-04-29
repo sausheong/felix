@@ -50,6 +50,12 @@ func MakeSubagentFactory(
 	parent *Runtime,
 ) tools.SubagentFactory {
 	return func(ctx context.Context, agentID string, parentDepth int) (tools.SubagentRunner, error) {
+		// Depth-cap enforcement. Currently defense-in-depth: production subagent
+		// tool registries do not register the task tool itself, so a subagent
+		// cannot invoke another subagent — depth > 1 is unreachable from
+		// production paths today. The cap is here so that adding `task` to
+		// subagent registries in the future (e.g., for explicit recursive
+		// delegation patterns) doesn't open the door to runaway delegation.
 		if parentDepth+1 > maxAgentDepth() {
 			return nil, fmt.Errorf("subagent depth limit %d reached", maxAgentDepth())
 		}

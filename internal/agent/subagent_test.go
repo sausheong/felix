@@ -277,6 +277,15 @@ loop:
 // can call a subagent (depth 1), and that subagent can call another (depth 2),
 // but a third-level attempt (depth 3) must fail with the cap error and the
 // would-be subagent's RuntimeInputs builder must NOT be invoked.
+//
+// Note: this test reimplements the factory wiring rather than calling
+// MakeSubagentFactory directly because production buildSubagentInputs
+// closures do not register the `task` tool on subagent registries (so
+// recursion past depth 1 is unreachable from production paths today).
+// To exercise the cap, this test gives each level its own task tool
+// pointing at the next level. If production ever registers task tool on
+// subagent registries, this test should be simplified to use the production
+// MakeSubagentFactory directly. See subagent.go's depth-cap comment.
 func TestRun_SubagentDepthCapEnforced(t *testing.T) {
 	t.Setenv("FELIX_MAX_AGENT_DEPTH", "2")
 

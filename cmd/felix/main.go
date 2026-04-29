@@ -314,13 +314,17 @@ func runChat(agentID, configPath, modelOverride string) error {
 		Allowlist: cfg.Security.ExecApprovals.Allowlist,
 	}
 	tools.RegisterCoreTools(toolReg, agentCfg.Workspace, execPolicy)
-	tools.RegisterSendMessage(toolReg, func() tools.SendMessageRegistration {
+	// Capture send_message wiring once so both the parent and subagent tool
+	// registries register the same configuration. Subagents inherit the
+	// parent's ability to push to Telegram/WhatsApp (matching startup.go).
+	sendMsgConfigFn := func() tools.SendMessageRegistration {
 		return tools.SendMessageRegistration{
 			TelegramEnabled:       cfg.Telegram.Enabled,
 			TelegramBotToken:      cfg.Telegram.BotToken,
 			TelegramDefaultChatID: cfg.Telegram.DefaultChatID,
 		}
-	})
+	}
+	tools.RegisterSendMessage(toolReg, sendMsgConfigFn)
 
 	// Connect to configured MCP servers and register their tools alongside core tools.
 	mcpServerCfgs, err := cfg.ResolveMCPServers()
@@ -403,6 +407,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		if _, err := mcp.RegisterTools(reg, mcpMgr); err != nil {
 			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
 		}
+		tools.RegisterSendMessage(reg, sendMsgConfigFn)
 		return agent.RuntimeInputs{
 			Provider:     p,
 			Tools:        reg,
