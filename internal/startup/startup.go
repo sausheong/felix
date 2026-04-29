@@ -524,6 +524,17 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		watcher, err := config.NewWatcher(cfg.Path(), func(newCfg *config.Config) {
 			cfg.UpdateFrom(newCfg)
 			newProviders := InitProviders(newCfg)
+			// Rebuild the permission checker from the new config and re-inject.
+			// Without this, edits to agent Tools.Allow/Deny in felix.json5
+			// silently no-op the dispatch-time gate until restart.
+			newPolicies := map[string]tools.Policy{}
+			for _, a := range newCfg.Agents.List {
+				newPolicies[a.ID] = tools.Policy{
+					Allow: a.Tools.Allow,
+					Deny:  a.Tools.Deny,
+				}
+			}
+			wsHandler.SetPermission(tools.NewStaticChecker(newPolicies))
 			wsHandler.UpdateConfig(newCfg)
 			wsHandler.UpdateProviders(newProviders)
 			slog.Info("config hot-reloaded", "providers", len(newProviders))
