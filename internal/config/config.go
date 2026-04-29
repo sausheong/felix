@@ -828,7 +828,7 @@ func resolveHTTPBlock(s MCPServerConfig, dataDir string) (*mcp.HTTPServerConfig,
 
 // ApplyMCPToolNamesToAllowlists augments each configured agent's Tools.Allow
 // list with the supplied MCP tool names. Agents with an empty Allow list are
-// left alone (empty = allow all per FilteredRegistry policy). Duplicate names
+// left alone (empty = allow all per Policy semantics). Duplicate names
 // are skipped. Modifies the in-memory Config only — not persisted to disk.
 //
 // Called once at startup AFTER mcp.RegisterTools returns. The mutation is

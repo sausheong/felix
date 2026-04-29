@@ -60,36 +60,3 @@ func TestPolicyWildcardDeny(t *testing.T) {
 	assert.False(t, p.IsAllowed("read_file"))
 }
 
-func TestFilteredRegistryToolDefs(t *testing.T) {
-	reg := NewRegistry()
-	reg.Register(&ReadFileTool{})
-	reg.Register(&WriteFileTool{})
-	reg.Register(&BashTool{})
-
-	filtered := NewFilteredRegistry(reg, Policy{
-		Allow: []string{"read_file", "write_file"},
-	})
-
-	defs := filtered.ToolDefs()
-	names := make([]string, len(defs))
-	for i, d := range defs {
-		names[i] = d.Name
-	}
-
-	assert.Contains(t, names, "read_file")
-	assert.Contains(t, names, "write_file")
-	assert.NotContains(t, names, "bash")
-}
-
-func TestFilteredRegistryExecuteDenied(t *testing.T) {
-	reg := NewRegistry()
-	reg.Register(&BashTool{})
-
-	filtered := NewFilteredRegistry(reg, Policy{
-		Deny: []string{"bash"},
-	})
-
-	result, err := filtered.Execute(t.Context(), "bash", []byte(`{"command":"echo hi"}`))
-	assert.NoError(t, err)
-	assert.Contains(t, result.Error, "not allowed")
-}

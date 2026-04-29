@@ -181,7 +181,7 @@ type ToolResult struct {
 }
 
 // Executor is the interface used by agent runtime for tool operations.
-// Both Registry and FilteredRegistry implement this.
+// Implemented by Registry.
 type Executor interface {
 	Execute(ctx context.Context, name string, input json.RawMessage) (ToolResult, error)
 	ToolDefs() []llm.ToolDef

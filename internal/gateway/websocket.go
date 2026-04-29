@@ -325,14 +325,10 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		return
 	}
 
-	// Apply agent tool policy
-	var executor tools.Executor = h.tools
-	if len(agentCfg.Tools.Allow) > 0 || len(agentCfg.Tools.Deny) > 0 {
-		executor = tools.NewFilteredRegistry(h.tools, tools.Policy{
-			Allow: agentCfg.Tools.Allow,
-			Deny:  agentCfg.Tools.Deny,
-		})
-	}
+	// Tool policy enforcement is now handled by PermissionChecker:
+	// FilterToolDefs hides denied tools from the model, and Check
+	// short-circuits any deny attempts at dispatch time.
+	executor := h.tools
 
 	// Run agent. Resolve cortex + compaction per agent so both use the same
 	// LLM as the chat itself (instead of mirroring whatever model the default

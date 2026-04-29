@@ -427,15 +427,10 @@ func runChat(agentID, configPath, modelOverride string) error {
 		},
 	})
 
-	// Apply tool policy from agent config.
-	policy := tools.Policy{
-		Allow: agentCfg.Tools.Allow,
-		Deny:  agentCfg.Tools.Deny,
-	}
+	// Tool policy enforcement is now handled by PermissionChecker:
+	// FilterToolDefs hides denied tools from the model, and Check
+	// short-circuits any deny attempts at dispatch time.
 	var toolExecutor tools.Executor = toolReg
-	if len(policy.Allow) > 0 || len(policy.Deny) > 0 {
-		toolExecutor = tools.NewFilteredRegistry(toolReg, policy)
-	}
 
 	// Start cron scheduler if there are any static jobs
 	if len(cronScheduler.Jobs()) > 0 {
