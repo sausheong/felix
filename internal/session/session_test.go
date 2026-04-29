@@ -2,7 +2,9 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -265,4 +267,49 @@ func TestToolResultData_OldJSONLWithoutAbortedField(t *testing.T) {
 	require.Equal(t, "hello", data.Output)
 	require.False(t, data.IsError)
 	require.False(t, data.Aborted, "missing field must default to false")
+}
+
+func TestSession_AppendConcurrent(t *testing.T) {
+	// Race-detector test: 100 goroutines each Append a uniquely-IDed entry.
+	// Run with `go test -race` to catch any unguarded mutation.
+	sess := NewSession("a", "k")
+
+	const N = 100
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			sess.Append(SessionEntry{
+				ID:   fmt.Sprintf("e_%d", i),
+				Type: EntryTypeMessage,
+			})
+		}()
+	}
+	wg.Wait()
+
+	view := sess.View()
+	require.Len(t, view, N, "every Append must land")
+
+	seen := map[string]bool{}
+	for _, e := range view {
+		require.False(t, seen[e.ID], "duplicate ID %s", e.ID)
+		seen[e.ID] = true
+	}
+	require.Len(t, seen, N)
+}
+
+func TestSession_ViewReturnsCopy(t *testing.T) {
+	// Mutating the returned slice must not affect subsequent View() calls.
+	sess := NewSession("a", "k")
+	sess.Append(SessionEntry{ID: "e_1", Type: EntryTypeMessage})
+
+	v1 := sess.View()
+	require.Len(t, v1, 1)
+	v1[0] = SessionEntry{ID: "MUTATED"}
+
+	v2 := sess.View()
+	require.Len(t, v2, 1)
+	require.Equal(t, "e_1", v2[0].ID, "internal state must not be mutated by caller's slice modification")
 }
