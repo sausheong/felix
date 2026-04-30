@@ -326,3 +326,25 @@ Document this verification recipe in the phase-completion notes.
 - `internal/agent/runtime_caching_test.go` — new tests for static-prefix precomputation and zero `config.Load` in the hot path.
 - `internal/llm/parts_concat_test.go` — new tests for cross-provider parts concatenation.
 - Call sites of `BuildRuntimeForAgent` (e.g. `cmd/felix/main.go`, `internal/startup/`) — pass the live `*config.Config` via `RuntimeDeps`.
+
+## Verified
+
+- **Date:** 2026-05-01
+- **Model:** `platformai/claude-sonnet-4-6-asia-southeast1`
+- **Branch:** `feat/caching-foundation` (commits `49e7d5a..0b30bef`)
+
+**Result — primary goal achieved.** The static system + tool definitions block (7874 tokens) is cached on the first request and read by every subsequent turn:
+
+| Session | Turn | `cache_creation_input_tokens` | `cache_read_input_tokens` |
+|---------|------|-------------------------------|---------------------------|
+| First request   | 0 | **7874** | 0     |
+| First request   | 1 | 0     | **7874** |
+| Subsequent (×N) | * | 0     | **7874** |
+
+Cache survived across multiple separate chat sessions over a ~4-minute window (the default 5-min ephemeral TTL) and across one in-flight compaction event. Per-turn `config.Load` removed from the hot path; `slog.Info("anthropic stream usage", ...)` line landed and exposes the cache-token metrics in production logs.
+
+**Finding — message-tail caching not producing additional cache entries.** `cache_read_input_tokens` stays at exactly 7874 across turns even when `prefill_chars` grows from 12k → 57k as the conversation accumulates tool results. The `CacheLastMessage` marker on the user-message tail appears to be silently ignored, most likely because Anthropic enforces a minimum cache-breakpoint size of ~1024 tokens (Sonnet/Opus) past the previous marker — and most user messages don't grow the prefix by that much before the next turn. Worth investigating in a follow-up: either (a) move the message-tail marker further back (e.g., on the second-to-last message so the breakpoint covers more accumulated history), or (b) accept that ~70–90% of the available benefit comes from the static prefix marker alone and remove the second marker as dead code. The static-cache win alone is the bulk of the projected savings.
+
+**Follow-up minor items** (none blocking ship):
+- Add `RLock` snapshot to `BuildConfigSummary` for strict concurrency safety against `Config.UpdateFrom` (current behavior is documented but not enforced).
+- Investigate the message-tail caching behavior above.
