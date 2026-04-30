@@ -30,7 +30,7 @@ func RegisterTools(reg *tools.Registry, mgr *Manager) ([]string, error) {
 			if _, exists := reg.Get(fullName); exists {
 				return nil, fmt.Errorf("mcp[%s]: tool name collision on %q — set tool_prefix in mcp_servers config", s.ID, fullName)
 			}
-			reg.Register(newToolAdapter(fullName, t.Name, t.Description, t.InputSchema, s.Client))
+			reg.Register(newToolAdapter(fullName, t.Name, t.Description, t.InputSchema, s.Client, s.ParallelSafe))
 			registered = append(registered, fullName)
 		}
 	}

@@ -59,14 +59,21 @@ type TelegramConfig struct {
 // legacy flat HTTP layout (top-level URL+Auth) is still accepted for
 // backward compatibility — Felix never silently rewrites felix.json5.
 type MCPServerConfig struct {
-	ID         string         `json:"id"`                  // unique within the list
-	Transport  string         `json:"transport,omitempty"` // "http" (default) | "stdio"
-	HTTP       *MCPHTTPBlock  `json:"http,omitempty"`      // populated when Transport == "http"
-	Stdio      *MCPStdioBlock `json:"stdio,omitempty"`     // populated when Transport == "stdio"
-	URL        string         `json:"url,omitempty"`       // legacy flat HTTP — accepted on read, never written
-	Auth       MCPAuthConfig  `json:"auth,omitempty"`      // legacy flat HTTP — accepted on read, never written
-	Enabled    bool           `json:"enabled"`
-	ToolPrefix string         `json:"tool_prefix,omitempty"` // optional name prefix
+	ID        string         `json:"id"`                  // unique within the list
+	Transport string         `json:"transport,omitempty"` // "http" (default) | "stdio"
+	HTTP      *MCPHTTPBlock  `json:"http,omitempty"`      // populated when Transport == "http"
+	Stdio     *MCPStdioBlock `json:"stdio,omitempty"`     // populated when Transport == "stdio"
+	URL       string         `json:"url,omitempty"`       // legacy flat HTTP — accepted on read, never written
+	Auth      MCPAuthConfig  `json:"auth,omitempty"`      // legacy flat HTTP — accepted on read, never written
+	Enabled   bool           `json:"enabled"`
+	// ParallelSafe is a per-server hint that all tools exposed by this server
+	// are pure / read-only and may be invoked in parallel by the agent loop.
+	// Conservative default false. Flip to true ONLY for servers whose tool
+	// surface you've audited as side-effect-free (e.g., search/read tools).
+	// A mutating tool on a parallel-safe server is undefined behavior — at
+	// best, ordering is non-deterministic; at worst, lost writes.
+	ParallelSafe bool   `json:"parallelSafe,omitempty"`
+	ToolPrefix   string `json:"tool_prefix,omitempty"` // optional name prefix
 }
 
 // MCPHTTPBlock is the nested HTTP-transport configuration.
@@ -764,10 +771,11 @@ func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 				continue
 			}
 			out = append(out, mcp.ManagerServerConfig{
-				ID:         s.ID,
-				ToolPrefix: s.ToolPrefix,
-				Transport:  "http",
-				HTTP:       httpBlock,
+				ID:           s.ID,
+				ToolPrefix:   s.ToolPrefix,
+				Transport:    "http",
+				HTTP:         httpBlock,
+				ParallelSafe: s.ParallelSafe,
 			})
 
 		case "stdio":
@@ -783,6 +791,7 @@ func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 					Args:    s.Stdio.Args,
 					Env:     s.Stdio.Env,
 				},
+				ParallelSafe: s.ParallelSafe,
 			})
 
 		default:

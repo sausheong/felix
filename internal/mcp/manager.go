@@ -12,9 +12,10 @@ import (
 // callers (the Tool registration code) can iterate without reaching into
 // Manager internals.
 type ServerEntry struct {
-	ID         string
-	Client     *Client
-	ToolPrefix string
+	ID           string
+	Client       *Client
+	ToolPrefix   string
+	ParallelSafe bool // mirrors ManagerServerConfig.ParallelSafe; consumed by adapter to mark tools concurrency-safe
 }
 
 // Manager owns a Client per enabled MCP server. Servers that fail to
@@ -39,9 +40,10 @@ func NewManager(ctx context.Context, cfgs []ManagerServerConfig) (*Manager, erro
 			continue
 		}
 		m.servers = append(m.servers, &ServerEntry{
-			ID:         cfg.ID,
-			Client:     client,
-			ToolPrefix: cfg.ToolPrefix,
+			ID:           cfg.ID,
+			Client:       client,
+			ToolPrefix:   cfg.ToolPrefix,
+			ParallelSafe: cfg.ParallelSafe,
 		})
 		slog.Info("mcp: connected to server", "id", cfg.ID, "transport", cfg.Transport)
 	}

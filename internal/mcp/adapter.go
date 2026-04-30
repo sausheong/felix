@@ -12,22 +12,24 @@ import (
 // is constructed by RegisterTools (one per remote tool per server) and
 // registered into a tools.Registry alongside core tools.
 type mcpToolAdapter struct {
-	fullName    string // name as Felix sees it (with prefix applied)
-	remoteName  string // name as the MCP server knows it
-	description string
-	schema      json.RawMessage
-	client      *Client
+	fullName     string // name as Felix sees it (with prefix applied)
+	remoteName   string // name as the MCP server knows it
+	description  string
+	schema       json.RawMessage
+	client       *Client
+	parallelSafe bool // per-server hint sourced from felix.json5 mcp_servers[].parallelSafe
 }
 
 // newToolAdapter is package-private constructor. RegisterTools is the only
 // in-package caller; tests may use it via the same package.
-func newToolAdapter(fullName, remoteName, description string, schema json.RawMessage, client *Client) *mcpToolAdapter {
+func newToolAdapter(fullName, remoteName, description string, schema json.RawMessage, client *Client, parallelSafe bool) *mcpToolAdapter {
 	return &mcpToolAdapter{
-		fullName:    fullName,
-		remoteName:  remoteName,
-		description: description,
-		schema:      schema,
-		client:      client,
+		fullName:     fullName,
+		remoteName:   remoteName,
+		description:  description,
+		schema:       schema,
+		client:       client,
+		parallelSafe: parallelSafe,
 	}
 }
 
@@ -35,10 +37,10 @@ func (a *mcpToolAdapter) Name() string                { return a.fullName }
 func (a *mcpToolAdapter) Description() string         { return a.description }
 func (a *mcpToolAdapter) Parameters() json.RawMessage { return a.schema }
 
-// IsConcurrencySafe returns false — remote MCP tools have unknown side effects;
-// conservatively treat them as unsafe to parallelize. A future enhancement
-// could read a server-declared annotation to opt specific tools into safe mode.
-func (a *mcpToolAdapter) IsConcurrencySafe(_ json.RawMessage) bool { return false }
+// IsConcurrencySafe returns the per-server parallel-safe hint set by the
+// operator in felix.json5 (mcp_servers[].parallelSafe). Default false —
+// MCP tools have unknown side effects unless the operator opts in.
+func (a *mcpToolAdapter) IsConcurrencySafe(_ json.RawMessage) bool { return a.parallelSafe }
 
 func (a *mcpToolAdapter) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var args map[string]any

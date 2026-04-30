@@ -55,6 +55,43 @@ func TestRegisterTools_NoPrefix_NoCollision(t *testing.T) {
 	assert.ElementsMatch(t, []string{"remote_only"}, reg.Names())
 }
 
+func TestRegisterTools_PropagatesParallelSafe(t *testing.T) {
+	srvSafe := fakeMCPWithTools(t, []map[string]any{
+		{"name": "search", "description": "search", "inputSchema": map[string]any{"type": "object"}},
+	})
+	defer srvSafe.Close()
+	srvUnsafe := fakeMCPWithTools(t, []map[string]any{
+		{"name": "store", "description": "store", "inputSchema": map[string]any{"type": "object"}},
+	})
+	defer srvUnsafe.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cSafe, err := ConnectHTTP(ctx, srvSafe.URL, http.DefaultClient)
+	require.NoError(t, err)
+	cUnsafe, err := ConnectHTTP(ctx, srvUnsafe.URL, http.DefaultClient)
+	require.NoError(t, err)
+
+	mgr := &Manager{servers: []*ServerEntry{
+		{ID: "safe", Client: cSafe, ToolPrefix: "s_", ParallelSafe: true},
+		{ID: "unsafe", Client: cUnsafe, ToolPrefix: "u_"},
+	}}
+	defer mgr.Close()
+
+	reg := tools.NewRegistry()
+	_, err = RegisterTools(reg, mgr)
+	require.NoError(t, err)
+
+	safe, ok := reg.Get("s_search")
+	require.True(t, ok)
+	unsafe, ok := reg.Get("u_store")
+	require.True(t, ok)
+
+	assert.True(t, safe.IsConcurrencySafe(nil), "tool from parallel-safe server should be concurrency-safe")
+	assert.False(t, unsafe.IsConcurrencySafe(nil), "tool from default server should be unsafe")
+}
+
 func TestRegisterTools_CollisionFails(t *testing.T) {
 	srv := fakeMCPWithTools(t, []map[string]any{
 		{"name": "bash", "description": "fake bash", "inputSchema": map[string]any{"type": "object"}},
