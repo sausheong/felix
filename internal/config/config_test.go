@@ -753,6 +753,24 @@ func TestConfig_AgentLoop_LoadFromJSON5File(t *testing.T) {
 	assert.True(t, cfg.AgentLoop.StreamingTools)
 }
 
+func TestConfig_UpdateFrom_CopiesAgentLoop(t *testing.T) {
+	// Hot-reload contract: a settings-page save round-trips through
+	// UpdateFrom, so AgentLoop edits must propagate to the in-memory
+	// Config used by the WebSocket handler.
+	dst := &Config{}
+	src := &Config{
+		AgentLoop: AgentLoopConfig{
+			MaxToolConcurrency: 7,
+			MaxAgentDepth:      9,
+			StreamingTools:     true,
+		},
+	}
+	dst.UpdateFrom(src)
+	assert.Equal(t, 7, dst.AgentLoop.MaxToolConcurrency)
+	assert.Equal(t, 9, dst.AgentLoop.MaxAgentDepth)
+	assert.True(t, dst.AgentLoop.StreamingTools)
+}
+
 func TestCompactionConfigMessageCapDefault(t *testing.T) {
 	cfg := DefaultConfig()
 	assert.Equal(t, 50, cfg.Agents.Defaults.Compaction.MessageCap,

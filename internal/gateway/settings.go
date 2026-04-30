@@ -1563,8 +1563,8 @@ html.dark .error-state { background: #450a0a; }
 		// in the Intelligence panel because it's a runtime tuning control
 		// alongside Memory/Cortex; saving any of these takes effect on the
 		// next agent run via fsnotify hot-reload (no restart).
-		var al = cfg.agentLoop || {};
 		if (!cfg.agentLoop) cfg.agentLoop = {};
+		var al = cfg.agentLoop;
 
 		var alSec = makeSection(p, 'Agent Loop');
 		makeField(alSec, 'Streaming Tools (mid-stream tool kickoff)', 'toggle',
