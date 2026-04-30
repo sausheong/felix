@@ -374,6 +374,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		Permission: perm,
 		CortexFn:   func(_ string) *cortex.Cortex { return cx },
 		AgentLoop:  cfg.AgentLoop,
+		Config:     cfg,
 	}
 
 	rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{

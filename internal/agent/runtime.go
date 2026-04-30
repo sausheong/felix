@@ -75,6 +75,18 @@ type Runtime struct {
 	Cortex       *cortex.Cortex      // optional: Cortex knowledge graph for recall/ingest
 	Compaction   *compaction.Manager // optional; nil → no compaction
 
+	// Provider is the LLM provider name parsed from the agent's "provider/model"
+	// model string (e.g., "anthropic", "openai", "local"). Used by
+	// providerSupportsCaching() (Task 13) to decide whether to set
+	// CacheLastMessage on outgoing ChatRequests.
+	Provider string
+
+	// StaticSystemPrompt is the cacheable portion of the system prompt
+	// (identity, agent metadata, configuration paths, configSummary,
+	// skillsIndex). Built once at BuildRuntimeForAgent time; reused
+	// verbatim on every turn so the Anthropic prompt cache hits.
+	StaticSystemPrompt string
+
 	// Permission gates tool execution at dispatch time. nil → allow-all
 	// (matches the no-policy default).
 	Permission tools.PermissionChecker
