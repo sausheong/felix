@@ -14,12 +14,18 @@ import (
 
 // captureOpenAIRequest points an OpenAI provider at an httptest server,
 // drives one ChatStream call, and returns the captured request body.
+// Surfaces any unmarshal error after the stream drains so a silent SDK
+// shape change shows up as a clean test failure rather than a nil-pointer
+// panic at the call site.
 func captureOpenAIRequest(t *testing.T, req ChatRequest) *openai.ChatCompletionRequest {
 	t.Helper()
-	var captured openai.ChatCompletionRequest
+	var (
+		captured     openai.ChatCompletionRequest
+		unmarshalErr error
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &captured)
+		unmarshalErr = json.Unmarshal(body, &captured)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -30,6 +36,7 @@ func captureOpenAIRequest(t *testing.T, req ChatRequest) *openai.ChatCompletionR
 	require.NoError(t, err)
 	for range stream {
 	}
+	require.NoError(t, unmarshalErr, "captured request body did not parse as openai.ChatCompletionRequest")
 	return &captured
 }
 
@@ -52,6 +59,7 @@ func TestOpenAIChatStreamFallsBackToSystemPromptString(t *testing.T) {
 	})
 	require.NotNil(t, captured)
 	require.GreaterOrEqual(t, len(captured.Messages), 1)
+	require.Equal(t, "system", string(captured.Messages[0].Role))
 	require.Equal(t, "legacy", captured.Messages[0].Content)
 }
 
@@ -60,5 +68,7 @@ func TestOpenAIChatStreamPartsBeatString(t *testing.T) {
 		SystemPrompt:      "legacy",
 		SystemPromptParts: []SystemPromptPart{{Text: "new"}},
 	})
+	require.NotNil(t, captured)
+	require.GreaterOrEqual(t, len(captured.Messages), 1)
 	require.Equal(t, "new", captured.Messages[0].Content)
 }
