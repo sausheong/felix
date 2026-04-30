@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
@@ -499,4 +500,15 @@ func LoadAgentMemoryFiles(workspace string) string {
 	}
 
 	return sb.String()
+}
+
+// FormatDateLine returns the canonical date line injected into the
+// dynamic system suffix every Run. Single-line, deterministic format.
+//
+//	"Today's date is YYYY-MM-DD."
+//
+// Uses the caller's process timezone (no UTC normalization) so "today"
+// matches the user's local sense of the day.
+func FormatDateLine(now time.Time) string {
+	return fmt.Sprintf("Today's date is %s.", now.Format("2006-01-02"))
 }

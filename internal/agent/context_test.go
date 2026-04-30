@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/memory"
@@ -247,4 +248,22 @@ func TestLoadAgentMemoryFilesEmptyWorkspace(t *testing.T) {
 		got := LoadAgentMemoryFiles("")
 		require.Contains(t, got, "HOME_STILL_LOADS")
 	})
+}
+
+func TestFormatDateLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   time.Time
+		want string
+	}{
+		{"may day", time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC), "Today's date is 2026-05-01."},
+		{"new year", time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC), "Today's date is 2027-01-01."},
+		{"single digit month", time.Date(2026, 3, 9, 23, 59, 59, 0, time.UTC), "Today's date is 2026-03-09."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FormatDateLine(tc.in)
+			require.Equal(t, tc.want, got)
+		})
+	}
 }
