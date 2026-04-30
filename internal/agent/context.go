@@ -137,6 +137,37 @@ func configSummary() string {
 	return sb.String()
 }
 
+// BuildConfigSummary returns the brief summary of agents and channels
+// that gets injected into the static portion of the system prompt. Pure:
+// no I/O, accepts the already-loaded *config.Config. Replaces the
+// per-turn configSummary() that read felix.json5 from disk.
+//
+// Returns "" for a nil config or one with no agents and no enabled channels.
+func BuildConfigSummary(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+
+	var sb strings.Builder
+
+	if len(cfg.Agents.List) > 0 {
+		sb.WriteString("Configured agents:")
+		for _, a := range cfg.Agents.List {
+			tools := ""
+			if len(a.Tools.Allow) > 0 {
+				tools = ", tools: " + strings.Join(a.Tools.Allow, ", ")
+			}
+			sb.WriteString(fmt.Sprintf("\n- %s (id: %s, model: %s%s)", a.Name, a.ID, a.Model, tools))
+		}
+	}
+
+	if cfg.Channels.CLI.Enabled {
+		sb.WriteString("\n\nConfigured channels: cli")
+	}
+
+	return sb.String()
+}
+
 // assembleMessages converts session history into LLM messages.
 // It ensures that every tool_use block in an assistant message has a
 // corresponding tool_result in the next user message. Orphaned tool calls
