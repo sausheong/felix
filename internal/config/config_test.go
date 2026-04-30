@@ -925,3 +925,34 @@ func TestConfig_MCPServer_ParallelSafe_RoundTripsThroughJSON5(t *testing.T) {
 	require.Len(t, resolved, 1)
 	require.True(t, resolved[0].ParallelSafe)
 }
+
+// TestConfig_IsServerParallelSafe verifies the live-read accessor used by
+// the MCP tool adapter to decide IsConcurrencySafe at call time.
+func TestConfig_IsServerParallelSafe(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{
+			{ID: "trusted", ParallelSafe: true},
+			{ID: "default", ParallelSafe: false},
+		},
+	}
+	require.True(t, cfg.IsServerParallelSafe("trusted"))
+	require.False(t, cfg.IsServerParallelSafe("default"))
+	require.False(t, cfg.IsServerParallelSafe("missing"))
+}
+
+// TestConfig_IsServerParallelSafe_UpdatesAfterHotReload locks in the
+// hot-reload contract: after UpdateFrom copies in a new MCPServers slice,
+// the adapter's live-read closure observes the new ParallelSafe value
+// without rebuilding any tools or restarting the process.
+func TestConfig_IsServerParallelSafe_UpdatesAfterHotReload(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{{ID: "trusted", ParallelSafe: false}},
+	}
+	require.False(t, cfg.IsServerParallelSafe("trusted"))
+
+	src := &Config{
+		MCPServers: []MCPServerConfig{{ID: "trusted", ParallelSafe: true}},
+	}
+	cfg.UpdateFrom(src)
+	require.True(t, cfg.IsServerParallelSafe("trusted"))
+}

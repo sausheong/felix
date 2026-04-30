@@ -72,6 +72,10 @@ type MCPServerConfig struct {
 	// surface you've audited as side-effect-free (e.g., search/read tools).
 	// A mutating tool on a parallel-safe server is undefined behavior — at
 	// best, ordering is non-deterministic; at worst, lost writes.
+	//
+	// Read live by Config.IsServerParallelSafe (which the MCP tool adapter
+	// consults on every IsConcurrencySafe call) so settings-UI toggles take
+	// effect on the next agent run without a restart.
 	ParallelSafe bool   `json:"parallelSafe,omitempty"`
 	ToolPrefix   string `json:"tool_prefix,omitempty"` // optional name prefix
 }
@@ -636,6 +640,27 @@ func (c *Config) UpdateFrom(src *Config) {
 	c.AgentLoop = src.AgentLoop
 	c.Security = src.Security
 	c.Local = src.Local
+	c.Telegram = src.Telegram
+	// MCPServers must be copied so the live-read parallelSafe closure
+	// (Config.IsServerParallelSafe) sees toggles made via the settings UI
+	// without a restart. Was previously omitted, silently breaking hot-reload
+	// of every mcp_servers field.
+	c.MCPServers = src.MCPServers
+}
+
+// IsServerParallelSafe reports whether the named MCP server is currently
+// flagged parallelSafe. Used by mcp.mcpToolAdapter via a closure passed
+// at startup, so settings-page toggles take effect on the next agent run
+// without a restart. Returns false for unknown server IDs.
+func (c *Config) IsServerParallelSafe(id string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, s := range c.MCPServers {
+		if s.ID == id {
+			return s.ParallelSafe
+		}
+	}
+	return false
 }
 
 // SetPath sets the file path for saving.
