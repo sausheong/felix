@@ -1,7 +1,10 @@
 package llm
 
 import (
+	"context"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
@@ -312,4 +315,53 @@ func TestBuildAnthropicMessagesCacheLastImageBlock(t *testing.T) {
 	cc := tail.GetCacheControl()
 	require.NotNil(t, cc)
 	require.Equal(t, "ephemeral", string(cc.Type))
+}
+
+// TestAnthropicStreamSurfacesCacheTokens points the SDK at an httptest
+// server that serves a canned SSE response with cache_creation_input_tokens
+// and cache_read_input_tokens populated, and asserts the emitted
+// llm.Usage carries them through.
+func TestAnthropicStreamSurfacesCacheTokens(t *testing.T) {
+	const sseBody = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":42,"cache_read_input_tokens":17}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := NewAnthropicProvider("test-key", srv.URL)
+	stream, err := p.ChatStream(context.Background(), ChatRequest{Model: "claude-test"})
+	require.NoError(t, err)
+
+	var done *ChatEvent
+	for ev := range stream {
+		ev := ev
+		if ev.Type == EventDone {
+			done = &ev
+		}
+	}
+	require.NotNil(t, done, "expected EventDone")
+	require.NotNil(t, done.Usage, "expected Usage on EventDone")
+	require.Equal(t, 42, done.Usage.CacheCreationInputTokens)
+	require.Equal(t, 17, done.Usage.CacheReadInputTokens)
+	require.Equal(t, 5, done.Usage.OutputTokens)
+	require.Equal(t, 10, done.Usage.InputTokens)
 }

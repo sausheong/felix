@@ -137,11 +137,18 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 		}
 		var pendingTools []pendingTC
 		var currentBlockType string
+		var inputTokens, cacheCreationTokens, cacheReadTokens int64
 
 		for stream.Next() {
 			event := stream.Current()
 
 			switch event.Type {
+			case "message_start":
+				u := event.Message.Usage
+				inputTokens = u.InputTokens
+				cacheCreationTokens = u.CacheCreationInputTokens
+				cacheReadTokens = u.CacheReadInputTokens
+
 			case "content_block_start":
 				cb := event.ContentBlock
 				switch cb.Type {
@@ -191,11 +198,20 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 				currentBlockType = ""
 
 			case "message_delta":
-				if event.Usage.OutputTokens > 0 {
+				if event.Usage.OutputTokens > 0 || cacheCreationTokens > 0 || cacheReadTokens > 0 {
+					slog.Info("anthropic stream usage",
+						"input_tokens", inputTokens,
+						"output_tokens", event.Usage.OutputTokens,
+						"cache_creation_input_tokens", cacheCreationTokens,
+						"cache_read_input_tokens", cacheReadTokens,
+					)
 					events <- ChatEvent{
 						Type: EventDone,
 						Usage: &Usage{
-							OutputTokens: int(event.Usage.OutputTokens),
+							InputTokens:              int(inputTokens),
+							OutputTokens:             int(event.Usage.OutputTokens),
+							CacheCreationInputTokens: int(cacheCreationTokens),
+							CacheReadInputTokens:     int(cacheReadTokens),
 						},
 					}
 				}
