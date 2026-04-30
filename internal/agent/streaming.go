@@ -42,23 +42,12 @@ type kickoffResult struct {
 }
 
 // drainKickoffs blocks until every kickoff channel has received a value, then
-// returns. Used on early-return paths (LLM error, abort) so kickoff goroutines
-// fully settle before Run() returns and r.events closes — preventing leaks
-// and ensuring all paired session entries land before the run is "done".
+// returns. Used on early-return paths (LLM error) so kickoff goroutines
+// fully settle before Run() returns and r.events closes — preventing leaks.
+// (The abort path inlines its own walk so it can append paired session
+// entries in stream order.)
 func drainKickoffs(kickoffs map[string]chan kickoffResult) {
 	for _, ch := range kickoffs {
-		<-ch
-	}
-}
-
-// drainKickoffsExcept is drainKickoffs but skips the channel keyed by skipID.
-// Used in the abort path where the caller has already received from one
-// channel (the first aborted result) and needs to drain the rest.
-func drainKickoffsExcept(kickoffs map[string]chan kickoffResult, skipID string) {
-	for id, ch := range kickoffs {
-		if id == skipID {
-			continue
-		}
 		<-ch
 	}
 }
