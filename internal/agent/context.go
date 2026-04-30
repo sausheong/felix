@@ -35,6 +35,11 @@ func detectImageMIME(data []byte, hint string) string {
 	return hint
 }
 
+// MaxAgentMemoryBytes caps the total bytes of FELIX.md / AGENTS.md content
+// injected into the static system prompt. Mirrors Claude Code's
+// MAX_MEMORY_CHARACTER_COUNT (claudemd.ts) at 40 KB.
+const MaxAgentMemoryBytes = 40 * 1024
+
 const defaultIdentityBase = `You are Felix, an AI agent. Conduct yourself professionally and politely. Be concise and direct. When executing tasks, think step by step and use your tools to accomplish the user's goals. When you need to call multiple independent tools to gather information, emit them in a single response (parallel tool calls) rather than waiting for each one — this cuts response latency on local models.`
 
 // toolHints maps tool names to usage guidance injected into the default identity.
@@ -400,4 +405,107 @@ func pruneToolResults(msgs []llm.Message, maxLen int) {
 		msgs[i].Content = fmt.Sprintf("%s\n\n%s%d of %d chars; re-run the tool with offset/limit to see more]",
 			truncated, truncationMarker, len(truncated), originalLen)
 	}
+}
+
+// LoadAgentMemoryFiles reads FELIX.md and AGENTS.md from workspace and
+// from $HOME. Returns the concatenated content with a brief header per
+// source, or "" if nothing is found.
+//
+// Discovery order (highest priority first):
+//  1. <workspace>/FELIX.md  — labelled "Project memory"
+//  2. <workspace>/AGENTS.md — labelled "Project memory"
+//  3. $HOME/FELIX.md        — labelled "User memory"
+//  4. $HOME/AGENTS.md       — labelled "User memory"
+//
+// Empty files, whitespace-only files, missing files, and unreadable files
+// are silently skipped. Files at the same absolute path (workspace ==
+// $HOME) are deduped — each unique file appears at most once.
+//
+// Hard cap: total returned content ≤ MaxAgentMemoryBytes. When adding a
+// file would push past the cap, the file's content is truncated at the
+// last newline before the byte limit and a "[truncated — over 40 KB
+// total agent memory]" marker is appended. Subsequent files are skipped
+// entirely.
+//
+// Pure (single I/O exception: reads up to 4 files from disk). The
+// returned string starts with "\n\n" so it composes cleanly after
+// skillsIndex in the static system prompt.
+func LoadAgentMemoryFiles(workspace string) string {
+	type candidate struct {
+		path  string
+		label string // "Project memory" or "User memory"
+	}
+	var candidates []candidate
+	if workspace != "" {
+		candidates = append(candidates,
+			candidate{filepath.Join(workspace, "FELIX.md"), "Project memory"},
+			candidate{filepath.Join(workspace, "AGENTS.md"), "Project memory"},
+		)
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		candidates = append(candidates,
+			candidate{filepath.Join(home, "FELIX.md"), "User memory"},
+			candidate{filepath.Join(home, "AGENTS.md"), "User memory"},
+		)
+	}
+
+	seen := map[string]bool{}
+	var sb strings.Builder
+	truncated := false
+
+	for _, c := range candidates {
+		if truncated {
+			break
+		}
+		abs, err := filepath.Abs(c.path)
+		if err != nil {
+			continue
+		}
+		if seen[abs] {
+			continue
+		}
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			continue
+		}
+		seen[abs] = true
+		body := strings.TrimSpace(string(data))
+		if body == "" {
+			continue
+		}
+
+		header := fmt.Sprintf("\n\n## %s: %s\n\n", c.label, abs)
+		section := header + body
+
+		if sb.Len()+len(section) > MaxAgentMemoryBytes {
+			remaining := MaxAgentMemoryBytes - sb.Len() - len(header)
+			if remaining > 0 && remaining < len(body) {
+				cut := body[:remaining]
+				if idx := strings.LastIndex(cut, "\n"); idx > remaining/2 {
+					cut = cut[:idx]
+				}
+				sb.WriteString(header)
+				sb.WriteString(cut)
+				sb.WriteString("\n\n[truncated — over 40 KB total agent memory]")
+			} else if remaining > 0 {
+				sb.WriteString(section)
+			} else {
+				sb.WriteString("\n\n[truncated — over 40 KB total agent memory]")
+			}
+			truncated = true
+			continue
+		}
+		sb.WriteString(section)
+		// If we've consumed nearly the entire budget, treat it as exhausted:
+		// append the truncation marker and skip subsequent files. The
+		// safetyMargin reserves room for a typical header so we don't admit
+		// a file we couldn't usefully render.
+		const safetyMargin = 1024
+		if sb.Len() >= MaxAgentMemoryBytes-safetyMargin {
+			sb.WriteString("\n\n[truncated — over 40 KB total agent memory]")
+			truncated = true
+		}
+	}
+
+	return sb.String()
 }
