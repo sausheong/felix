@@ -87,10 +87,8 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 		params.Tools = tools
 	}
 
-	if req.SystemPrompt != "" {
-		params.System = []anthropic.TextBlockParam{
-			{Text: req.SystemPrompt},
-		}
+	if sys := buildAnthropicSystem(req); len(sys) > 0 {
+		params.System = sys
 	}
 
 	if req.Temperature > 0 {
@@ -374,4 +372,33 @@ func buildToolResultBlock(m Message) anthropic.ContentBlockParamUnion {
 		return anthropic.ContentBlockParamUnion{OfToolResult: &toolBlock}
 	}
 	return anthropic.NewToolResultBlock(m.ToolCallID, m.Content, m.IsError)
+}
+
+// buildAnthropicSystem builds the System param array from a ChatRequest.
+// Prefers SystemPromptParts when set: each non-empty part becomes one
+// TextBlockParam; parts with Cache=true get an ephemeral cache_control marker.
+// Falls back to a single un-cached block built from SystemPrompt when parts
+// are absent. Returns nil when both inputs are empty.
+func buildAnthropicSystem(req ChatRequest) []anthropic.TextBlockParam {
+	if len(req.SystemPromptParts) > 0 {
+		blocks := make([]anthropic.TextBlockParam, 0, len(req.SystemPromptParts))
+		for _, p := range req.SystemPromptParts {
+			if p.Text == "" {
+				continue
+			}
+			b := anthropic.TextBlockParam{Text: p.Text}
+			if p.Cache {
+				b.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			}
+			blocks = append(blocks, b)
+		}
+		if len(blocks) > 0 {
+			return blocks
+		}
+		return nil
+	}
+	if req.SystemPrompt != "" {
+		return []anthropic.TextBlockParam{{Text: req.SystemPrompt}}
+	}
+	return nil
 }

@@ -214,3 +214,40 @@ func TestAnthropic_ToolResultsWithImages(t *testing.T) {
 	require.NotNil(t, p3.Content[0].OfImage)
 	assert.True(t, p3.IsError.Value)
 }
+
+func TestAnthropicSystemPromptPartsEmitCacheControl(t *testing.T) {
+	got := buildAnthropicSystem(ChatRequest{
+		SystemPromptParts: []SystemPromptPart{
+			{Text: "static-cached", Cache: true},
+			{Text: "dynamic", Cache: false},
+		},
+	})
+	require.Len(t, got, 2)
+	require.Equal(t, "static-cached", got[0].Text)
+	require.Equal(t, "ephemeral", string(got[0].CacheControl.Type))
+	require.Equal(t, "dynamic", got[1].Text)
+	require.Empty(t, string(got[1].CacheControl.Type), "second block must not be cache-marked")
+}
+
+func TestAnthropicSystemPromptStringFallback(t *testing.T) {
+	got := buildAnthropicSystem(ChatRequest{SystemPrompt: "legacy"})
+	require.Len(t, got, 1)
+	require.Equal(t, "legacy", got[0].Text)
+	require.Empty(t, string(got[0].CacheControl.Type))
+}
+
+func TestAnthropicSystemEmptyWhenBothEmpty(t *testing.T) {
+	got := buildAnthropicSystem(ChatRequest{})
+	require.Empty(t, got)
+}
+
+func TestAnthropicSystemSkipsEmptyParts(t *testing.T) {
+	got := buildAnthropicSystem(ChatRequest{
+		SystemPromptParts: []SystemPromptPart{
+			{Text: ""},
+			{Text: "real", Cache: true},
+		},
+	})
+	require.Len(t, got, 1)
+	require.Equal(t, "real", got[0].Text)
+}
