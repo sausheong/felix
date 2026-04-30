@@ -643,6 +643,95 @@ loop:
 	require.Equal(t, 1, subExec.callCount())
 }
 
+// TestRun_StreamingPreservesSessionOrderForSlowTool ensures session entries
+// land in [UserMessage, AssistantMessage, ToolCall, ToolResult] order even
+// when the tool takes longer than the stream. Regression for the bug where
+// kickoff goroutines wrote ToolCall mid-stream (before the assistant text
+// was saved), causing assembleMessages to produce a synthetic "(interrupted)"
+// tool_result and break the Anthropic API on the next turn.
+//
+// We deterministically expose the race by:
+//  1. blocking the tool inside Execute (so the kickoff goroutine has
+//     already appended the ToolCall synchronously inside dispatchTool
+//     before Execute is invoked),
+//  2. then letting the LLM stream emit its tail assistant-text + EventDone
+//     so the main goroutine appends the AssistantMessage,
+//  3. then releasing the tool so the kickoff appends the ToolResult.
+//
+// On the unfixed code, sess.Entries() ends up [User, ToolCall, Assistant,
+// ToolResult] which breaks the Anthropic invariant. After the fix, all
+// session writes are deferred to the main goroutine and the order is
+// [User, Assistant, ToolCall, ToolResult].
+func TestRun_StreamingPreservesSessionOrderForSlowTool(t *testing.T) {
+	t.Setenv("FELIX_STREAMING_TOOLS", "1")
+
+	exec := newTimedExecutor()
+	exec.markSafe("safe_search")
+	exec.addTool("safe_search")
+	// Block inside Execute so the kickoff goroutine has reached the point
+	// where (under the bug) it has already appended the ToolCall entry, and
+	// hold it there until after the stream emits its assistant text.
+	exec.blockUntil = make(chan struct{})
+
+	var inFlight sync.WaitGroup
+	inFlight.Add(1)
+	exec.onExecuteStart = func() { inFlight.Done() }
+
+	tcID := "tc_slow"
+	tc := &llm.ToolCall{ID: tcID, Name: "safe_search", Input: json.RawMessage(`{}`)}
+
+	sess := session.NewSession("a", "k")
+	rt := &Runtime{
+		LLM: &scriptedStreamLLM{events: []scriptedStreamEvent{
+			{typ: llm.EventTextDelta, text: "I'll search now."},
+			{typ: llm.EventToolCallStart, toolCall: tc},
+			{typ: llm.EventToolCallDone, toolCall: tc},
+			// Delay the tail text + EventDone so the kickoff goroutine
+			// has time to enter Execute (and, under the bug, append its
+			// ToolCall) before the main goroutine processes EventDone
+			// and appends the AssistantMessage.
+			{delay: 50 * time.Millisecond, typ: llm.EventTextDelta, text: " done."},
+			{typ: llm.EventDone},
+		}},
+		Tools:    exec,
+		Session:  sess,
+		AgentID:  "a",
+		Model:    "test",
+		MaxTurns: 1,
+	}
+
+	// Release the tool blocker only after the main goroutine has had time
+	// to process the tail text + EventDone and append the AssistantMessage.
+	// This deterministically pins ToolCall+ToolResult after AssistantMessage
+	// under the fix; under the bug, the ToolCall lands BEFORE the assistant
+	// text (because dispatchTool appends it synchronously before Execute).
+	go func() {
+		inFlight.Wait()
+		time.Sleep(150 * time.Millisecond) // > 50ms tail delay; main loop will save AssistantMessage
+		close(exec.blockUntil)
+	}()
+
+	events, err := rt.Run(context.Background(), "search please", nil)
+	require.NoError(t, err)
+	for range events {
+	}
+
+	entries := sess.Entries()
+	// Expected: UserMessage, AssistantMessage, ToolCall, ToolResult.
+	require.GreaterOrEqual(t, len(entries), 4, "expected at least 4 entries, got %d", len(entries))
+	require.Equal(t, session.EntryTypeMessage, entries[0].Type)
+	require.Equal(t, "user", entries[0].Role)
+	// entries[1] MUST be the AssistantMessage, NOT a ToolCall.
+	require.Equal(t, session.EntryTypeMessage, entries[1].Type,
+		"AssistantMessage must come before ToolCall (bug regression check); got entry type %v at index 1",
+		entries[1].Type)
+	require.Equal(t, "assistant", entries[1].Role)
+	require.Equal(t, session.EntryTypeToolCall, entries[2].Type,
+		"ToolCall must come after AssistantMessage; got entry type %v at index 2", entries[2].Type)
+	require.Equal(t, session.EntryTypeToolResult, entries[3].Type,
+		"ToolResult must come after ToolCall; got entry type %v at index 3", entries[3].Type)
+}
+
 // TestRun_StreamingCortexAppendIsRaceClean is the C1 regression test.
 //
 // Phase D introduced kickoff goroutines that call dispatchTool mid-stream.

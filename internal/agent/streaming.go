@@ -1,6 +1,11 @@
 package agent
 
-import "os"
+import (
+	"os"
+
+	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/tools"
+)
 
 // streamingToolsEnabled reports whether streaming tool kickoff is on for
 // this Runtime. Precedence:
@@ -20,11 +25,19 @@ func (r *Runtime) streamingToolsEnabled() bool {
 }
 
 // kickoffResult is the channel payload sent by a streaming-kickoff goroutine
-// once dispatchTool returns. The goroutine has already paired the session
-// entries (via dispatchTool) and emitted the EventToolResult (via
-// r.emitToolResult), so the post-stream await loop only needs to know
-// whether dispatch was aborted (so it can break out and emit EventAborted).
+// once executeToolKickoff returns. The goroutine has already emitted the
+// live EventToolResult (via r.emitToolResult); the main goroutine consumes
+// this struct post-stream to write the paired session entries (ToolCall +
+// ToolResult) IN STREAM ORDER, AFTER the assistant text is saved.
+//
+// Deferring session writes to the main goroutine preserves the API
+// invariant that every tool_result message follows an assistant message
+// containing the matching tool_use. Phase D's parallelism win (tools
+// running during the stream) is preserved because Execute still happens
+// inside the kickoff goroutine.
 type kickoffResult struct {
+	tc      llm.ToolCall // the tool call we executed (carried so the main goroutine doesn't have to look it up)
+	result  tools.ToolResult
 	aborted bool
 }
 

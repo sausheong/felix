@@ -450,9 +450,16 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					kickoffs[tc.ID] = ch
 					tcCopy := tc // capture by value before launching goroutine
 					go func() {
-						result, aborted := r.dispatchTool(ctx, tcCopy, cortexThreadOrNil(r.Cortex, &thread))
+						// Phase D: run the tool WITHOUT touching session or
+						// cortex thread; the main goroutine appends the
+						// paired entries post-stream in stream order so the
+						// AssistantMessage save (which happens after the
+						// stream ends) lands BEFORE the ToolCall entry. See
+						// executeToolKickoff and the post-stream resolve loop.
+						result, aborted := r.executeToolKickoff(ctx, tcCopy)
+						// Live UI emit happens here; session writes are deferred.
 						r.emitToolResult(tr, turn, tcCopy, result, aborted)
-						ch <- kickoffResult{aborted: aborted}
+						ch <- kickoffResult{tc: tcCopy, result: result, aborted: aborted}
 					}()
 
 				case llm.EventDone:
@@ -502,15 +509,73 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			}
 
 			// Resolve kickoffs in stream order; collect non-kicked-off tools
-			// for the post-stream batcher.
+			// for the post-stream batcher. Session writes happen HERE (after
+			// the assistant text was appended above), in stream order, so
+			// every ToolCall entry sits between the AssistantMessage and its
+			// matching ToolResult — preserving the API invariant that every
+			// tool_result follows an assistant message containing the
+			// matching tool_use.
 			var pending []llm.ToolCall
 			for _, tc := range toolCalls {
 				if ch, ok := kickoffs[tc.ID]; ok {
-					kr := <-ch
-					if kr.aborted {
-						drainKickoffsExcept(kickoffs, tc.ID)
+					kp := <-ch
+					// Append the ToolCall entry now — after the assistant
+					// text has landed in the session.
+					r.Session.Append(session.ToolCallEntry(kp.tc.ID, kp.tc.Name, kp.tc.Input))
+					if r.Cortex != nil {
+						r.cortexMu.Lock()
+						thread = append(thread, conversation.Message{
+							Role:    "assistant",
+							Content: fmt.Sprintf("[tool: %s]\n%s", kp.tc.Name, string(kp.tc.Input)),
+						})
+						r.cortexMu.Unlock()
+					}
+					if kp.aborted {
+						r.Session.Append(session.AbortedToolResultEntry(kp.tc.ID))
+						if r.Cortex != nil {
+							r.cortexMu.Lock()
+							thread = append(thread, conversation.Message{Role: "user", Content: "[error] aborted by user"})
+							r.cortexMu.Unlock()
+						}
+						// Drain remaining kickoffs so their goroutines exit.
+						// For each, append paired entries (call + aborted
+						// result) so the session never has an orphan
+						// ToolCall — keeps /resume safe.
+						for _, tc2 := range toolCalls {
+							if tc2.ID == kp.tc.ID {
+								continue
+							}
+							ch2, ok := kickoffs[tc2.ID]
+							if !ok {
+								continue
+							}
+							kp2 := <-ch2
+							r.Session.Append(session.ToolCallEntry(kp2.tc.ID, kp2.tc.Name, kp2.tc.Input))
+							r.Session.Append(session.AbortedToolResultEntry(kp2.tc.ID))
+							if r.Cortex != nil {
+								r.cortexMu.Lock()
+								thread = append(thread, conversation.Message{
+									Role:    "assistant",
+									Content: fmt.Sprintf("[tool: %s]\n%s", kp2.tc.Name, string(kp2.tc.Input)),
+								})
+								thread = append(thread, conversation.Message{Role: "user", Content: "[error] aborted by user"})
+								r.cortexMu.Unlock()
+							}
+						}
 						r.emit(AgentEvent{Type: EventAborted})
 						return
+					}
+					// Append the paired ToolResult entry.
+					imgData := convertToolResultImages(kp.result.Images)
+					r.Session.Append(session.ToolResultEntry(kp.tc.ID, kp.result.Output, kp.result.Error, imgData))
+					if r.Cortex != nil {
+						content := kp.result.Output
+						if kp.result.Error != "" {
+							content = "[error] " + kp.result.Error
+						}
+						r.cortexMu.Lock()
+						thread = append(thread, conversation.Message{Role: "user", Content: content})
+						r.cortexMu.Unlock()
 					}
 					continue
 				}
@@ -628,6 +693,40 @@ func (r *Runtime) dispatchTool(
 		r.cortexMu.Unlock()
 	}
 
+	return result, false
+}
+
+// executeToolKickoff runs the tool's permission gate, ctx checks, and
+// Execute call WITHOUT touching session or cortex thread. Used by Phase D's
+// streaming kickoff goroutines so the main loop can write session entries
+// in stream order after the assistant text is saved (preserves the API
+// invariant that every tool_result follows an assistant message containing
+// the matching tool_use).
+//
+// Returns (result, aborted). aborted=true means ctx was cancelled before or
+// after Execute; the caller MUST stop dispatching subsequent tool calls in
+// this turn. The returned result includes the appropriate Error message for
+// permission-denied or aborted cases.
+func (r *Runtime) executeToolKickoff(ctx context.Context, tc llm.ToolCall) (result tools.ToolResult, aborted bool) {
+	// Permission gate.
+	if r.Permission != nil {
+		if d := r.Permission.Check(ctx, r.AgentID, tc.Name, tc.Input); d.Behavior == tools.DecisionDeny {
+			return tools.ToolResult{Error: d.Reason}, false
+		}
+	}
+	// Pre-execute cancel check.
+	if ctx.Err() != nil {
+		return tools.ToolResult{Error: "aborted by user"}, true
+	}
+	// Execute.
+	result, err := r.Tools.Execute(ctx, tc.Name, tc.Input)
+	if err != nil {
+		result = tools.ToolResult{Error: err.Error()}
+	}
+	// Post-execute cancel check.
+	if ctx.Err() != nil {
+		return tools.ToolResult{Error: "aborted by user"}, true
+	}
 	return result, false
 }
 
