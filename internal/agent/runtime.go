@@ -148,6 +148,13 @@ func (r *Runtime) emit(ev AgentEvent) {
 	r.events <- ev
 }
 
+// providerSupportsCaching returns true when the runtime's provider implements
+// Anthropic-style explicit prompt caching. Used to decide whether to set
+// CacheLastMessage on outgoing ChatRequests.
+func (r *Runtime) providerSupportsCaching() bool {
+	return r.Provider == "anthropic"
+}
+
 // Run executes the agent loop for a user message, returning a channel of events.
 // images is an optional slice of image attachments to include with the user message.
 func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageContent) (<-chan AgentEvent, error) {
@@ -247,50 +254,27 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				return
 			}
 
-			// Assemble context with skills and memory
+			// Assemble dynamic suffix only — the static portion was pre-computed
+			// at Runtime construction time and lives on r.StaticSystemPrompt.
 			phaseStart := time.Now()
-			systemPrompt := assembleSystemPrompt(r.Workspace, r.SystemPrompt, r.AgentID, r.AgentName, r.Tools.Names())
 
-			// Inject relevant skills. We only match once per request (turn 0)
-			// because the user message — what we match against — doesn't
-			// change across turns. Re-matching on every turn was costing
-			// 3–7s of prefill (skills add ~10 K chars to the system prompt).
-			//
-			// FormatIndex is always-on (cheap) so the agent knows every
-			// skill name it has access to, even when none match the user's
-			// request closely. Full skill bodies are injected only for
-			// matched skills.
-			if r.Skills != nil {
-				systemPrompt += r.Skills.FormatIndex()
-				if turn == 0 {
-					skillStart := time.Now()
-					matchedSkills = r.Skills.MatchSkills(userMsg, 1)
-					tr.Mark("skills.match", "turn", turn, "matched", len(matchedSkills), "dur_ms_local", time.Since(skillStart).Milliseconds())
-				}
-				if extra := skill.FormatForPrompt(matchedSkills); extra != "" {
-					systemPrompt += extra
-				}
+			// Match relevant skills (cached per-request: result doesn't change
+			// across turns since the user message is the same).
+			if r.Skills != nil && turn == 0 {
+				skillStart := time.Now()
+				matchedSkills = r.Skills.MatchSkills(userMsg, 1)
+				tr.Mark("skills.match", "turn", turn, "matched", len(matchedSkills), "dur_ms_local", time.Since(skillStart).Milliseconds())
 			}
 
-			// Inject relevant memory. Same per-request caching as skills:
-			// the query is the user message, which doesn't change between
-			// turns, so the search result doesn't either.
-			if r.Memory != nil {
-				if turn == 0 {
-					memStart := time.Now()
-					matchedMemory = r.Memory.Search(userMsg, 3)
-					tr.Mark("memory.search", "turn", turn, "hits", len(matchedMemory), "dur_ms_local", time.Since(memStart).Milliseconds())
-				}
-				if extra := memory.FormatForPrompt(matchedMemory); extra != "" {
-					systemPrompt += extra
-				}
+			// Search relevant memory (same per-request caching as skills).
+			if r.Memory != nil && turn == 0 {
+				memStart := time.Now()
+				matchedMemory = r.Memory.Search(userMsg, 3)
+				tr.Mark("memory.search", "turn", turn, "hits", len(matchedMemory), "dur_ms_local", time.Since(memStart).Milliseconds())
 			}
 
-			// Inject Cortex context. On the first turn we need to wait for the
-			// background Recall (with a hard 800ms cap so a slow embedder can't
-			// stall the entire request). Subsequent turns reuse the result.
-			// On timeout we cancel the goroutine so it stops consuming embedder
-			// capacity after the user wait elapses.
+			// Cortex hint: on first turn wait for the background Recall (with
+			// 800ms cap so a slow embedder can't stall the request).
 			if cortexCh != nil && cortexContext == "" {
 				select {
 				case cortexContext = <-cortexCh:
@@ -304,8 +288,21 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				}
 				cortexCh = nil
 			}
-			if cortexContext != "" {
-				systemPrompt += cortexContext
+
+			dynamicSuffix := buildDynamicSystemPromptSuffix(matchedSkills, matchedMemory, cortexContext)
+
+			// Build the structured system prompt: static (cached) + dynamic
+			// (not cached). Fallback to legacy assembleSystemPrompt for tests
+			// that construct Runtime{...} directly without StaticSystemPrompt.
+			staticText := r.StaticSystemPrompt
+			if staticText == "" {
+				staticText = assembleSystemPrompt(r.Workspace, r.SystemPrompt, r.AgentID, r.AgentName, r.Tools.Names())
+			}
+			parts := []llm.SystemPromptPart{
+				{Text: staticText, Cache: true},
+			}
+			if dynamicSuffix != "" {
+				parts = append(parts, llm.SystemPromptPart{Text: dynamicSuffix, Cache: false})
 			}
 
 			history := r.Session.View()
@@ -332,7 +329,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					"action", d.Action,
 					"reason", d.Reason)
 			}
-			tr.Mark("context.assemble", "turn", turn, "msgs", len(msgs), "tools", len(toolDefs), "sysprompt_chars", len(systemPrompt), "dur_ms_local", time.Since(phaseStart).Milliseconds())
+			tr.Mark("context.assemble", "turn", turn, "msgs", len(msgs), "tools", len(toolDefs), "sysprompt_chars", len(staticText)+len(dynamicSuffix), "dur_ms_local", time.Since(phaseStart).Milliseconds())
 
 			// Preventive compaction check.
 			// Two triggers, either is sufficient:
@@ -353,7 +350,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				if r.calibrator == nil {
 					r.calibrator = tokens.NewCalibrator()
 				}
-				estimate := r.calibrator.Adjust(tokens.Estimate(msgs, systemPrompt, toolDefs))
+				estimate := r.calibrator.Adjust(tokens.Estimate(msgs, llm.JoinSystemPromptParts(parts), toolDefs))
 				window := tokens.ContextWindow(r.Model)
 				threshold := 0.6
 				if r.Compaction != nil && r.Compaction.Threshold > 0 {
@@ -378,17 +375,18 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			}
 
 			req := llm.ChatRequest{
-				Model:        r.Model,
-				Messages:     msgs,
-				Tools:        toolDefs,
-				MaxTokens:    8192,
-				SystemPrompt: systemPrompt,
-				Reasoning:    r.Reasoning,
+				Model:             r.Model,
+				Messages:          msgs,
+				Tools:             toolDefs,
+				MaxTokens:         8192,
+				SystemPromptParts: parts,
+				CacheLastMessage:  r.providerSupportsCaching(),
+				Reasoning:         r.Reasoning,
 			}
 
 			// Call LLM
 			llmStart := time.Now()
-			prefillChars := len(systemPrompt)
+			prefillChars := len(staticText) + len(dynamicSuffix)
 			for _, m := range msgs {
 				prefillChars += len(m.Content)
 			}
@@ -480,7 +478,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 
 				case llm.EventDone:
 					if event.Usage != nil && r.calibrator != nil {
-						r.calibrator.Update(event.Usage.InputTokens, tokens.Estimate(msgs, systemPrompt, toolDefs))
+						r.calibrator.Update(event.Usage.InputTokens, tokens.Estimate(msgs, llm.JoinSystemPromptParts(parts), toolDefs))
 					}
 
 				case llm.EventError:

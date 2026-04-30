@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/llm/llmtest"
 	"github.com/sausheong/felix/internal/session"
@@ -351,4 +352,92 @@ func TestToolDefsSortedByNameInRequest(t *testing.T) {
 		names = append(names, td.Name)
 	}
 	require.Equal(t, []string{"alpha", "mango", "zebra"}, names)
+}
+
+func TestRuntimeSendsStructuredSystemPromptParts(t *testing.T) {
+	rec := &recordingProvider{reply: "ok"}
+	sess := session.NewSession("test-agent", "test-key")
+
+	cfg := &config.Config{}
+	cfg.Agents.List = []config.AgentConfig{
+		{ID: "a", Name: "A", Model: "anthropic/claude-sonnet-4-5"},
+	}
+	rt, err := BuildRuntimeForAgent(
+		RuntimeDeps{Config: cfg},
+		RuntimeInputs{Provider: rec, Tools: tools.NewRegistry(), Session: sess},
+		&cfg.Agents.List[0],
+	)
+	require.NoError(t, err)
+	rt.MaxTurns = 5
+
+	events, err := rt.Run(context.Background(), "hi", nil)
+	require.NoError(t, err)
+	for range events {
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.GreaterOrEqual(t, len(rec.requests), 1)
+	req0 := rec.requests[0]
+	require.NotEmpty(t, req0.SystemPromptParts, "expected SystemPromptParts to be populated")
+	require.True(t, req0.SystemPromptParts[0].Cache, "first part must be cache-marked")
+	require.Contains(t, req0.SystemPromptParts[0].Text, `"A" agent (id: a)`)
+	require.True(t, req0.CacheLastMessage, "Anthropic provider must request CacheLastMessage")
+}
+
+func TestRuntimeStaticPromptByteStableAcrossTurns(t *testing.T) {
+	rec := &recordingProvider{reply: "ok"}
+	sess := session.NewSession("test-agent", "test-key")
+	cfg := &config.Config{}
+	cfg.Agents.List = []config.AgentConfig{
+		{ID: "a", Name: "A", Model: "anthropic/claude-sonnet-4-5"},
+	}
+	rt, err := BuildRuntimeForAgent(
+		RuntimeDeps{Config: cfg},
+		RuntimeInputs{Provider: rec, Tools: tools.NewRegistry(), Session: sess},
+		&cfg.Agents.List[0],
+	)
+	require.NoError(t, err)
+	rt.MaxTurns = 5
+
+	for _, msg := range []string{"hello", "world"} {
+		ev, err := rt.Run(context.Background(), msg, nil)
+		require.NoError(t, err)
+		for range ev {
+		}
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.GreaterOrEqual(t, len(rec.requests), 2)
+	require.Equal(t,
+		rec.requests[0].SystemPromptParts[0].Text,
+		rec.requests[1].SystemPromptParts[0].Text,
+		"static system prompt must be byte-identical across turns",
+	)
+}
+
+func TestRuntimeNonAnthropicHasCacheLastMessageFalse(t *testing.T) {
+	rec := &recordingProvider{reply: "ok"}
+	sess := session.NewSession("test-agent", "test-key")
+	cfg := &config.Config{}
+	cfg.Agents.List = []config.AgentConfig{
+		{ID: "a", Name: "A", Model: "openai/gpt-4o"},
+	}
+	rt, err := BuildRuntimeForAgent(
+		RuntimeDeps{Config: cfg},
+		RuntimeInputs{Provider: rec, Tools: tools.NewRegistry(), Session: sess},
+		&cfg.Agents.List[0],
+	)
+	require.NoError(t, err)
+	rt.MaxTurns = 5
+
+	ev, err := rt.Run(context.Background(), "hi", nil)
+	require.NoError(t, err)
+	for range ev {
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.False(t, rec.requests[0].CacheLastMessage)
 }

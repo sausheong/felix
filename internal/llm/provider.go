@@ -182,6 +182,13 @@ func concatSystemPromptParts(parts []SystemPromptPart) string {
 	return strings.Join(nonEmpty, "\n")
 }
 
+// JoinSystemPromptParts is the exported variant of concatSystemPromptParts
+// for callers outside the llm package (e.g., agent runtime token estimation
+// that needs the joined string for tokens.Estimate).
+func JoinSystemPromptParts(parts []SystemPromptPart) string {
+	return concatSystemPromptParts(parts)
+}
+
 // ProviderOptions holds connection details for creating an LLM provider.
 type ProviderOptions struct {
 	APIKey  string
