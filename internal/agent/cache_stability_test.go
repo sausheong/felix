@@ -324,3 +324,31 @@ func TestReasoningIsInRequestPrefix(t *testing.T) {
 	assert.Equal(t, llm.ReasoningHigh, rec.requests[1].Reasoning,
 		"reasoning level must be stable across turns")
 }
+
+func TestToolDefsSortedByNameInRequest(t *testing.T) {
+	rec := &recordingProvider{reply: "ok"}
+	sess := session.NewSession("test-agent", "test-key")
+	reg := tools.NewRegistry()
+	reg.Register(&mockTool{name: "zebra", output: "z"})
+	reg.Register(&mockTool{name: "alpha", output: "a"})
+	reg.Register(&mockTool{name: "mango", output: "m"})
+
+	rt := &Runtime{
+		LLM: rec, Tools: reg, Session: sess,
+		Model: "rec-model", Workspace: t.TempDir(), MaxTurns: 5,
+	}
+
+	events, err := rt.Run(context.Background(), "hello", nil)
+	require.NoError(t, err)
+	for range events {
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.GreaterOrEqual(t, len(rec.requests), 1)
+	names := make([]string, 0, len(rec.requests[0].Tools))
+	for _, td := range rec.requests[0].Tools {
+		names = append(names, td.Name)
+	}
+	require.Equal(t, []string{"alpha", "mango", "zebra"}, names)
+}

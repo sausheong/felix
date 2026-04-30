@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -317,6 +318,9 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			if r.Permission != nil {
 				toolDefs = r.Permission.FilterToolDefs(toolDefs, r.AgentID)
 			}
+			sort.SliceStable(toolDefs, func(i, j int) bool {
+				return toolDefs[i].Name < toolDefs[j].Name
+			})
 			toolDefs, diags := r.LLM.NormalizeToolSchema(toolDefs)
 			// Info, not Warn: stripping is the expected pre-flight transform
 			// (e.g. Gemini drops format/anyOf on every web_fetch call). Warn
