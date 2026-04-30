@@ -338,7 +338,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		return fmt.Errorf("init mcp manager: %w", err)
 	}
 	defer mcpMgr.Close()
-	mcpNames, err := mcp.RegisterTools(toolReg, mcpMgr)
+	mcpNames, err := mcp.RegisterTools(toolReg, mcpMgr, cfg.IsServerParallelSafe)
 	if err != nil {
 		return fmt.Errorf("register mcp tools: %w", err)
 	}
@@ -406,7 +406,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		}
 		reg := tools.NewRegistry()
 		tools.RegisterCoreTools(reg, a.Workspace, execPolicy)
-		if _, err := mcp.RegisterTools(reg, mcpMgr); err != nil {
+		if _, err := mcp.RegisterTools(reg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
 		}
 		tools.RegisterSendMessage(reg, sendMsgConfigFn)
@@ -428,7 +428,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 			cronSess := session.NewSession(agentID, "cron_"+jobName)
 			cronToolReg := tools.NewRegistry()
 			tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace, execPolicy)
-			if _, err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
+			if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 				return "", fmt.Errorf("register mcp tools for cron: %w", err)
 			}
 			cronRT, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{

@@ -408,7 +408,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	if err != nil {
 		return nil, fmt.Errorf("init mcp manager: %w", err)
 	}
-	mcpNames, err := mcp.RegisterTools(toolReg, mcpMgr)
+	mcpNames, err := mcp.RegisterTools(toolReg, mcpMgr, cfg.IsServerParallelSafe)
 	if err != nil {
 		mcpMgr.Close()
 		return nil, fmt.Errorf("register mcp tools: %w", err)
@@ -566,7 +566,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		}
 		reg := tools.NewRegistry()
 		tools.RegisterCoreTools(reg, a.Workspace, execPolicy)
-		if _, err := mcp.RegisterTools(reg, mcpMgr); err != nil {
+		if _, err := mcp.RegisterTools(reg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
 		}
 		tools.RegisterSendMessage(reg, sendMsgConfigFn)
@@ -604,7 +604,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentCfg.ID, "heartbeat")
 				hbToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(hbToolReg, agentCfg.Workspace, execPolicy)
-				if _, err := mcp.RegisterTools(hbToolReg, mcpMgr); err != nil {
+				if _, err := mcp.RegisterTools(hbToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(hbToolReg, sendMsgConfigFn)
@@ -644,7 +644,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				sess := session.NewSession(agentCfg.ID, "cron_"+cronJob.Name)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace, execPolicy)
-				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
+				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
@@ -686,7 +686,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				cronSess := session.NewSession(defaultCfg.ID, "cron_"+jobName)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, defaultCfg.Workspace, execPolicy)
-				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr); err != nil {
+				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)

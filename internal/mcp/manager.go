@@ -15,7 +15,13 @@ type ServerEntry struct {
 	ID           string
 	Client       *Client
 	ToolPrefix   string
-	ParallelSafe bool // mirrors ManagerServerConfig.ParallelSafe; consumed by adapter to mark tools concurrency-safe
+	// ParallelSafe is vestigial: it mirrors ManagerServerConfig.ParallelSafe
+	// at construction time. The MCP tool adapter no longer consults it for
+	// IsConcurrencySafe — instead it reads the live config via the
+	// ParallelSafeFn closure passed to RegisterTools, so settings-UI toggles
+	// take effect on the next agent run without a restart. Kept on the
+	// struct for API stability (tests and any external introspection).
+	ParallelSafe bool
 }
 
 // Manager owns a Client per enabled MCP server. Servers that fail to

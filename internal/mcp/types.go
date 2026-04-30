@@ -13,7 +13,11 @@ type ManagerServerConfig struct {
 	Transport    string             // "http" | "stdio"
 	HTTP         *HTTPServerConfig  // populated when Transport == "http"
 	Stdio        *StdioServerConfig // populated when Transport == "stdio"
-	ParallelSafe bool               // operator-asserted: tools are pure/read-only and safe to parallelize
+	// ParallelSafe is vestigial here as of the live-read refactor —
+	// IsConcurrencySafe now reads the live config via the ParallelSafeFn
+	// closure passed to RegisterTools. Still set by ResolveMCPServers and
+	// mirrored into ServerEntry for API stability.
+	ParallelSafe bool
 }
 
 // HTTPServerConfig describes an HTTP-transport MCP server, including which

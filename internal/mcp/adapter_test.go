@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,7 +64,7 @@ func TestAdapter_Execute(t *testing.T) {
 
 	a := newToolAdapter("ltm_echo", "echo", "Echo back text",
 		json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}}}`),
-		c, false)
+		c, "ltm", nil)
 
 	assert.Equal(t, "ltm_echo", a.Name())
 	assert.Equal(t, "Echo back text", a.Description())
@@ -76,15 +77,37 @@ func TestAdapter_Execute(t *testing.T) {
 }
 
 func TestAdapter_BadInput(t *testing.T) {
-	a := newToolAdapter("x", "x", "", nil, nil, false)
+	a := newToolAdapter("x", "x", "", nil, nil, "x", nil)
 	res, err := a.Execute(context.Background(), json.RawMessage(`not json`))
 	require.NoError(t, err) // tool errors are surfaced via res.Error, not err
 	assert.Contains(t, res.Error, "invalid arguments")
 }
 
-func TestMcpAdapter_IsConcurrencySafe_RespectsFlag(t *testing.T) {
-	a1 := newToolAdapter("x_t", "t", "", json.RawMessage(`{}`), nil, false)
-	a2 := newToolAdapter("x_t", "t", "", json.RawMessage(`{}`), nil, true)
-	require.False(t, a1.IsConcurrencySafe(nil))
-	require.True(t, a2.IsConcurrencySafe(nil))
+// TestMcpAdapter_IsConcurrencySafe_FuncReturnsLiveValue verifies that the
+// adapter's concurrency-safe report tracks the closure's return value at
+// call time — i.e. settings-page toggles take effect on the next call
+// without rebuilding the adapter.
+func TestMcpAdapter_IsConcurrencySafe_FuncReturnsLiveValue(t *testing.T) {
+	var current atomic.Bool
+	fn := func(id string) bool {
+		if id != "myserver" {
+			return false
+		}
+		return current.Load()
+	}
+	a := newToolAdapter("x_t", "t", "", json.RawMessage(`{}`), nil, "myserver", fn)
+
+	require.False(t, a.IsConcurrencySafe(nil))
+	current.Store(true)
+	require.True(t, a.IsConcurrencySafe(nil), "live read should pick up the toggle without rebuild")
+	current.Store(false)
+	require.False(t, a.IsConcurrencySafe(nil))
+}
+
+// TestMcpAdapter_IsConcurrencySafe_NilFnReturnsFalse verifies the legacy
+// "always false" behavior is preserved when no closure is wired (used by
+// tests and any call sites that don't need hot-reload).
+func TestMcpAdapter_IsConcurrencySafe_NilFnReturnsFalse(t *testing.T) {
+	a := newToolAdapter("x_t", "t", "", json.RawMessage(`{}`), nil, "anything", nil)
+	require.False(t, a.IsConcurrencySafe(nil))
 }
