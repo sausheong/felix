@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sausheong/cortex"
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/llm/llmtest"
@@ -95,13 +96,14 @@ func (s *scriptedStreamLLM) ChatStream(ctx context.Context, _ llm.ChatRequest) (
 // gets a unique key (toolName_{counter}) so concurrent invocations of the same
 // tool are tracked separately. Used to assert streaming-kickoff timing.
 type timedExecutor struct {
-	mu           sync.Mutex
-	startTimes   []time.Time
-	startNames   []string
-	safeNames    map[string]bool // tool names that report concurrencySafe
-	blockUntil   chan struct{}   // tools block until this is closed (or nil for no block)
-	delayPerCall time.Duration   // sleep inside Execute (after recording start)
-	toolDefs     []llm.ToolDef
+	mu             sync.Mutex
+	startTimes     []time.Time
+	startNames     []string
+	safeNames      map[string]bool // tool names that report concurrencySafe
+	blockUntil     chan struct{}   // tools block until this is closed (or nil for no block)
+	delayPerCall   time.Duration   // sleep inside Execute (after recording start)
+	toolDefs       []llm.ToolDef
+	onExecuteStart func() // optional hook fired at the start of every Execute (before blockUntil/delay)
 }
 
 func newTimedExecutor() *timedExecutor {
@@ -136,7 +138,12 @@ func (e *timedExecutor) Execute(ctx context.Context, name string, _ json.RawMess
 	e.startNames = append(e.startNames, name)
 	bu := e.blockUntil
 	delay := e.delayPerCall
+	hook := e.onExecuteStart
 	e.mu.Unlock()
+
+	if hook != nil {
+		hook()
+	}
 
 	if bu != nil {
 		select {
@@ -309,6 +316,19 @@ func TestRun_StreamingStopsAtFirstUnsafe(t *testing.T) {
 	postStreamStart := starts[0].Add(exec.delayPerCall)
 	require.True(t, starts[2].After(postStreamStart) || starts[2].Equal(postStreamStart),
 		"unsafe1/safe3 should run after safe1+safe2 finished")
+
+	// Pin the "unsafe runs alone" Phase B contract: unsafe1 must run BEFORE
+	// safe3, and safe3 must wait for unsafe1 to finish (sequential, not
+	// parallel). The post-stream batcher partitions [unsafe1, safe3] into
+	// two batches: an unsafe singleton followed by a safe singleton.
+	require.Equal(t, "unsafe1", names[2], "third tool to start should be unsafe1")
+	require.Equal(t, "safe3", names[3], "fourth tool to start should be safe3")
+
+	unsafeStart := starts[2]
+	safe3Start := starts[3]
+	require.GreaterOrEqual(t, safe3Start.Sub(unsafeStart), exec.delayPerCall-5*time.Millisecond,
+		"safe3 should start at least delayPerCall after unsafe1 (sequential), got gap=%v",
+		safe3Start.Sub(unsafeStart))
 }
 
 // TestRun_StreamingDisabledMatchesNonStreaming: same script as test 1 with
@@ -374,6 +394,13 @@ func TestRun_StreamingAbortMidKickoffPairsAllEntries(t *testing.T) {
 	exec.addTool("safe_read")
 	exec.blockUntil = make(chan struct{}) // tools block until ctx cancel
 
+	// Deterministic in-flight synchronization: cancel only after all 3
+	// kickoffs have entered Execute. Avoids the timing flake of a fixed
+	// sleep that can lose a race on slow CI.
+	var inFlight sync.WaitGroup
+	inFlight.Add(3)
+	exec.onExecuteStart = func() { inFlight.Done() }
+
 	mk := func(id string) *llm.ToolCall {
 		return &llm.ToolCall{ID: id, Name: "safe_read", Input: json.RawMessage(`{}`)}
 	}
@@ -396,9 +423,9 @@ func TestRun_StreamingAbortMidKickoffPairsAllEntries(t *testing.T) {
 	events, err := rt.Run(ctx, "go", nil)
 	require.NoError(t, err)
 
-	// Cancel after a brief delay so the kickoffs are in flight.
+	// Cancel only once all 3 kickoffs have actually entered Execute.
 	go func() {
-		time.Sleep(30 * time.Millisecond)
+		inFlight.Wait()
 		cancel()
 	}()
 
@@ -579,4 +606,94 @@ loop:
 	require.Equal(t, "safe_read", subToolResultEvent.ToolCall.Name)
 	// Sanity: subagent ran the tool exactly once.
 	require.Equal(t, 1, subExec.callCount())
+}
+
+// TestRun_StreamingCortexAppendIsRaceClean is the C1 regression test.
+//
+// Phase D introduced kickoff goroutines that call dispatchTool mid-stream.
+// dispatchTool appends to the per-Run cortex thread slice under r.cortexMu.
+// The main goroutine, after the LLM stream loop ends, also appends the
+// assistant text to the same slice. Without locking that append, two
+// writers race on the same slice header.
+//
+// This test exercises the race window deterministically: 3 safe tools are
+// kicked off mid-stream and made to block inside Execute via blockUntil;
+// the LLM emits assistant text before EventDone; the main goroutine then
+// runs the assistant-text append while all 3 kickoff goroutines are still
+// inside dispatchTool. With -race, the unfixed code flags a data race;
+// the fix (locking the append under r.cortexMu) clears it.
+//
+// Cortex setup: a zero-valued *cortex.Cortex is enough — the runtime only
+// uses it as a non-nil sentinel for the cortex code paths in this test.
+// Recall is skipped (userMsg "ok" is a trivial phrase per ShouldRecall),
+// and ingest is skipped (IngestSource="cron" disables ShouldIngest gate).
+// So no methods are called on the zero-Cortex pointer.
+func TestRun_StreamingCortexAppendIsRaceClean(t *testing.T) {
+	t.Setenv("FELIX_STREAMING_TOOLS", "1")
+
+	exec := newTimedExecutor()
+	exec.markSafe("safe_read")
+	exec.addTool("safe_read")
+
+	// Tools block until released. We release AFTER the assistant-text append
+	// has had a chance to fire concurrently with the kickoffs being inside
+	// dispatchTool's locked region.
+	exec.blockUntil = make(chan struct{})
+
+	// Synchronize on all 3 kickoffs being inside Execute (i.e. past the
+	// dispatchTool locked append) before the LLM stream emits its closing
+	// text + EventDone. This guarantees the race window is open when the
+	// main goroutine performs its assistant-text append.
+	var inFlight sync.WaitGroup
+	inFlight.Add(3)
+	exec.onExecuteStart = func() { inFlight.Done() }
+
+	mk := func(id string) *llm.ToolCall {
+		return &llm.ToolCall{ID: id, Name: "safe_read", Input: json.RawMessage(`{}`)}
+	}
+	scriptedLLM := &scriptedStreamLLM{events: []scriptedStreamEvent{
+		{typ: llm.EventToolCallDone, toolCall: mk("tc_0")},
+		{typ: llm.EventToolCallDone, toolCall: mk("tc_1")},
+		{typ: llm.EventToolCallDone, toolCall: mk("tc_2")},
+		// Hold the stream open briefly so the kickoffs all enter Execute
+		// (and are blocked inside it) before assistant text + EventDone.
+		{delay: 50 * time.Millisecond, typ: llm.EventTextDelta, text: "all done"},
+		{typ: llm.EventDone},
+	}}
+
+	rt := &Runtime{
+		LLM:          scriptedLLM,
+		Tools:        exec,
+		Session:      session.NewSession("a", "k"),
+		AgentID:      "a",
+		Model:        "test",
+		MaxTurns:     2,
+		Cortex:       &cortex.Cortex{}, // non-nil sentinel; never invoked
+		IngestSource: "cron",           // disables deferred IngestThreadAsync
+	}
+
+	// Trivial userMsg "ok" → ShouldRecall returns false → no Recall call on
+	// the zero Cortex. Combined with IngestSource="cron" (disables ingest),
+	// the zero Cortex is safe to leave dangling for the duration of the run.
+	events, err := rt.Run(context.Background(), "ok", nil)
+	require.NoError(t, err)
+
+	// Release tool blockers only after all 3 kickoffs have entered Execute
+	// AND given the main goroutine time to process the LLM's tail text +
+	// run the assistant-text append concurrently with the in-flight tool
+	// goroutines (which are still holding pointers to `thread`).
+	go func() {
+		inFlight.Wait()
+		// Small grace so the main goroutine reaches its post-stream assistant
+		// append while kickoffs are still parked inside dispatchTool's
+		// post-Execute locked region (or about to enter it after release).
+		time.Sleep(20 * time.Millisecond)
+		close(exec.blockUntil)
+	}()
+
+	// Drain.
+	for range events {
+	}
+
+	require.Equal(t, 3, exec.callCount(), "all 3 kickoffs should have executed")
 }

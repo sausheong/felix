@@ -468,10 +468,16 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			if textContent.Len() > 0 {
 				r.Session.Append(session.AssistantMessageEntry(textContent.String()))
 				if r.Cortex != nil {
+					// Phase D introduced kickoff goroutines that may still be
+					// inside dispatchTool appending to the same `thread` slice
+					// under r.cortexMu. Take the lock here so the assistant-
+					// text append is serialized against those concurrent writers.
+					r.cortexMu.Lock()
 					thread = append(thread, conversation.Message{
 						Role:    "assistant",
 						Content: textContent.String(),
 					})
+					r.cortexMu.Unlock()
 				}
 			}
 
