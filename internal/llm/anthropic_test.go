@@ -61,7 +61,7 @@ func TestAnthropic_ConsecutiveToolResultsCoalesce(t *testing.T) {
 		{Role: "assistant", Content: "done"},
 	}
 
-	got := buildAnthropicMessages(in)
+	got := buildAnthropicMessages(in, false)
 
 	// Expected shape: user(text), assistant(3 tool_uses), user(3 tool_results), assistant
 	require.Len(t, got, 4, "expected 4 messages, got %d", len(got))
@@ -89,7 +89,7 @@ func TestAnthropic_SingleToolResultStillSeparate(t *testing.T) {
 		{Role: "assistant", Content: "done"},
 	}
 
-	got := buildAnthropicMessages(in)
+	got := buildAnthropicMessages(in, false)
 
 	require.Len(t, got, 4)
 	assert.Equal(t, []string{"X"}, toolUseIDs(t, got[1]))
@@ -122,7 +122,7 @@ func TestAnthropic_ToolResultRunInterspersedWithText(t *testing.T) {
 		{Role: "user", Content: "trailing text"},
 	}
 
-	got := buildAnthropicMessages(in)
+	got := buildAnthropicMessages(in, false)
 
 	// Expected: assistant, user(1 tr), user(text), assistant, user(2 tr), user(text)
 	require.Len(t, got, 6)
@@ -184,7 +184,7 @@ func TestAnthropic_ToolResultsWithImages(t *testing.T) {
 		},
 	}
 
-	got := buildAnthropicMessages(in)
+	got := buildAnthropicMessages(in, false)
 
 	// Expected: assistant(3 tool_uses), user(3 tool_results coalesced).
 	require.Len(t, got, 2)
@@ -250,4 +250,45 @@ func TestAnthropicSystemSkipsEmptyParts(t *testing.T) {
 	})
 	require.Len(t, got, 1)
 	require.Equal(t, "real", got[0].Text)
+}
+
+func TestBuildAnthropicMessagesCacheLastTextBlock(t *testing.T) {
+	in := []Message{
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "ok"},
+		{Role: "user", Content: "second"},
+	}
+	got := buildAnthropicMessages(in, true)
+	require.Len(t, got, 3)
+	last := got[len(got)-1]
+	blocks := last.Content
+	require.NotEmpty(t, blocks)
+	cc := blocks[len(blocks)-1].GetCacheControl()
+	require.NotNil(t, cc)
+	require.Equal(t, "ephemeral", string(cc.Type))
+}
+
+func TestBuildAnthropicMessagesNoMarkerWhenCacheLastFalse(t *testing.T) {
+	in := []Message{{Role: "user", Content: "hi"}}
+	got := buildAnthropicMessages(in, false)
+	require.Len(t, got, 1)
+	blocks := got[0].Content
+	require.NotEmpty(t, blocks)
+	cc := blocks[len(blocks)-1].GetCacheControl()
+	if cc != nil {
+		require.Empty(t, string(cc.Type), "no cache_control should be emitted when CacheLastMessage=false")
+	}
+}
+
+func TestBuildAnthropicMessagesCacheLastToolResult(t *testing.T) {
+	in := []Message{
+		{Role: "assistant", Content: "thinking"},
+		{Role: "user", ToolCallID: "tc_1", Content: "tool output"},
+	}
+	got := buildAnthropicMessages(in, true)
+	last := got[len(got)-1]
+	require.NotEmpty(t, last.Content)
+	cc := last.Content[len(last.Content)-1].GetCacheControl()
+	require.NotNil(t, cc)
+	require.Equal(t, "ephemeral", string(cc.Type))
 }
