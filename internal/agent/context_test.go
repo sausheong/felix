@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/sausheong/felix/internal/config"
+	"github.com/sausheong/felix/internal/memory"
+	"github.com/sausheong/felix/internal/skill"
 	"github.com/stretchr/testify/require"
 )
 
@@ -82,4 +84,26 @@ func TestBuildStaticSystemPromptByteStableAcrossCalls(t *testing.T) {
 	a := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file"}, "summary", "index")
 	b := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file"}, "summary", "index")
 	require.Equal(t, a, b, "BuildStaticSystemPrompt must be deterministic")
+}
+
+func TestBuildDynamicSystemPromptSuffixAllSources(t *testing.T) {
+	skills := []skill.Skill{{Name: "foo", Body: "FOO BODY"}}
+	mem := []memory.Entry{{ID: "m1", Title: "Mem One", Content: "memory body"}}
+	cortex := "\n\n## Cortex hint\n..."
+
+	got := buildDynamicSystemPromptSuffix(skills, mem, cortex)
+	require.Contains(t, got, "FOO BODY")
+	require.Contains(t, got, "Mem One")
+	require.Contains(t, got, "memory body")
+	require.Contains(t, got, "Cortex hint")
+}
+
+func TestBuildDynamicSystemPromptSuffixEmpty(t *testing.T) {
+	got := buildDynamicSystemPromptSuffix(nil, nil, "")
+	require.Equal(t, "", got)
+}
+
+func TestBuildDynamicSystemPromptSuffixCortexOnly(t *testing.T) {
+	got := buildDynamicSystemPromptSuffix(nil, nil, "\n\nCORTEX")
+	require.Equal(t, "\n\nCORTEX", got)
 }

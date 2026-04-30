@@ -10,7 +10,9 @@ import (
 
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
+	"github.com/sausheong/felix/internal/skill"
 )
 
 const maxToolResultLen = 4000 // truncate tool results longer than this
@@ -212,6 +214,28 @@ func BuildStaticSystemPrompt(
 	}
 
 	return base
+}
+
+// buildDynamicSystemPromptSuffix concatenates the per-turn dynamic context
+// — matched skill bodies, matched memory entries, and the cortex hint —
+// into a single string the runtime sends as the second (un-cached)
+// SystemPromptPart. Returns "" when all inputs are empty/nil.
+func buildDynamicSystemPromptSuffix(
+	matchedSkills []skill.Skill,
+	matchedMemory []memory.Entry,
+	cortexContext string,
+) string {
+	var sb strings.Builder
+	if extra := skill.FormatForPrompt(matchedSkills); extra != "" {
+		sb.WriteString(extra)
+	}
+	if extra := memory.FormatForPrompt(matchedMemory); extra != "" {
+		sb.WriteString(extra)
+	}
+	if cortexContext != "" {
+		sb.WriteString(cortexContext)
+	}
+	return sb.String()
 }
 
 // assembleMessages converts session history into LLM messages.
