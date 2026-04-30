@@ -38,12 +38,16 @@ func detectImageMIME(data []byte, hint string) string {
 
 // MaxAgentMemoryBytes caps the total bytes of FELIX.md / AGENTS.md content
 // injected into the static system prompt. Mirrors Claude Code's
-// MAX_MEMORY_CHARACTER_COUNT (claudemd.ts) at 40 KB.
+// MAX_MEMORY_CHARACTER_COUNT (claudemd.ts) at 40 KB. This is a soft cap:
+// the truncation marker (~50 bytes) plus the final section's header may
+// push the actual returned string over the limit by up to ~200 bytes.
 const MaxAgentMemoryBytes = 40 * 1024
 
 // memoryTruncationNotice is the marker LoadAgentMemoryFiles appends when
 // the cumulative memory-file content would push past MaxAgentMemoryBytes.
-const memoryTruncationNotice = "\n\n[truncated — over 40 KB total agent memory]"
+// Built from MaxAgentMemoryBytes so the user-visible "40 KB" stays in sync
+// with the constant if the cap is ever tuned.
+var memoryTruncationNotice = fmt.Sprintf("\n\n[truncated — over %d KB total agent memory]", MaxAgentMemoryBytes/1024)
 
 const defaultIdentityBase = `You are Felix, an AI agent. Conduct yourself professionally and politely. Be concise and direct. When executing tasks, think step by step and use your tools to accomplish the user's goals. When you need to call multiple independent tools to gather information, emit them in a single response (parallel tool calls) rather than waiting for each one — this cuts response latency on local models.`
 
@@ -459,7 +463,12 @@ func LoadAgentMemoryFiles(workspace string) string {
 			candidate{filepath.Join(workspace, "AGENTS.md"), "Project memory"},
 		)
 	}
-	if home := os.Getenv("HOME"); home != "" {
+	// os.UserHomeDir resolves $HOME on unix and %USERPROFILE% on Windows;
+	// returns an error (and we skip) when neither is set. The
+	// TestLoadAgentMemoryFilesEmptyHome case sets HOME="" and still expects
+	// graceful skip — UserHomeDir returns an error in that scenario which we
+	// treat as "no home leg to walk".
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		candidates = append(candidates,
 			candidate{filepath.Join(home, "FELIX.md"), "User memory"},
 			candidate{filepath.Join(home, "AGENTS.md"), "User memory"},
