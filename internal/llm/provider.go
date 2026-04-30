@@ -63,9 +63,10 @@ type Diagnostic struct {
 // support prompt caching attach a cache marker to parts where Cache=true;
 // providers that don't simply concatenate Text fields together.
 type SystemPromptPart struct {
-	Text  string
-	Cache bool // request that the prefix up to and including this part be
-	// cached. Anthropic-only; ignored elsewhere.
+	Text string
+	// Cache requests that the prefix up to and including this part be cached.
+	// Anthropic-only; ignored elsewhere.
+	Cache bool
 }
 
 // ReasoningMode is the unified reasoning/thinking knob across providers.
