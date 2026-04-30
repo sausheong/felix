@@ -140,6 +140,7 @@ func BuildStaticSystemPrompt(
 	toolNames []string,
 	configSummary string,
 	skillsIndex string,
+	memoryFiles string,
 ) string {
 	var base string
 	if systemPrompt != "" {
@@ -166,6 +167,9 @@ func BuildStaticSystemPrompt(
 	}
 	if skillsIndex != "" {
 		base += skillsIndex
+	}
+	if memoryFiles != "" {
+		base += memoryFiles
 	}
 
 	return base

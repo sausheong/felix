@@ -85,6 +85,7 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 	staticPrompt := BuildStaticSystemPrompt(
 		a.Workspace, a.SystemPrompt, a.ID, a.Name,
 		toolNames, configSummary, skillsIndex,
+		"", // memoryFiles — wired in Task 5
 	)
 
 	return &Runtime{

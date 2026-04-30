@@ -56,6 +56,7 @@ func TestBuildStaticSystemPromptWithIdentityFile(t *testing.T) {
 		[]string{"read_file"},
 		"Configured channels: cli",
 		"\n\n## Skills Index\n\n- foo",
+		"", // memoryFiles
 	)
 	require.Contains(t, got, "CUSTOM IDENTITY")
 	require.Contains(t, got, `"Alpha" agent (id: alpha)`)
@@ -67,14 +68,14 @@ func TestBuildStaticSystemPromptConfigOverride(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "IDENTITY.md"), []byte("FROM_IDENTITY_FILE"), 0o644))
 
-	got := BuildStaticSystemPrompt(dir, "FROM CONFIG", "id", "Name", nil, "", "")
+	got := BuildStaticSystemPrompt(dir, "FROM CONFIG", "id", "Name", nil, "", "", "")
 	require.Contains(t, got, "FROM CONFIG")
 	require.NotContains(t, got, "FROM_IDENTITY_FILE")
 }
 
 func TestBuildStaticSystemPromptDefaultIdentity(t *testing.T) {
 	dir := t.TempDir() // no IDENTITY.md
-	got := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file", "bash"}, "", "")
+	got := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file", "bash"}, "", "", "")
 	require.Contains(t, got, defaultIdentityBase)
 	require.Contains(t, got, "read files")
 	require.Contains(t, got, "bash commands")
@@ -82,8 +83,8 @@ func TestBuildStaticSystemPromptDefaultIdentity(t *testing.T) {
 
 func TestBuildStaticSystemPromptByteStableAcrossCalls(t *testing.T) {
 	dir := t.TempDir()
-	a := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file"}, "summary", "index")
-	b := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file"}, "summary", "index")
+	a := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file"}, "summary", "index", "")
+	b := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file"}, "summary", "index", "")
 	require.Equal(t, a, b, "BuildStaticSystemPrompt must be deterministic")
 }
 
@@ -248,6 +249,19 @@ func TestLoadAgentMemoryFilesEmptyWorkspace(t *testing.T) {
 		got := LoadAgentMemoryFiles("")
 		require.Contains(t, got, "HOME_STILL_LOADS")
 	})
+}
+
+func TestBuildStaticSystemPromptIncludesMemoryFiles(t *testing.T) {
+	dir := t.TempDir()
+	got := BuildStaticSystemPrompt(
+		dir, "", "id", "Name",
+		[]string{"read_file"},
+		"",                  // configSummary
+		"",                  // skillsIndex
+		"\n\n## Project memory: /tmp/x\n\nUNIQUE_MEM_FILES_SENTINEL", // memoryFiles
+	)
+	require.Contains(t, got, "UNIQUE_MEM_FILES_SENTINEL")
+	require.Contains(t, got, "## Project memory:")
 }
 
 func TestFormatDateLine(t *testing.T) {
