@@ -292,3 +292,24 @@ func TestBuildAnthropicMessagesCacheLastToolResult(t *testing.T) {
 	require.NotNil(t, cc)
 	require.Equal(t, "ephemeral", string(cc.Type))
 }
+
+func TestBuildAnthropicMessagesCacheLastImageBlock(t *testing.T) {
+	// Image-bearing user message: the SDK lays out blocks as [image..., text?].
+	// With Content="" the trailing block is the image, so cache_control must
+	// land on the OfImage variant.
+	in := []Message{{
+		Role: "user",
+		Images: []ImageContent{
+			{MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}},
+		},
+	}}
+	got := buildAnthropicMessages(in, true)
+	require.Len(t, got, 1)
+	last := got[0]
+	require.NotEmpty(t, last.Content)
+	tail := last.Content[len(last.Content)-1]
+	require.NotNil(t, tail.OfImage, "expected last block to be an image variant")
+	cc := tail.GetCacheControl()
+	require.NotNil(t, cc)
+	require.Equal(t, "ephemeral", string(cc.Type))
+}
