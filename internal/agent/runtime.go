@@ -289,7 +289,8 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				cortexCh = nil
 			}
 
-			dynamicSuffix := buildDynamicSystemPromptSuffix(matchedSkills, matchedMemory, cortexContext)
+			// Task 6 will replace "" with the per-Run dateLine.
+			dynamicSuffix := buildDynamicSystemPromptSuffix("", matchedSkills, matchedMemory, cortexContext)
 
 			// Build the structured system prompt: static (cached) + dynamic
 			// (not cached).

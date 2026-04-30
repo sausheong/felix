@@ -93,7 +93,7 @@ func TestBuildDynamicSystemPromptSuffixAllSources(t *testing.T) {
 	mem := []memory.Entry{{ID: "m1", Title: "Mem One", Content: "memory body"}}
 	cortex := "\n\n## Cortex hint\n..."
 
-	got := buildDynamicSystemPromptSuffix(skills, mem, cortex)
+	got := buildDynamicSystemPromptSuffix("", skills, mem, cortex)
 	require.Contains(t, got, "FOO BODY")
 	require.Contains(t, got, "Mem One")
 	require.Contains(t, got, "memory body")
@@ -101,12 +101,12 @@ func TestBuildDynamicSystemPromptSuffixAllSources(t *testing.T) {
 }
 
 func TestBuildDynamicSystemPromptSuffixEmpty(t *testing.T) {
-	got := buildDynamicSystemPromptSuffix(nil, nil, "")
+	got := buildDynamicSystemPromptSuffix("", nil, nil, "")
 	require.Equal(t, "", got)
 }
 
 func TestBuildDynamicSystemPromptSuffixCortexOnly(t *testing.T) {
-	got := buildDynamicSystemPromptSuffix(nil, nil, "\n\nCORTEX")
+	got := buildDynamicSystemPromptSuffix("", nil, nil, "\n\nCORTEX")
 	require.Equal(t, "\n\nCORTEX", got)
 }
 
@@ -280,4 +280,26 @@ func TestFormatDateLine(t *testing.T) {
 			require.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestBuildDynamicSystemPromptSuffixIncludesDate(t *testing.T) {
+	got := buildDynamicSystemPromptSuffix(
+		"Today's date is 2026-05-01.",
+		nil, nil, "",
+	)
+	require.True(t, strings.HasPrefix(got, "Today's date is 2026-05-01."),
+		"date line must appear at the top of the dynamic suffix")
+}
+
+func TestBuildDynamicSystemPromptSuffixDatePrependedBeforeOtherSources(t *testing.T) {
+	skills := []skill.Skill{{Name: "foo", Body: "FOO_BODY"}}
+	got := buildDynamicSystemPromptSuffix(
+		"Today's date is 2026-05-01.",
+		skills, nil, "\n\nCORTEX_HINT",
+	)
+	dateIdx := strings.Index(got, "Today's date is")
+	skillIdx := strings.Index(got, "FOO_BODY")
+	cortexIdx := strings.Index(got, "CORTEX_HINT")
+	require.True(t, dateIdx >= 0 && skillIdx > dateIdx && cortexIdx > skillIdx,
+		"order must be date < skills < cortex; got %d %d %d", dateIdx, skillIdx, cortexIdx)
 }

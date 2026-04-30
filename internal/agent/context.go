@@ -182,11 +182,15 @@ func BuildStaticSystemPrompt(
 // into a single string the runtime sends as the second (un-cached)
 // SystemPromptPart. Returns "" when all inputs are empty/nil.
 func buildDynamicSystemPromptSuffix(
+	dateLine string,
 	matchedSkills []skill.Skill,
 	matchedMemory []memory.Entry,
 	cortexContext string,
 ) string {
 	var sb strings.Builder
+	if dateLine != "" {
+		sb.WriteString(dateLine)
+	}
 	if extra := skill.FormatForPrompt(matchedSkills); extra != "" {
 		sb.WriteString(extra)
 	}
