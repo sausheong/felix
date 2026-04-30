@@ -8,11 +8,12 @@ package mcp
 // Defined here so internal/config can return this type from
 // ResolveMCPServers without depending on Manager itself.
 type ManagerServerConfig struct {
-	ID         string
-	ToolPrefix string
-	Transport  string             // "http" | "stdio"
-	HTTP       *HTTPServerConfig  // populated when Transport == "http"
-	Stdio      *StdioServerConfig // populated when Transport == "stdio"
+	ID           string
+	ToolPrefix   string
+	Transport    string             // "http" | "stdio"
+	HTTP         *HTTPServerConfig  // populated when Transport == "http"
+	Stdio        *StdioServerConfig // populated when Transport == "stdio"
+	ParallelSafe bool               // operator-asserted: tools are pure/read-only and safe to parallelize
 }
 
 // HTTPServerConfig describes an HTTP-transport MCP server, including which

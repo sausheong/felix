@@ -899,3 +899,29 @@ func TestConfig_BuildPermissionChecker(t *testing.T) {
 	// Unknown agent: allow-all default
 	require.Equal(t, tools.DecisionAllow, checker.Check(ctx, "unknown", "anything", emptyInput).Behavior)
 }
+
+func TestConfig_MCPServer_ParallelSafe_RoundTripsThroughJSON5(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "felix.json5")
+	contents := `{
+        "agents": { "list": [{"id": "a", "model": "x/y"}] },
+        "mcp_servers": [{
+            "id": "trusted",
+            "enabled": true,
+            "parallelSafe": true,
+            "transport": "http",
+            "http": { "url": "http://example.com" }
+        }],
+    }`
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.MCPServers, 1)
+	require.True(t, cfg.MCPServers[0].ParallelSafe)
+
+	resolved, err := cfg.ResolveMCPServers()
+	require.NoError(t, err)
+	require.Len(t, resolved, 1)
+	require.True(t, resolved[0].ParallelSafe)
+}

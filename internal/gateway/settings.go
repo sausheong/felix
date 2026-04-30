@@ -1215,6 +1215,7 @@ html.dark .error-state { background: #450a0a; }
 				});
 
 				makeField(item, 'Enabled', 'toggle', !!s.enabled, function(v) { cfg.mcp_servers[idx].enabled = v; });
+				makeField(item, 'Parallel-safe', 'toggle', !!s.parallelSafe, function(v) { cfg.mcp_servers[idx].parallelSafe = v; });
 
 				if (s.transport === 'http') {
 					renderHTTPBlock(item, idx, s);
@@ -1245,6 +1246,7 @@ html.dark .error-state { background: #450a0a; }
 					}
 				},
 				enabled: true,
+				parallelSafe: false,
 				tool_prefix: ''
 			});
 			render();
