@@ -1559,6 +1559,26 @@ html.dark .error-state { background: #450a0a; }
 		// the conversation. Power users can override any of these via
 		// cortex.dbPath / cortex.provider / cortex.llmModel in felix.json5.
 
+		// Agent Loop — three knobs controlling tool dispatch behavior. Lives
+		// in the Intelligence panel because it's a runtime tuning control
+		// alongside Memory/Cortex; saving any of these takes effect on the
+		// next agent run via fsnotify hot-reload (no restart).
+		if (!cfg.agentLoop) cfg.agentLoop = {};
+		var al = cfg.agentLoop;
+
+		var alSec = makeSection(p, 'Agent Loop');
+		makeField(alSec, 'Streaming Tools (mid-stream tool kickoff)', 'toggle',
+			!!al.streamingTools,
+			function(v) { cfg.agentLoop.streamingTools = v; });
+
+		var alRow = makeRow(alSec);
+		// makeField('number', ...) already parses input to int via parseInt.
+		makeField(alRow, 'Max Tool Concurrency (0 = default 10)', 'number',
+			al.maxToolConcurrency || 0,
+			function(v) { cfg.agentLoop.maxToolConcurrency = v; });
+		makeField(alRow, 'Max Agent Depth (0 = default 3)', 'number',
+			al.maxAgentDepth || 0,
+			function(v) { cfg.agentLoop.maxAgentDepth = v; });
 	}
 
 	// === Security Panel ===

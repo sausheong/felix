@@ -378,6 +378,7 @@ func runChat(agentID, configPath, modelOverride string) error {
 		Memory:     memMgr,
 		Permission: permission,
 		CortexFn:   func(_ string) *cortex.Cortex { return cx },
+		AgentLoop:  cfg.AgentLoop,
 	}
 
 	// Shared provider resolver for subagent dispatch. CLI chat mode only

@@ -12,6 +12,7 @@ import (
 	"github.com/sausheong/cortex"
 	"github.com/sausheong/cortex/connector/conversation"
 	"github.com/sausheong/felix/internal/compaction"
+	"github.com/sausheong/felix/internal/config"
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
@@ -62,6 +63,12 @@ type Runtime struct {
 	Reasoning    llm.ReasoningMode // optional; zero value = ReasoningOff
 	Workspace    string
 	MaxTurns     int                 // safety limit for tool-use loops
+	// AgentLoop carries the agentLoop config block (concurrency cap, depth
+	// cap, streaming-tools toggle). Zero value → all readers fall back to
+	// env vars then compiled-in defaults. Populated by BuildRuntimeForAgent
+	// from RuntimeDeps.AgentLoop. Tests construct Runtime directly leave
+	// this zero so the env-var fallback continues to work for them.
+	AgentLoop    config.AgentLoopConfig
 	SystemPrompt string              // optional: inline system prompt (overrides IDENTITY.md)
 	Skills       *skill.Loader       // optional: skill loader for selective injection
 	Memory       *memory.Manager     // optional: memory manager for context retrieval
@@ -405,7 +412,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// stream order. kickoffStopped flips on the first unsafe call so
 			// every later call goes through the post-stream batcher (preserves
 			// the "unsafe runs alone" invariant).
-			streamingOn := streamingToolsEnabled()
+			streamingOn := r.streamingToolsEnabled()
 			kickoffs := map[string]chan kickoffResult{}
 			kickoffStopped := false
 

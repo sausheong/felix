@@ -704,6 +704,73 @@ func TestConfig_ApplyTaskToolToAllowlists_Idempotent(t *testing.T) {
 	assert.Equal(t, []string{"read_file", "task"}, cfg.Agents.List[0].Tools.Allow) // no duplicate
 }
 
+func TestConfig_AgentLoop_DefaultsToZero(t *testing.T) {
+	// DefaultConfig leaves AgentLoop zero so callers (Runtime methods) fall
+	// back to env vars / compiled defaults. The explicit defaulting (10/3/off)
+	// belongs to the readers, not to DefaultConfig — that way a user who
+	// removes the agentLoop block from felix.json5 gets the same behavior as
+	// one who never had it.
+	cfg := DefaultConfig()
+	assert.Equal(t, 0, cfg.AgentLoop.MaxToolConcurrency, "MaxToolConcurrency default is 0 (means: use env/default)")
+	assert.Equal(t, 0, cfg.AgentLoop.MaxAgentDepth, "MaxAgentDepth default is 0 (means: use env/default)")
+	assert.False(t, cfg.AgentLoop.StreamingTools, "StreamingTools default is false (means: check env)")
+}
+
+func TestConfig_AgentLoop_UnmarshalsExplicitValues(t *testing.T) {
+	raw := []byte(`{
+		"agents": { "list": [{"id": "a", "model": "x/y"}] },
+		"agentLoop": {
+			"maxToolConcurrency": 4,
+			"maxAgentDepth": 7,
+			"streamingTools": true
+		}
+	}`)
+	var cfg Config
+	require.NoError(t, json.Unmarshal(raw, &cfg))
+	assert.Equal(t, 4, cfg.AgentLoop.MaxToolConcurrency)
+	assert.Equal(t, 7, cfg.AgentLoop.MaxAgentDepth)
+	assert.True(t, cfg.AgentLoop.StreamingTools)
+}
+
+func TestConfig_AgentLoop_LoadFromJSON5File(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "felix.json5")
+	contents := `{
+		"agents": { "list": [{"id": "a", "model": "x/y"}] },
+		"agentLoop": {
+			// in-line comment is fine — JSON5 path
+			"maxToolConcurrency": 12,
+			"maxAgentDepth": 5,
+			"streamingTools": true,
+		},
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 12, cfg.AgentLoop.MaxToolConcurrency)
+	assert.Equal(t, 5, cfg.AgentLoop.MaxAgentDepth)
+	assert.True(t, cfg.AgentLoop.StreamingTools)
+}
+
+func TestConfig_UpdateFrom_CopiesAgentLoop(t *testing.T) {
+	// Hot-reload contract: a settings-page save round-trips through
+	// UpdateFrom, so AgentLoop edits must propagate to the in-memory
+	// Config used by the WebSocket handler.
+	dst := &Config{}
+	src := &Config{
+		AgentLoop: AgentLoopConfig{
+			MaxToolConcurrency: 7,
+			MaxAgentDepth:      9,
+			StreamingTools:     true,
+		},
+	}
+	dst.UpdateFrom(src)
+	assert.Equal(t, 7, dst.AgentLoop.MaxToolConcurrency)
+	assert.Equal(t, 9, dst.AgentLoop.MaxAgentDepth)
+	assert.True(t, dst.AgentLoop.StreamingTools)
+}
+
 func TestCompactionConfigMessageCapDefault(t *testing.T) {
 	cfg := DefaultConfig()
 	assert.Equal(t, 50, cfg.Agents.Defaults.Compaction.MessageCap,
