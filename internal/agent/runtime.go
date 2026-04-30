@@ -398,6 +398,17 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			var toolCalls []llm.ToolCall
 			gotFirstToken := false
 
+			// Phase D: streaming tool kickoff state. When streamingOn is true
+			// and a concurrency-safe tool_use completes mid-stream, we kick
+			// off dispatchTool in a goroutine instead of waiting for the
+			// stream to end. The post-stream block awaits each kickoff in
+			// stream order. kickoffStopped flips on the first unsafe call so
+			// every later call goes through the post-stream batcher (preserves
+			// the "unsafe runs alone" invariant).
+			streamingOn := streamingToolsEnabled()
+			kickoffs := map[string]chan kickoffResult{}
+			kickoffStopped := false
+
 			for event := range stream {
 				switch event.Type {
 				case llm.EventTextDelta:
@@ -416,9 +427,26 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					r.emit(AgentEvent{Type: EventToolCallStart, ToolCall: event.ToolCall})
 
 				case llm.EventToolCallDone:
-					if event.ToolCall != nil {
-						toolCalls = append(toolCalls, *event.ToolCall)
+					if event.ToolCall == nil {
+						continue
 					}
+					tc := *event.ToolCall
+					toolCalls = append(toolCalls, tc)
+					if !streamingOn || kickoffStopped {
+						continue
+					}
+					if !isCallConcurrencySafe(tc, r.Tools) {
+						kickoffStopped = true
+						continue
+					}
+					ch := make(chan kickoffResult, 1)
+					kickoffs[tc.ID] = ch
+					tcCopy := tc // capture by value before launching goroutine
+					go func() {
+						result, aborted := r.dispatchTool(ctx, tcCopy, cortexThreadOrNil(r.Cortex, &thread))
+						r.emitToolResult(tr, turn, tcCopy, result, aborted)
+						ch <- kickoffResult{aborted: aborted}
+					}()
 
 				case llm.EventDone:
 					if event.Usage != nil && r.calibrator != nil {
@@ -426,6 +454,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					}
 
 				case llm.EventError:
+					drainKickoffs(kickoffs)
 					r.emit(AgentEvent{Type: EventError, Error: event.Error})
 					return
 				}
@@ -448,14 +477,36 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 
 			// If no tool calls, we're done
 			if len(toolCalls) == 0 {
+				if len(kickoffs) > 0 {
+					// Defensive: a kickoff implies a tool_use was added to
+					// toolCalls. If somehow not, drain to avoid leaking
+					// goroutines.
+					drainKickoffs(kickoffs)
+				}
 				tr.Mark("agent.done", "turn", turn, "reason", "no_tool_calls")
 				r.emit(AgentEvent{Type: EventDone})
 				return
 			}
 
+			// Resolve kickoffs in stream order; collect non-kicked-off tools
+			// for the post-stream batcher.
+			var pending []llm.ToolCall
+			for _, tc := range toolCalls {
+				if ch, ok := kickoffs[tc.ID]; ok {
+					kr := <-ch
+					if kr.aborted {
+						drainKickoffsExcept(kickoffs, tc.ID)
+						r.emit(AgentEvent{Type: EventAborted})
+						return
+					}
+					continue
+				}
+				pending = append(pending, tc)
+			}
+
 			// Partition tool calls into batches. Concurrency-safe consecutive
 			// calls run in parallel via runBatch; unsafe calls run sequentially.
-			batches := partitionToolCalls(toolCalls, r.Tools)
+			batches := partitionToolCalls(pending, r.Tools)
 			for _, b := range batches {
 				if r.runBatch(ctx, b, cortexThreadOrNil(r.Cortex, &thread), turn, tr) {
 					r.emit(AgentEvent{Type: EventAborted})
