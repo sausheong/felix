@@ -178,9 +178,11 @@ func BuildStaticSystemPrompt(
 }
 
 // buildDynamicSystemPromptSuffix concatenates the per-turn dynamic context
-// — matched skill bodies, matched memory entries, and the cortex hint —
-// into a single string the runtime sends as the second (un-cached)
-// SystemPromptPart. Returns "" when all inputs are empty/nil.
+// — the date line, matched skill bodies, matched memory entries, and the
+// cortex hint — into a single string the runtime sends as the second
+// (un-cached) SystemPromptPart. The date line, when non-empty, appears at
+// the top so the model anchors on "today" before the per-turn content.
+// Returns "" when all inputs are empty/nil.
 func buildDynamicSystemPromptSuffix(
 	dateLine string,
 	matchedSkills []skill.Skill,
