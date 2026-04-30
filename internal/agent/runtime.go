@@ -247,6 +247,11 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 		var matchedSkills []skill.Skill
 		var matchedMemory []memory.Entry
 
+		// Computed once per Run so the date stays stable across turns of
+		// this request (avoids cache misses on long-running loops that
+		// happen to cross midnight).
+		dateLine := FormatDateLine(time.Now())
+
 		for turn := 0; turn < maxTurns; turn++ {
 			// Check for cancellation at the top of each turn
 			if ctx.Err() != nil {
@@ -289,8 +294,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				cortexCh = nil
 			}
 
-			// Task 6 will replace "" with the per-Run dateLine.
-			dynamicSuffix := buildDynamicSystemPromptSuffix("", matchedSkills, matchedMemory, cortexContext)
+			dynamicSuffix := buildDynamicSystemPromptSuffix(dateLine, matchedSkills, matchedMemory, cortexContext)
 
 			// Build the structured system prompt: static (cached) + dynamic
 			// (not cached).
