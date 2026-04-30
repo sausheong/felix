@@ -48,10 +48,10 @@ func (p *QwenProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan 
 	// Build messages
 	msgs := make([]openai.ChatCompletionMessage, 0, len(req.Messages)+1)
 
-	if req.SystemPrompt != "" {
+	if sysPrompt := qwenResolveSystemPrompt(req); sysPrompt != "" {
 		msgs = append(msgs, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
-			Content: req.SystemPrompt,
+			Content: sysPrompt,
 		})
 	}
 
@@ -336,4 +336,14 @@ func qwenSupportsThinking(model string) bool {
 		}
 	}
 	return false
+}
+
+// qwenResolveSystemPrompt returns the effective system prompt string,
+// preferring SystemPromptParts when present. Mirrors the OpenAI/Gemini
+// resolution helpers.
+func qwenResolveSystemPrompt(req ChatRequest) string {
+	if len(req.SystemPromptParts) > 0 {
+		return concatSystemPromptParts(req.SystemPromptParts)
+	}
+	return req.SystemPrompt
 }
