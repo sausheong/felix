@@ -37,76 +37,7 @@ func (p *AnthropicProvider) Models() []ModelInfo {
 
 func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
 	// Build messages
-	msgs := make([]anthropic.MessageParam, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		switch m.Role {
-		case "user":
-			if m.ToolCallID != "" {
-				// This is a tool result message
-				if len(m.Images) > 0 {
-					// Tool result with images: build content blocks with images + text
-					var content []anthropic.ToolResultBlockParamContentUnion
-					for _, img := range m.Images {
-						encoded := base64.StdEncoding.EncodeToString(img.Data)
-						content = append(content, anthropic.ToolResultBlockParamContentUnion{
-							OfImage: &anthropic.ImageBlockParam{
-								Source: anthropic.ImageBlockParamSourceUnion{
-									OfBase64: &anthropic.Base64ImageSourceParam{
-										Data:      encoded,
-										MediaType: anthropic.Base64ImageSourceMediaType(img.MimeType),
-									},
-								},
-							},
-						})
-					}
-					if m.Content != "" {
-						content = append(content, anthropic.ToolResultBlockParamContentUnion{
-							OfText: &anthropic.TextBlockParam{Text: m.Content},
-						})
-					}
-					toolBlock := anthropic.ToolResultBlockParam{
-						ToolUseID: m.ToolCallID,
-						IsError:   anthropic.Bool(m.IsError),
-						Content:   content,
-					}
-					msgs = append(msgs, anthropic.NewUserMessage(
-						anthropic.ContentBlockParamUnion{OfToolResult: &toolBlock},
-					))
-				} else {
-					msgs = append(msgs, anthropic.NewUserMessage(
-						anthropic.NewToolResultBlock(m.ToolCallID, m.Content, m.IsError),
-					))
-				}
-			} else if len(m.Images) > 0 {
-				var blocks []anthropic.ContentBlockParamUnion
-				for _, img := range m.Images {
-					encoded := base64.StdEncoding.EncodeToString(img.Data)
-					blocks = append(blocks, anthropic.NewImageBlockBase64(img.MimeType, encoded))
-				}
-				if m.Content != "" {
-					blocks = append(blocks, anthropic.NewTextBlock(m.Content))
-				}
-				msgs = append(msgs, anthropic.NewUserMessage(blocks...))
-			} else {
-				msgs = append(msgs, anthropic.NewUserMessage(anthropic.NewTextBlock(m.Content)))
-			}
-		case "assistant":
-			var blocks []anthropic.ContentBlockParamUnion
-			if m.Content != "" {
-				blocks = append(blocks, anthropic.NewTextBlock(m.Content))
-			}
-			for _, tc := range m.ToolCalls {
-				var input any
-				if err := json.Unmarshal(tc.Input, &input); err != nil {
-					input = map[string]any{}
-				}
-				blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, input, tc.Name))
-			}
-			if len(blocks) > 0 {
-				msgs = append(msgs, anthropic.NewAssistantMessage(blocks...))
-			}
-		}
-	}
+	msgs := buildAnthropicMessages(req.Messages)
 
 	// Build tools
 	tools := make([]anthropic.ToolUnionParam, 0, len(req.Tools))
@@ -348,4 +279,99 @@ func anthropicSupportsThinking(model string) bool {
 		}
 	}
 	return true
+}
+
+// buildAnthropicMessages converts the provider-neutral []Message into
+// Anthropic's []MessageParam. Consecutive tool-result user messages are
+// coalesced into a single user message with multiple tool_result content
+// blocks, which is what the Anthropic Messages API requires when an
+// assistant turn contained multiple tool_use blocks (e.g. parallel tool
+// calls). Without coalescing, the API rejects the second tool_result
+// because the immediately preceding message is itself a tool_result, not
+// an assistant message containing the matching tool_use.
+func buildAnthropicMessages(in []Message) []anthropic.MessageParam {
+	msgs := make([]anthropic.MessageParam, 0, len(in))
+	for i := 0; i < len(in); i++ {
+		m := in[i]
+		switch m.Role {
+		case "user":
+			if m.ToolCallID != "" {
+				// Collect a run of consecutive tool_result user messages.
+				var blocks []anthropic.ContentBlockParamUnion
+				for ; i < len(in); i++ {
+					cur := in[i]
+					if cur.Role != "user" || cur.ToolCallID == "" {
+						i-- // un-consume; outer loop will re-process
+						break
+					}
+					blocks = append(blocks, buildToolResultBlock(cur))
+				}
+				msgs = append(msgs, anthropic.NewUserMessage(blocks...))
+			} else if len(m.Images) > 0 {
+				var blocks []anthropic.ContentBlockParamUnion
+				for _, img := range m.Images {
+					encoded := base64.StdEncoding.EncodeToString(img.Data)
+					blocks = append(blocks, anthropic.NewImageBlockBase64(img.MimeType, encoded))
+				}
+				if m.Content != "" {
+					blocks = append(blocks, anthropic.NewTextBlock(m.Content))
+				}
+				msgs = append(msgs, anthropic.NewUserMessage(blocks...))
+			} else {
+				msgs = append(msgs, anthropic.NewUserMessage(anthropic.NewTextBlock(m.Content)))
+			}
+		case "assistant":
+			var blocks []anthropic.ContentBlockParamUnion
+			if m.Content != "" {
+				blocks = append(blocks, anthropic.NewTextBlock(m.Content))
+			}
+			for _, tc := range m.ToolCalls {
+				var input any
+				if err := json.Unmarshal(tc.Input, &input); err != nil {
+					input = map[string]any{}
+				}
+				blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, input, tc.Name))
+			}
+			if len(blocks) > 0 {
+				msgs = append(msgs, anthropic.NewAssistantMessage(blocks...))
+			}
+		}
+	}
+	return msgs
+}
+
+// buildToolResultBlock converts a single tool_result Message (a user
+// message with ToolCallID set) into an Anthropic ContentBlockParamUnion
+// suitable for inclusion in a NewUserMessage. Preserves the
+// with-images and without-images branches: image-bearing results build
+// a structured content slice; plain results use the SDK helper.
+func buildToolResultBlock(m Message) anthropic.ContentBlockParamUnion {
+	if len(m.Images) > 0 {
+		var content []anthropic.ToolResultBlockParamContentUnion
+		for _, img := range m.Images {
+			encoded := base64.StdEncoding.EncodeToString(img.Data)
+			content = append(content, anthropic.ToolResultBlockParamContentUnion{
+				OfImage: &anthropic.ImageBlockParam{
+					Source: anthropic.ImageBlockParamSourceUnion{
+						OfBase64: &anthropic.Base64ImageSourceParam{
+							Data:      encoded,
+							MediaType: anthropic.Base64ImageSourceMediaType(img.MimeType),
+						},
+					},
+				},
+			})
+		}
+		if m.Content != "" {
+			content = append(content, anthropic.ToolResultBlockParamContentUnion{
+				OfText: &anthropic.TextBlockParam{Text: m.Content},
+			})
+		}
+		toolBlock := anthropic.ToolResultBlockParam{
+			ToolUseID: m.ToolCallID,
+			IsError:   anthropic.Bool(m.IsError),
+			Content:   content,
+		}
+		return anthropic.ContentBlockParamUnion{OfToolResult: &toolBlock}
+	}
+	return anthropic.NewToolResultBlock(m.ToolCallID, m.Content, m.IsError)
 }
