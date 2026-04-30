@@ -708,6 +708,17 @@ func (r *Runtime) dispatchTool(
 // this turn. The returned result includes the appropriate Error message for
 // permission-denied or aborted cases.
 func (r *Runtime) executeToolKickoff(ctx context.Context, tc llm.ToolCall) (result tools.ToolResult, aborted bool) {
+	// Diagnostic: log when this kickoff goroutine ENTERS Execute and when it
+	// EXITS. Lets us tell whether parallelism is happening at Felix's level
+	// (multiple Execute calls overlap) vs being serialized downstream (in the
+	// MCP SDK or server).
+	enter := time.Now().UnixMilli()
+	slog.Info("kickoff: enter execute", "tool", tc.Name, "id", tc.ID, "at_ms", enter)
+	defer func() {
+		exit := time.Now().UnixMilli()
+		slog.Info("kickoff: exit execute", "tool", tc.Name, "id", tc.ID, "at_ms", exit, "wall_ms", exit-enter)
+	}()
+
 	// Permission gate.
 	if r.Permission != nil {
 		if d := r.Permission.Check(ctx, r.AgentID, tc.Name, tc.Input); d.Behavior == tools.DecisionDeny {
