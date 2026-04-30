@@ -168,6 +168,52 @@ func BuildConfigSummary(cfg *config.Config) string {
 	return sb.String()
 }
 
+// BuildStaticSystemPrompt assembles the portion of the system prompt that
+// does not change across turns within a Run: identity (from systemPrompt
+// arg, IDENTITY.md, or the built-in default tailored to toolNames), agent
+// self-identity, the configuration/data dir paths, the pre-computed
+// configSummary, and the pre-computed skillsIndex.
+//
+// Pure with one allowed exception: it reads IDENTITY.md from workspace
+// when systemPrompt is empty. Caller pre-resolves configSummary and
+// skillsIndex so neither config.Load nor skill index assembly happens
+// per-turn. Suitable to call once at Runtime construction.
+func BuildStaticSystemPrompt(
+	workspace, systemPrompt, agentID, agentName string,
+	toolNames []string,
+	configSummary string,
+	skillsIndex string,
+) string {
+	var base string
+	if systemPrompt != "" {
+		base = systemPrompt
+	} else {
+		identityPath := filepath.Join(workspace, "IDENTITY.md")
+		data, err := os.ReadFile(identityPath)
+		if err != nil {
+			base = buildDefaultIdentity(toolNames)
+		} else {
+			base = string(data)
+		}
+	}
+
+	if agentID != "" {
+		base += fmt.Sprintf("\n\nYou are the %q agent (id: %s).", agentName, agentID)
+	}
+
+	base += fmt.Sprintf("\n\nYour configuration file is at %s and your data directory is %s.",
+		config.DefaultConfigPath(), config.DefaultDataDir())
+
+	if configSummary != "" {
+		base += "\n\n" + configSummary
+	}
+	if skillsIndex != "" {
+		base += skillsIndex
+	}
+
+	return base
+}
+
 // assembleMessages converts session history into LLM messages.
 // It ensures that every tool_use block in an assistant message has a
 // corresponding tool_result in the next user message. Orphaned tool calls
