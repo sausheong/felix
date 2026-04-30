@@ -142,8 +142,8 @@ func (p *GeminiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 
 	config := &genai.GenerateContentConfig{}
 
-	if req.SystemPrompt != "" {
-		config.SystemInstruction = genai.NewContentFromText(req.SystemPrompt, "user")
+	if sysPrompt := geminiResolveSystemPrompt(req); sysPrompt != "" {
+		config.SystemInstruction = genai.NewContentFromText(sysPrompt, "user")
 	}
 
 	if req.MaxTokens > 0 {
@@ -291,5 +291,16 @@ func geminiSupportsThinking(model string) bool {
 		}
 	}
 	return false
+}
+
+// geminiResolveSystemPrompt returns the effective system prompt string,
+// preferring SystemPromptParts when present. Mirrors the OpenAI/Qwen
+// resolution path but the per-provider helper avoids importing the
+// genai SDK in test code.
+func geminiResolveSystemPrompt(req ChatRequest) string {
+	if len(req.SystemPromptParts) > 0 {
+		return concatSystemPromptParts(req.SystemPromptParts)
+	}
+	return req.SystemPrompt
 }
 
