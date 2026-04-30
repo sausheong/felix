@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -481,4 +483,47 @@ func TestRuntimeNonAnthropicHasCacheLastMessageFalse(t *testing.T) {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	require.False(t, rec.requests[0].CacheLastMessage)
+}
+
+func TestRuntimeStaticPromptIncludesMemoryFilesContent(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, os.WriteFile(
+		filepath.Join(workspace, "FELIX.md"),
+		[]byte("RUNTIME_MEMFILE_INTEGRATION_SENTINEL"),
+		0o644,
+	))
+
+	rec := &recordingProvider{reply: "ok"}
+	sess := session.NewSession("test-agent", "test-key")
+	cfg := &config.Config{}
+	cfg.Agents.List = []config.AgentConfig{
+		{
+			ID:        "a",
+			Name:      "A",
+			Workspace: workspace,
+			Model:     "anthropic/claude-sonnet-4-5",
+		},
+	}
+	rt, err := BuildRuntimeForAgent(
+		RuntimeDeps{Config: cfg},
+		RuntimeInputs{Provider: rec, Tools: tools.NewRegistry(), Session: sess},
+		&cfg.Agents.List[0],
+	)
+	require.NoError(t, err)
+	rt.MaxTurns = 5
+
+	ev, err := rt.Run(context.Background(), "hi", nil)
+	require.NoError(t, err)
+	for range ev {
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.GreaterOrEqual(t, len(rec.requests), 1)
+	staticPart := rec.requests[0].SystemPromptParts[0].Text
+	require.Contains(t, staticPart, "RUNTIME_MEMFILE_INTEGRATION_SENTINEL")
+	require.Contains(t, staticPart, "## Project memory:")
+	require.True(t, rec.requests[0].SystemPromptParts[0].Cache,
+		"static part with memory files must still be cache-marked")
 }
