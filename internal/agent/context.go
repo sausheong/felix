@@ -78,6 +78,18 @@ func buildDefaultIdentity(toolNames []string) string {
 // per-turn configSummary() that read felix.json5 from disk.
 //
 // Returns "" for a nil config or one with no agents and no enabled channels.
+//
+// Lifecycle: deliberately captured at Runtime construction time so the
+// cached prompt prefix stays byte-stable across the Runtime's lifetime.
+// New Runtimes built after a hot-reload (e.g., fsnotify-driven config
+// reload, settings UI save) pick up the updated summary; in-flight
+// Runtimes do not.
+//
+// Concurrency: this reads cfg.Agents.List and cfg.Channels without taking
+// cfg's RWMutex. Callers must serialize against config.UpdateFrom — in
+// practice this is automatic because BuildConfigSummary is invoked only
+// from BuildRuntimeForAgent, which runs synchronously at session start
+// before any concurrent reload would race with it.
 func BuildConfigSummary(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
