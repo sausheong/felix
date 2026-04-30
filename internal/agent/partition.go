@@ -30,11 +30,6 @@ func partitionToolCalls(tcs []llm.ToolCall, ex tools.Executor) []batch {
 	out := []batch{}
 	for _, tc := range tcs {
 		safe := isCallConcurrencySafe(tc, ex)
-		// One INFO log per tool so operators can see whether parallelSafe
-		// is taking effect at runtime. Cheap (one log per tool call) and
-		// matches the existing trace-mark cadence.
-		slog.Info("partition: classified tool call",
-			"tool", tc.Name, "concurrencySafe", safe)
 		// Append to the previous safe batch if both are safe; otherwise start
 		// a new batch. Unsafe calls always start their own batch (single-call).
 		if safe && len(out) > 0 && out[len(out)-1].concurrencySafe {
@@ -42,14 +37,6 @@ func partitionToolCalls(tcs []llm.ToolCall, ex tools.Executor) []batch {
 			continue
 		}
 		out = append(out, batch{concurrencySafe: safe, calls: []llm.ToolCall{tc}})
-	}
-	// One INFO log per partition pass summarising the resulting batch shape.
-	if len(tcs) > 1 {
-		shape := make([]int, 0, len(out))
-		for _, b := range out {
-			shape = append(shape, len(b.calls))
-		}
-		slog.Info("partition: built batches", "calls", len(tcs), "batches", len(out), "shape", shape)
 	}
 	return out
 }

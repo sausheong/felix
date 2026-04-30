@@ -27,6 +27,13 @@ var iconBytes []byte
 var (
 	version = "dev"
 	commit  = "none"
+
+	// logFile is opened once in initLogFile() and passed into startup.Options
+	// so the gateway's LogBuffer wraps a TextHandler writing here. Without
+	// this, startup.go's slog.SetDefault would silently override the file
+	// handler with one writing to os.Stderr (which is /dev/null in a .app
+	// bundle), leaving felix-app.log empty.
+	logFile *os.File
 )
 
 // firstRun is set in main() before the data dir is created, so onReady()
@@ -49,7 +56,12 @@ func main() {
 	systray.Run(onReady, onQuit)
 }
 
-// initLogFile redirects slog to a log file in the data directory.
+// initLogFile opens the log file in the data directory and stashes the
+// handle in package-global logFile. We DO NOT call slog.SetDefault here:
+// startup.StartGateway also installs a slog default (its LogBuffer that
+// powers the /logs UI tab), and whichever runs last wins. To keep both
+// the file and the in-memory buffer working, the file is passed into
+// startup.Options.LogWriter and startup wires the LogBuffer over it.
 func initLogFile() {
 	dir := config.DefaultDataDir()
 	os.MkdirAll(dir, 0o755)
@@ -58,7 +70,7 @@ func initLogFile() {
 	if err != nil {
 		return
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(f, nil)))
+	logFile = f
 }
 
 // loadShellEnv runs an interactive login shell to dump its environment,
@@ -108,8 +120,9 @@ func onReady() {
 	}
 	systray.SetTooltip("Felix")
 
-	// Start gateway in the background
-	result, err := startup.StartGateway("", version, startup.Options{})
+	// Start gateway in the background. Pass the log file (opened in
+	// initLogFile) so the LogBuffer wraps a TextHandler writing to it.
+	result, err := startup.StartGateway("", version, startup.Options{LogWriter: logFile})
 	if err != nil {
 		slog.Error("failed to start gateway", "error", err)
 		showError(fmt.Sprintf("Felix failed to start:\n\n%v\n\nCheck config at:\n%s", err, config.DefaultConfigPath()))
@@ -171,7 +184,7 @@ func onReady() {
 			case <-mRestart.ClickedCh:
 				slog.Info("restarting gateway")
 				result.Cleanup()
-				newResult, err := startup.StartGateway("", version, startup.Options{})
+				newResult, err := startup.StartGateway("", version, startup.Options{LogWriter: logFile})
 				if err != nil {
 					slog.Error("failed to restart gateway", "error", err)
 					continue
