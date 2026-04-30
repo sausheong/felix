@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -260,20 +261,33 @@ func (a *CronSchedulerAdapter) Restore() error {
 	return nil
 }
 
-// Options configures gateway startup behavior. Reserved for future use.
-type Options struct{}
+// Options configures gateway startup behavior.
+type Options struct {
+	// LogWriter is where the underlying slog TextHandler writes. Defaults to
+	// os.Stderr when nil. Set this to a file (e.g. ~/.felix/felix-app.log) so
+	// macOS .app bundles and Windows GUI apps — which have no console — get
+	// persistent diagnostic logs.
+	LogWriter io.Writer
+}
 
 // StartGateway starts the full gateway server and returns the result.
 // The caller is responsible for calling Result.Cleanup() on shutdown and
 // starting the HTTP server via Result.Server.Start() in a goroutine.
 func StartGateway(configPath, version string, opts ...Options) (*Result, error) {
-	_ = opts
+	var opt Options
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	logWriter := opt.LogWriter
+	if logWriter == nil {
+		logWriter = os.Stderr
+	}
 	// Install a tee log handler that captures entries for the /logs page
-	// while forwarding to a stderr handler. We create a fresh TextHandler
-	// rather than using slog.Default().Handler() because in Go 1.22+ the
-	// default handler routes through log.Logger which routes back through
+	// while forwarding to logWriter. We create a fresh TextHandler rather
+	// than using slog.Default().Handler() because in Go 1.22+ the default
+	// handler routes through log.Logger which routes back through
 	// slog.Default(), creating a deadlock when LogBuffer replaces it.
-	logBuf := gateway.NewLogBuffer(2000, slog.NewTextHandler(os.Stderr, nil))
+	logBuf := gateway.NewLogBuffer(2000, slog.NewTextHandler(logWriter, nil))
 	slog.SetDefault(slog.New(logBuf))
 
 	cfg, err := config.Load(configPath)
