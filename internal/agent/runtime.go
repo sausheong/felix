@@ -292,12 +292,8 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			dynamicSuffix := buildDynamicSystemPromptSuffix(matchedSkills, matchedMemory, cortexContext)
 
 			// Build the structured system prompt: static (cached) + dynamic
-			// (not cached). Fallback to legacy assembleSystemPrompt for tests
-			// that construct Runtime{...} directly without StaticSystemPrompt.
+			// (not cached).
 			staticText := r.StaticSystemPrompt
-			if staticText == "" {
-				staticText = assembleSystemPrompt(r.Workspace, r.SystemPrompt, r.AgentID, r.AgentName, r.Tools.Names())
-			}
 			parts := []llm.SystemPromptPart{
 				{Text: staticText, Cache: true},
 			}
