@@ -23,6 +23,11 @@ type RuntimeDeps struct {
 	// CortexFn returns the per-agent Cortex instance for the given model
 	// string. Nil-safe at call site (returns nil if cortex is disabled).
 	CortexFn func(model string) *cortex.Cortex
+	// AgentLoop carries the agentLoop config block (concurrency cap, depth
+	// cap, streaming-tools toggle). Copied verbatim into every Runtime built
+	// by BuildRuntimeForAgent. Zero value → readers fall back to env vars
+	// then compiled-in defaults.
+	AgentLoop config.AgentLoopConfig
 }
 
 // RuntimeInputs holds the per-Runtime-instance inputs that genuinely vary
@@ -77,5 +82,6 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 		Permission:   deps.Permission,
 		Compaction:   inputs.Compaction,
 		IngestSource: inputs.IngestSource,
+		AgentLoop:    deps.AgentLoop,
 	}, nil
 }

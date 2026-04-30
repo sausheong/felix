@@ -20,14 +20,14 @@ import (
 
 func TestStreamingToolsEnabled_Default(t *testing.T) {
 	t.Setenv("FELIX_STREAMING_TOOLS", "")
-	if streamingToolsEnabled() {
+	if (&Runtime{}).streamingToolsEnabled() {
 		t.Fatal("expected false when env unset")
 	}
 }
 
 func TestStreamingToolsEnabled_Override(t *testing.T) {
 	t.Setenv("FELIX_STREAMING_TOOLS", "1")
-	if !streamingToolsEnabled() {
+	if !(&Runtime{}).streamingToolsEnabled() {
 		t.Fatal("expected true when env=1")
 	}
 }
@@ -37,10 +37,45 @@ func TestStreamingToolsEnabled_InvalidFallsBack(t *testing.T) {
 	for _, v := range cases {
 		t.Run(v, func(t *testing.T) {
 			t.Setenv("FELIX_STREAMING_TOOLS", v)
-			if streamingToolsEnabled() {
+			if (&Runtime{}).streamingToolsEnabled() {
 				t.Fatalf("expected false for %q", v)
 			}
 		})
+	}
+}
+
+func TestRuntime_StreamingTools_ConfigTrueWinsOverEnvUnset(t *testing.T) {
+	t.Setenv("FELIX_STREAMING_TOOLS", "")
+	r := &Runtime{AgentLoop: config.AgentLoopConfig{StreamingTools: true}}
+	if !r.streamingToolsEnabled() {
+		t.Fatal("expected true when config sets streamingTools=true")
+	}
+}
+
+func TestRuntime_StreamingTools_ConfigTrueWinsOverEnvZero(t *testing.T) {
+	// Env is "0" (off) but config says on — config wins.
+	t.Setenv("FELIX_STREAMING_TOOLS", "0")
+	r := &Runtime{AgentLoop: config.AgentLoopConfig{StreamingTools: true}}
+	if !r.streamingToolsEnabled() {
+		t.Fatal("expected true when config=true even with env=0")
+	}
+}
+
+func TestRuntime_StreamingTools_ConfigFalseFallsBackToEnv(t *testing.T) {
+	// When config bool is false (the zero value, indistinguishable from
+	// "field absent"), fall back to env. Env=1 → on.
+	t.Setenv("FELIX_STREAMING_TOOLS", "1")
+	r := &Runtime{AgentLoop: config.AgentLoopConfig{StreamingTools: false}}
+	if !r.streamingToolsEnabled() {
+		t.Fatal("expected true when config=false but env=1")
+	}
+}
+
+func TestRuntime_StreamingTools_BothUnsetIsOff(t *testing.T) {
+	t.Setenv("FELIX_STREAMING_TOOLS", "")
+	r := &Runtime{AgentLoop: config.AgentLoopConfig{}}
+	if r.streamingToolsEnabled() {
+		t.Fatal("expected false when neither config nor env set")
 	}
 }
 

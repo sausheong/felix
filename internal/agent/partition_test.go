@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/tools"
 	"github.com/stretchr/testify/require"
@@ -112,20 +113,46 @@ func TestPartition_PanicIsRecoveredAsUnsafe(t *testing.T) {
 
 func TestMaxToolConcurrency_Default(t *testing.T) {
 	t.Setenv("FELIX_MAX_TOOL_CONCURRENCY", "")
-	require.Equal(t, 10, maxToolConcurrency())
+	require.Equal(t, 10, (&Runtime{}).maxToolConcurrency())
 }
 
 func TestMaxToolConcurrency_EnvOverride(t *testing.T) {
 	t.Setenv("FELIX_MAX_TOOL_CONCURRENCY", "3")
-	require.Equal(t, 3, maxToolConcurrency())
+	require.Equal(t, 3, (&Runtime{}).maxToolConcurrency())
 }
 
 func TestMaxToolConcurrency_InvalidEnvFallsBack(t *testing.T) {
 	t.Setenv("FELIX_MAX_TOOL_CONCURRENCY", "garbage")
-	require.Equal(t, 10, maxToolConcurrency())
+	require.Equal(t, 10, (&Runtime{}).maxToolConcurrency())
 }
 
 func TestMaxToolConcurrency_ZeroFallsBack(t *testing.T) {
 	t.Setenv("FELIX_MAX_TOOL_CONCURRENCY", "0")
-	require.Equal(t, 10, maxToolConcurrency(), "0 is invalid; fall back to default")
+	require.Equal(t, 10, (&Runtime{}).maxToolConcurrency(), "0 is invalid; fall back to default")
+}
+
+func TestRuntime_MaxToolConcurrency_ConfigWinsOverEnv(t *testing.T) {
+	t.Setenv("FELIX_MAX_TOOL_CONCURRENCY", "7")
+	r := &Runtime{AgentLoop: config.AgentLoopConfig{MaxToolConcurrency: 4}}
+	require.Equal(t, 4, r.maxToolConcurrency(), "config should win over env")
+}
+
+func TestRuntime_MaxToolConcurrency_EnvWhenConfigZero(t *testing.T) {
+	t.Setenv("FELIX_MAX_TOOL_CONCURRENCY", "7")
+	r := &Runtime{AgentLoop: config.AgentLoopConfig{}}
+	require.Equal(t, 7, r.maxToolConcurrency(), "env should fill in when config is zero")
+}
+
+func TestRuntime_MaxToolConcurrency_DefaultWhenBothUnset(t *testing.T) {
+	t.Setenv("FELIX_MAX_TOOL_CONCURRENCY", "")
+	r := &Runtime{AgentLoop: config.AgentLoopConfig{}}
+	require.Equal(t, 10, r.maxToolConcurrency(), "default 10 when neither set")
+}
+
+func TestRuntime_MaxToolConcurrency_ConfigZeroOrNegativeFallsBackToEnv(t *testing.T) {
+	for _, v := range []int{0, -1, -10} {
+		t.Setenv("FELIX_MAX_TOOL_CONCURRENCY", "9")
+		r := &Runtime{AgentLoop: config.AgentLoopConfig{MaxToolConcurrency: v}}
+		require.Equalf(t, 9, r.maxToolConcurrency(), "config=%d should fall back to env", v)
+	}
 }

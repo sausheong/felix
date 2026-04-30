@@ -56,8 +56,8 @@ func MakeSubagentFactory(
 		// production paths today. The cap is here so that adding `task` to
 		// subagent registries in the future (e.g., for explicit recursive
 		// delegation patterns) doesn't open the door to runaway delegation.
-		if parentDepth+1 > maxAgentDepth() {
-			return nil, fmt.Errorf("subagent depth limit %d reached", maxAgentDepth())
+		if parentDepth+1 > parent.maxAgentDepth() {
+			return nil, fmt.Errorf("subagent depth limit %d reached", parent.maxAgentDepth())
 		}
 		a, ok := cfg.GetAgent(agentID)
 		if !ok {

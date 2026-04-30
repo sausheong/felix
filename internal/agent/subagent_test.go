@@ -342,8 +342,8 @@ func TestRun_SubagentDepthCapEnforced(t *testing.T) {
 		}, nil
 	}
 	factory = func(ctx context.Context, agentID string, parentDepth int) (tools.SubagentRunner, error) {
-		if parentDepth+1 > maxAgentDepth() {
-			return nil, fmt.Errorf("subagent depth limit %d reached", maxAgentDepth())
+		if parentDepth+1 > parent.maxAgentDepth() {
+			return nil, fmt.Errorf("subagent depth limit %d reached", parent.maxAgentDepth())
 		}
 		a, ok := cfg.GetAgent(agentID)
 		if !ok {

@@ -59,8 +59,14 @@ func isCallConcurrencySafe(tc llm.ToolCall, ex tools.Executor) (safe bool) {
 }
 
 // maxToolConcurrency returns the cap on concurrent tool dispatch within a
-// safe batch. Reads FELIX_MAX_TOOL_CONCURRENCY (default 10).
-func maxToolConcurrency() int {
+// safe batch. Precedence:
+//  1. Runtime.AgentLoop.MaxToolConcurrency (>0) — config wins.
+//  2. FELIX_MAX_TOOL_CONCURRENCY env var (>0) — env fallback.
+//  3. Default 10.
+func (r *Runtime) maxToolConcurrency() int {
+	if r.AgentLoop.MaxToolConcurrency > 0 {
+		return r.AgentLoop.MaxToolConcurrency
+	}
 	if v := os.Getenv("FELIX_MAX_TOOL_CONCURRENCY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
@@ -102,7 +108,7 @@ func (r *Runtime) runBatch(
 	var (
 		wg         sync.WaitGroup
 		anyAborted atomic.Bool
-		sem        = make(chan struct{}, maxToolConcurrency())
+		sem        = make(chan struct{}, r.maxToolConcurrency())
 	)
 	wg.Add(len(b.calls))
 	for i := range b.calls {

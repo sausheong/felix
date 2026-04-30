@@ -3,12 +3,19 @@ package agent
 import "os"
 
 // streamingToolsEnabled reports whether streaming tool kickoff is on for
-// this process. Reads FELIX_STREAMING_TOOLS; only the literal "1" enables
-// the feature. Anything else (unset, "0", "true", "garbage", " 1 ") is off.
+// this Runtime. Precedence:
+//  1. Runtime.AgentLoop.StreamingTools == true → on (config wins).
+//  2. Otherwise FELIX_STREAMING_TOOLS=="1" → on.
+//  3. Otherwise off.
 //
-// Strict "1" rather than truthy parsing keeps the env contract simple and
-// matches Claude Code's binary-feature-gate posture.
-func streamingToolsEnabled() bool {
+// Strict "1" for the env fallback (rather than truthy parsing) keeps the
+// env contract simple and matches Claude Code's binary-feature-gate posture.
+// Note: an explicit `false` in JSON5 behaves the same as the field being
+// absent — to disable, leave both unset.
+func (r *Runtime) streamingToolsEnabled() bool {
+	if r.AgentLoop.StreamingTools {
+		return true
+	}
 	return os.Getenv("FELIX_STREAMING_TOOLS") == "1"
 }
 

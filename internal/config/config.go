@@ -25,6 +25,7 @@ type Config struct {
 	Heartbeat  HeartbeatConfig           `json:"heartbeat"`
 	Memory     MemoryConfig              `json:"memory"`
 	Cortex     CortexConfig              `json:"cortex"`
+	AgentLoop  AgentLoopConfig           `json:"agentLoop"`
 	Security   SecurityConfig            `json:"security"`
 	Local      LocalConfig               `json:"local"`
 	Telegram   TelegramConfig            `json:"telegram"`
@@ -248,6 +249,31 @@ type CortexConfig struct {
 	DBPath   string `json:"dbPath"`   // path to brain.db (default: ~/.felix/brain.db)
 	Provider string `json:"provider"` // provider name matching a key in cfg.Providers (e.g. "openai", "anthropic")
 	LLMModel string `json:"llmModel"` // model for extraction/decomposition (default: gpt-5.4-mini for openai, claude-sonnet-4-5-20250929 for anthropic)
+}
+
+// AgentLoopConfig tunes the agent runtime's tool-execution behavior.
+// All fields are optional; absent/zero values fall back to env vars
+// (FELIX_MAX_TOOL_CONCURRENCY, FELIX_MAX_AGENT_DEPTH, FELIX_STREAMING_TOOLS)
+// then to compiled-in defaults.
+//
+// Hot-reloaded via fsnotify; menubar / settings-page edits take effect
+// on the next agent run without restart.
+type AgentLoopConfig struct {
+	// MaxToolConcurrency caps parallel tool dispatch within a safe batch
+	// (Phase B). 0 = use FELIX_MAX_TOOL_CONCURRENCY or default 10.
+	MaxToolConcurrency int `json:"maxToolConcurrency,omitempty"`
+
+	// MaxAgentDepth caps subagent recursion depth (Phase C). 0 = use
+	// FELIX_MAX_AGENT_DEPTH or default 3.
+	MaxAgentDepth int `json:"maxAgentDepth,omitempty"`
+
+	// StreamingTools enables mid-stream concurrency-safe tool kickoff
+	// (Phase D). Default false. When true, safe tools start as their
+	// tool_use blocks land instead of waiting for the LLM stream to end.
+	// Note: when this field is absent (false) from felix.json5, the runtime
+	// checks FELIX_STREAMING_TOOLS=1 as a fallback. Setting it explicitly
+	// to true in JSON5 always wins.
+	StreamingTools bool `json:"streamingTools,omitempty"`
 }
 
 type SecurityConfig struct {
@@ -600,6 +626,7 @@ func (c *Config) UpdateFrom(src *Config) {
 	c.Heartbeat = src.Heartbeat
 	c.Memory = src.Memory
 	c.Cortex = src.Cortex
+	c.AgentLoop = src.AgentLoop
 	c.Security = src.Security
 	c.Local = src.Local
 }
