@@ -129,12 +129,14 @@ func BuildConfigSummary(cfg *config.Config) string {
 // does not change across turns within a Run: identity (from systemPrompt
 // arg, IDENTITY.md, or the built-in default tailored to toolNames), agent
 // self-identity, the configuration/data dir paths, the pre-computed
-// configSummary, and the pre-computed skillsIndex.
+// configSummary, the pre-computed skillsIndex, and the pre-computed
+// memoryFiles (FELIX.md / AGENTS.md walk-up).
 //
 // Pure with one allowed exception: it reads IDENTITY.md from workspace
-// when systemPrompt is empty. Caller pre-resolves configSummary and
-// skillsIndex so neither config.Load nor skill index assembly happens
-// per-turn. Suitable to call once at Runtime construction.
+// when systemPrompt is empty. Caller pre-resolves configSummary,
+// skillsIndex, and memoryFiles so neither config.Load nor skill-index
+// assembly nor memory-file disk reads happen per-turn. Suitable to call
+// once at Runtime construction.
 func BuildStaticSystemPrompt(
 	workspace, systemPrompt, agentID, agentName string,
 	toolNames []string,
