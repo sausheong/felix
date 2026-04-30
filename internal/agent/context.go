@@ -40,6 +40,10 @@ func detectImageMIME(data []byte, hint string) string {
 // MAX_MEMORY_CHARACTER_COUNT (claudemd.ts) at 40 KB.
 const MaxAgentMemoryBytes = 40 * 1024
 
+// memoryTruncationNotice is the marker LoadAgentMemoryFiles appends when
+// the cumulative memory-file content would push past MaxAgentMemoryBytes.
+const memoryTruncationNotice = "\n\n[truncated — over 40 KB total agent memory]"
+
 const defaultIdentityBase = `You are Felix, an AI agent. Conduct yourself professionally and politely. Be concise and direct. When executing tasks, think step by step and use your tools to accomplish the user's goals. When you need to call multiple independent tools to gather information, emit them in a single response (parallel tool calls) rather than waiting for each one — this cuts response latency on local models.`
 
 // toolHints maps tool names to usage guidance injected into the default identity.
@@ -479,32 +483,19 @@ func LoadAgentMemoryFiles(workspace string) string {
 
 		if sb.Len()+len(section) > MaxAgentMemoryBytes {
 			remaining := MaxAgentMemoryBytes - sb.Len() - len(header)
-			if remaining > 0 && remaining < len(body) {
+			if remaining > 0 {
 				cut := body[:remaining]
 				if idx := strings.LastIndex(cut, "\n"); idx > remaining/2 {
 					cut = cut[:idx]
 				}
 				sb.WriteString(header)
 				sb.WriteString(cut)
-				sb.WriteString("\n\n[truncated — over 40 KB total agent memory]")
-			} else if remaining > 0 {
-				sb.WriteString(section)
-			} else {
-				sb.WriteString("\n\n[truncated — over 40 KB total agent memory]")
 			}
+			sb.WriteString(memoryTruncationNotice)
 			truncated = true
 			continue
 		}
 		sb.WriteString(section)
-		// If we've consumed nearly the entire budget, treat it as exhausted:
-		// append the truncation marker and skip subsequent files. The
-		// safetyMargin reserves room for a typical header so we don't admit
-		// a file we couldn't usefully render.
-		const safetyMargin = 1024
-		if sb.Len() >= MaxAgentMemoryBytes-safetyMargin {
-			sb.WriteString("\n\n[truncated — over 40 KB total agent memory]")
-			truncated = true
-		}
 	}
 
 	return sb.String()

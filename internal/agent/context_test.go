@@ -206,7 +206,7 @@ func TestLoadAgentMemoryFilesTruncatesOverCap(t *testing.T) {
 func TestLoadAgentMemoryFilesSkipsAfterTruncation(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
-	near := strings.Repeat("x\n", 20000) // ~40 KB; will exhaust the budget
+	near := strings.Repeat("x\n", 25000) // ~50 KB; pushes past the cap
 	require.NoError(t, os.WriteFile(filepath.Join(workspace, "FELIX.md"),
 		[]byte(near), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(workspace, "AGENTS.md"),
