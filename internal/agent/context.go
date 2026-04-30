@@ -10,7 +10,9 @@ import (
 
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
+	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
+	"github.com/sausheong/felix/internal/skill"
 )
 
 const maxToolResultLen = 4000 // truncate tool results longer than this
@@ -70,14 +72,65 @@ func buildDefaultIdentity(toolNames []string) string {
 	return defaultIdentityBase + " " + strings.Join(hints, " ")
 }
 
-// assembleSystemPrompt builds the system prompt. Priority:
-//  1. systemPrompt from config (if non-empty)
-//  2. IDENTITY.md in workspace (if file exists)
-//  3. Built-in defaultIdentity
+// BuildConfigSummary returns the brief summary of agents and channels
+// that gets injected into the static portion of the system prompt. Pure:
+// no I/O, accepts the already-loaded *config.Config. Replaces the
+// per-turn configSummary() that read felix.json5 from disk.
 //
-// The config and data directory paths are always appended so the agent
-// knows where to find its own configuration.
-func assembleSystemPrompt(workspace, systemPrompt, agentID, agentName string, toolNames []string) string {
+// Returns "" for a nil config or one with no agents and no enabled channels.
+//
+// Lifecycle: deliberately captured at Runtime construction time so the
+// cached prompt prefix stays byte-stable across the Runtime's lifetime.
+// New Runtimes built after a hot-reload (e.g., fsnotify-driven config
+// reload, settings UI save) pick up the updated summary; in-flight
+// Runtimes do not.
+//
+// Concurrency: this reads cfg.Agents.List and cfg.Channels without taking
+// cfg's RWMutex. Callers must serialize against config.UpdateFrom — in
+// practice this is automatic because BuildConfigSummary is invoked only
+// from BuildRuntimeForAgent, which runs synchronously at session start
+// before any concurrent reload would race with it.
+func BuildConfigSummary(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+
+	var sb strings.Builder
+
+	if len(cfg.Agents.List) > 0 {
+		sb.WriteString("Configured agents:")
+		for _, a := range cfg.Agents.List {
+			tools := ""
+			if len(a.Tools.Allow) > 0 {
+				tools = ", tools: " + strings.Join(a.Tools.Allow, ", ")
+			}
+			sb.WriteString(fmt.Sprintf("\n- %s (id: %s, model: %s%s)", a.Name, a.ID, a.Model, tools))
+		}
+	}
+
+	if cfg.Channels.CLI.Enabled {
+		sb.WriteString("\n\nConfigured channels: cli")
+	}
+
+	return sb.String()
+}
+
+// BuildStaticSystemPrompt assembles the portion of the system prompt that
+// does not change across turns within a Run: identity (from systemPrompt
+// arg, IDENTITY.md, or the built-in default tailored to toolNames), agent
+// self-identity, the configuration/data dir paths, the pre-computed
+// configSummary, and the pre-computed skillsIndex.
+//
+// Pure with one allowed exception: it reads IDENTITY.md from workspace
+// when systemPrompt is empty. Caller pre-resolves configSummary and
+// skillsIndex so neither config.Load nor skill index assembly happens
+// per-turn. Suitable to call once at Runtime construction.
+func BuildStaticSystemPrompt(
+	workspace, systemPrompt, agentID, agentName string,
+	toolNames []string,
+	configSummary string,
+	skillsIndex string,
+) string {
 	var base string
 	if systemPrompt != "" {
 		base = systemPrompt
@@ -91,49 +144,42 @@ func assembleSystemPrompt(workspace, systemPrompt, agentID, agentName string, to
 		}
 	}
 
-	// Inject self-identity so the agent knows who it is
 	if agentID != "" {
-		identity := fmt.Sprintf("\n\nYou are the %q agent (id: %s).", agentName, agentID)
-		base += identity
+		base += fmt.Sprintf("\n\nYou are the %q agent (id: %s).", agentName, agentID)
 	}
 
 	base += fmt.Sprintf("\n\nYour configuration file is at %s and your data directory is %s.",
 		config.DefaultConfigPath(), config.DefaultDataDir())
 
-	if summary := configSummary(); summary != "" {
-		base += "\n\n" + summary
+	if configSummary != "" {
+		base += "\n\n" + configSummary
+	}
+	if skillsIndex != "" {
+		base += skillsIndex
 	}
 
 	return base
 }
 
-// configSummary loads the config and returns a brief summary of agents and
-// channels so every agent is aware of the broader system topology.
-func configSummary() string {
-	cfg, err := config.Load("")
-	if err != nil {
-		return ""
-	}
-
+// buildDynamicSystemPromptSuffix concatenates the per-turn dynamic context
+// — matched skill bodies, matched memory entries, and the cortex hint —
+// into a single string the runtime sends as the second (un-cached)
+// SystemPromptPart. Returns "" when all inputs are empty/nil.
+func buildDynamicSystemPromptSuffix(
+	matchedSkills []skill.Skill,
+	matchedMemory []memory.Entry,
+	cortexContext string,
+) string {
 	var sb strings.Builder
-
-	// Agents
-	if len(cfg.Agents.List) > 0 {
-		sb.WriteString("Configured agents:")
-		for _, a := range cfg.Agents.List {
-			tools := ""
-			if len(a.Tools.Allow) > 0 {
-				tools = ", tools: " + strings.Join(a.Tools.Allow, ", ")
-			}
-			sb.WriteString(fmt.Sprintf("\n- %s (id: %s, model: %s%s)", a.Name, a.ID, a.Model, tools))
-		}
+	if extra := skill.FormatForPrompt(matchedSkills); extra != "" {
+		sb.WriteString(extra)
 	}
-
-	// Channels (CLI is always available)
-	if cfg.Channels.CLI.Enabled {
-		sb.WriteString("\n\nConfigured channels: cli")
+	if extra := memory.FormatForPrompt(matchedMemory); extra != "" {
+		sb.WriteString(extra)
 	}
-
+	if cortexContext != "" {
+		sb.WriteString(cortexContext)
+	}
 	return sb.String()
 }
 

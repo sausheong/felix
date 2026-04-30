@@ -1,7 +1,10 @@
 package llm
 
 import (
+	"context"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
@@ -61,7 +64,7 @@ func TestAnthropic_ConsecutiveToolResultsCoalesce(t *testing.T) {
 		{Role: "assistant", Content: "done"},
 	}
 
-	got := buildAnthropicMessages(in)
+	got := buildAnthropicMessages(in, false)
 
 	// Expected shape: user(text), assistant(3 tool_uses), user(3 tool_results), assistant
 	require.Len(t, got, 4, "expected 4 messages, got %d", len(got))
@@ -89,7 +92,7 @@ func TestAnthropic_SingleToolResultStillSeparate(t *testing.T) {
 		{Role: "assistant", Content: "done"},
 	}
 
-	got := buildAnthropicMessages(in)
+	got := buildAnthropicMessages(in, false)
 
 	require.Len(t, got, 4)
 	assert.Equal(t, []string{"X"}, toolUseIDs(t, got[1]))
@@ -122,7 +125,7 @@ func TestAnthropic_ToolResultRunInterspersedWithText(t *testing.T) {
 		{Role: "user", Content: "trailing text"},
 	}
 
-	got := buildAnthropicMessages(in)
+	got := buildAnthropicMessages(in, false)
 
 	// Expected: assistant, user(1 tr), user(text), assistant, user(2 tr), user(text)
 	require.Len(t, got, 6)
@@ -184,7 +187,7 @@ func TestAnthropic_ToolResultsWithImages(t *testing.T) {
 		},
 	}
 
-	got := buildAnthropicMessages(in)
+	got := buildAnthropicMessages(in, false)
 
 	// Expected: assistant(3 tool_uses), user(3 tool_results coalesced).
 	require.Len(t, got, 2)
@@ -213,4 +216,152 @@ func TestAnthropic_ToolResultsWithImages(t *testing.T) {
 	require.Len(t, p3.Content, 1, "image only -> 1 content item")
 	require.NotNil(t, p3.Content[0].OfImage)
 	assert.True(t, p3.IsError.Value)
+}
+
+func TestAnthropicSystemPromptPartsEmitCacheControl(t *testing.T) {
+	got := buildAnthropicSystem(ChatRequest{
+		SystemPromptParts: []SystemPromptPart{
+			{Text: "static-cached", Cache: true},
+			{Text: "dynamic", Cache: false},
+		},
+	})
+	require.Len(t, got, 2)
+	require.Equal(t, "static-cached", got[0].Text)
+	require.Equal(t, "ephemeral", string(got[0].CacheControl.Type))
+	require.Equal(t, "dynamic", got[1].Text)
+	require.Empty(t, string(got[1].CacheControl.Type), "second block must not be cache-marked")
+}
+
+func TestAnthropicSystemPromptStringFallback(t *testing.T) {
+	got := buildAnthropicSystem(ChatRequest{SystemPrompt: "legacy"})
+	require.Len(t, got, 1)
+	require.Equal(t, "legacy", got[0].Text)
+	require.Empty(t, string(got[0].CacheControl.Type))
+}
+
+func TestAnthropicSystemEmptyWhenBothEmpty(t *testing.T) {
+	got := buildAnthropicSystem(ChatRequest{})
+	require.Empty(t, got)
+}
+
+func TestAnthropicSystemSkipsEmptyParts(t *testing.T) {
+	got := buildAnthropicSystem(ChatRequest{
+		SystemPromptParts: []SystemPromptPart{
+			{Text: ""},
+			{Text: "real", Cache: true},
+		},
+	})
+	require.Len(t, got, 1)
+	require.Equal(t, "real", got[0].Text)
+}
+
+func TestBuildAnthropicMessagesCacheLastTextBlock(t *testing.T) {
+	in := []Message{
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "ok"},
+		{Role: "user", Content: "second"},
+	}
+	got := buildAnthropicMessages(in, true)
+	require.Len(t, got, 3)
+	last := got[len(got)-1]
+	blocks := last.Content
+	require.NotEmpty(t, blocks)
+	cc := blocks[len(blocks)-1].GetCacheControl()
+	require.NotNil(t, cc)
+	require.Equal(t, "ephemeral", string(cc.Type))
+}
+
+func TestBuildAnthropicMessagesNoMarkerWhenCacheLastFalse(t *testing.T) {
+	in := []Message{{Role: "user", Content: "hi"}}
+	got := buildAnthropicMessages(in, false)
+	require.Len(t, got, 1)
+	blocks := got[0].Content
+	require.NotEmpty(t, blocks)
+	cc := blocks[len(blocks)-1].GetCacheControl()
+	if cc != nil {
+		require.Empty(t, string(cc.Type), "no cache_control should be emitted when CacheLastMessage=false")
+	}
+}
+
+func TestBuildAnthropicMessagesCacheLastToolResult(t *testing.T) {
+	in := []Message{
+		{Role: "assistant", Content: "thinking"},
+		{Role: "user", ToolCallID: "tc_1", Content: "tool output"},
+	}
+	got := buildAnthropicMessages(in, true)
+	last := got[len(got)-1]
+	require.NotEmpty(t, last.Content)
+	cc := last.Content[len(last.Content)-1].GetCacheControl()
+	require.NotNil(t, cc)
+	require.Equal(t, "ephemeral", string(cc.Type))
+}
+
+func TestBuildAnthropicMessagesCacheLastImageBlock(t *testing.T) {
+	// Image-bearing user message: the SDK lays out blocks as [image..., text?].
+	// With Content="" the trailing block is the image, so cache_control must
+	// land on the OfImage variant.
+	in := []Message{{
+		Role: "user",
+		Images: []ImageContent{
+			{MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}},
+		},
+	}}
+	got := buildAnthropicMessages(in, true)
+	require.Len(t, got, 1)
+	last := got[0]
+	require.NotEmpty(t, last.Content)
+	tail := last.Content[len(last.Content)-1]
+	require.NotNil(t, tail.OfImage, "expected last block to be an image variant")
+	cc := tail.GetCacheControl()
+	require.NotNil(t, cc)
+	require.Equal(t, "ephemeral", string(cc.Type))
+}
+
+// TestAnthropicStreamSurfacesCacheTokens points the SDK at an httptest
+// server that serves a canned SSE response with cache_creation_input_tokens
+// and cache_read_input_tokens populated, and asserts the emitted
+// llm.Usage carries them through.
+func TestAnthropicStreamSurfacesCacheTokens(t *testing.T) {
+	const sseBody = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":42,"cache_read_input_tokens":17}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := NewAnthropicProvider("test-key", srv.URL)
+	stream, err := p.ChatStream(context.Background(), ChatRequest{Model: "claude-test"})
+	require.NoError(t, err)
+
+	var done *ChatEvent
+	for ev := range stream {
+		ev := ev
+		if ev.Type == EventDone {
+			done = &ev
+		}
+	}
+	require.NotNil(t, done, "expected EventDone")
+	require.NotNil(t, done.Usage, "expected Usage on EventDone")
+	require.Equal(t, 42, done.Usage.CacheCreationInputTokens)
+	require.Equal(t, 17, done.Usage.CacheReadInputTokens)
+	require.Equal(t, 5, done.Usage.OutputTokens)
+	require.Equal(t, 10, done.Usage.InputTokens)
 }

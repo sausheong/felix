@@ -59,6 +59,16 @@ type Diagnostic struct {
 	Reason   string // human-readable; safe to log
 }
 
+// SystemPromptPart is one segment of the system prompt. Providers that
+// support prompt caching attach a cache marker to parts where Cache=true;
+// providers that don't simply concatenate Text fields together.
+type SystemPromptPart struct {
+	Text string
+	// Cache requests that the prefix up to and including this part be cached.
+	// Anthropic-only; ignored elsewhere.
+	Cache bool
+}
+
 // ReasoningMode is the unified reasoning/thinking knob across providers.
 // Zero value (ReasoningOff) means no extended reasoning — safe default
 // for existing call sites that don't set the field. Each provider maps
@@ -99,13 +109,23 @@ type ChatRequest struct {
 	MaxTokens    int
 	Temperature  float64
 	SystemPrompt string
-	Reasoning    ReasoningMode // zero value = ReasoningOff; safe default
+	// SystemPromptParts, when non-empty, replaces SystemPrompt. Providers
+	// that support caching emit one block per part, attaching cache markers
+	// per Cache flag. Providers that don't support caching concatenate
+	// Text fields with "\n" separators.
+	SystemPromptParts []SystemPromptPart
+	// CacheLastMessage requests that the final block of the final user
+	// message also be cache-marked. Anthropic-only; ignored elsewhere.
+	CacheLastMessage bool
+	Reasoning        ReasoningMode // zero value = ReasoningOff; safe default
 }
 
 // Usage tracks token usage.
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // ChatEvent is a single streaming event from the LLM.
@@ -144,6 +164,29 @@ func ParseProviderModel(name string) (provider, model string) {
 		return parts[0], parts[1]
 	}
 	return "", name
+}
+
+// concatSystemPromptParts joins parts back into a single string with "\n"
+// separators. Used by every provider that doesn't implement caching.
+// Empty Text fields are skipped. Returns "" for a nil/empty slice.
+func concatSystemPromptParts(parts []SystemPromptPart) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	var nonEmpty []string
+	for _, p := range parts {
+		if p.Text != "" {
+			nonEmpty = append(nonEmpty, p.Text)
+		}
+	}
+	return strings.Join(nonEmpty, "\n")
+}
+
+// JoinSystemPromptParts is the exported variant of concatSystemPromptParts
+// for callers outside the llm package (e.g., agent runtime token estimation
+// that needs the joined string for tokens.Estimate).
+func JoinSystemPromptParts(parts []SystemPromptPart) string {
+	return concatSystemPromptParts(parts)
 }
 
 // ProviderOptions holds connection details for creating an LLM provider.

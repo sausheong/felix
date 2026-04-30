@@ -96,10 +96,14 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 	// Build messages
 	msgs := make([]openai.ChatCompletionMessage, 0, len(req.Messages)+1)
 
-	if req.SystemPrompt != "" {
+	sysPrompt := req.SystemPrompt
+	if len(req.SystemPromptParts) > 0 {
+		sysPrompt = concatSystemPromptParts(req.SystemPromptParts)
+	}
+	if sysPrompt != "" {
 		msgs = append(msgs, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
-			Content: req.SystemPrompt,
+			Content: sysPrompt,
 		})
 	}
 

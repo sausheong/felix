@@ -184,3 +184,24 @@ func TestOpenAIProviderRequestsUsageStats(t *testing.T) {
 	// And the outgoing request must have asked for usage stats.
 	assert.Contains(t, string(seenBody), `"include_usage":true`)
 }
+
+func TestConcatSystemPromptParts(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []SystemPromptPart
+		want string
+	}{
+		{"nil", nil, ""},
+		{"empty slice", []SystemPromptPart{}, ""},
+		{"single", []SystemPromptPart{{Text: "A"}}, "A"},
+		{"two", []SystemPromptPart{{Text: "A"}, {Text: "B"}}, "A\nB"},
+		{"skips empty", []SystemPromptPart{{Text: "A"}, {Text: ""}, {Text: "B"}}, "A\nB"},
+		{"cache flag ignored by concat", []SystemPromptPart{{Text: "A", Cache: true}, {Text: "B", Cache: false}}, "A\nB"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := concatSystemPromptParts(tc.in)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}

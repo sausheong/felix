@@ -28,6 +28,11 @@ type RuntimeDeps struct {
 	// by BuildRuntimeForAgent. Zero value → readers fall back to env vars
 	// then compiled-in defaults.
 	AgentLoop config.AgentLoopConfig
+	// Config is the live *config.Config. Used during BuildRuntimeForAgent
+	// to pre-compute the configuration summary that goes into the static
+	// system prompt — replaces the per-turn config.Load("") that the old
+	// configSummary() did.
+	Config *config.Config
 }
 
 // RuntimeInputs holds the per-Runtime-instance inputs that genuinely vary
@@ -54,7 +59,7 @@ type RuntimeInputs struct {
 // validation (e.g., "agent config requires X feature this build doesn't have")
 // but is currently always nil.
 func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.AgentConfig) (*Runtime, error) {
-	_, modelName := llm.ParseProviderModel(a.Model)
+	provider, modelName := llm.ParseProviderModel(a.Model)
 	reasoning, err := llm.ParseReasoningMode(a.Reasoning)
 	if err != nil {
 		slog.Error("invalid reasoning mode in agent config; defaulting to off",
@@ -65,23 +70,42 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 	if deps.CortexFn != nil {
 		cx = deps.CortexFn(a.Model)
 	}
+
+	// Pre-compute the static portion of the system prompt so the per-turn
+	// hot loop never reads config or rebuilds the skills index.
+	configSummary := BuildConfigSummary(deps.Config)
+	skillsIndex := ""
+	if deps.Skills != nil {
+		skillsIndex = deps.Skills.FormatIndex()
+	}
+	var toolNames []string
+	if inputs.Tools != nil {
+		toolNames = inputs.Tools.Names()
+	}
+	staticPrompt := BuildStaticSystemPrompt(
+		a.Workspace, a.SystemPrompt, a.ID, a.Name,
+		toolNames, configSummary, skillsIndex,
+	)
+
 	return &Runtime{
-		LLM:          inputs.Provider,
-		Tools:        inputs.Tools,
-		Session:      inputs.Session,
-		AgentID:      a.ID,
-		AgentName:    a.Name,
-		Model:        modelName,
-		Reasoning:    reasoning,
-		Workspace:    a.Workspace,
-		MaxTurns:     a.MaxTurns,
-		SystemPrompt: a.SystemPrompt,
-		Skills:       deps.Skills,
-		Memory:       deps.Memory,
-		Cortex:       cx,
-		Permission:   deps.Permission,
-		Compaction:   inputs.Compaction,
-		IngestSource: inputs.IngestSource,
-		AgentLoop:    deps.AgentLoop,
+		LLM:                inputs.Provider,
+		Tools:              inputs.Tools,
+		Session:            inputs.Session,
+		AgentID:            a.ID,
+		AgentName:          a.Name,
+		Model:              modelName,
+		Provider:           provider,
+		Reasoning:          reasoning,
+		Workspace:          a.Workspace,
+		MaxTurns:           a.MaxTurns,
+		SystemPrompt:       a.SystemPrompt,
+		Skills:             deps.Skills,
+		Memory:             deps.Memory,
+		Cortex:             cx,
+		Permission:         deps.Permission,
+		Compaction:         inputs.Compaction,
+		IngestSource:       inputs.IngestSource,
+		AgentLoop:          deps.AgentLoop,
+		StaticSystemPrompt: staticPrompt,
 	}, nil
 }

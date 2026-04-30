@@ -37,7 +37,7 @@ func (p *AnthropicProvider) Models() []ModelInfo {
 
 func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
 	// Build messages
-	msgs := buildAnthropicMessages(req.Messages)
+	msgs := buildAnthropicMessages(req.Messages, req.CacheLastMessage)
 
 	// Build tools
 	tools := make([]anthropic.ToolUnionParam, 0, len(req.Tools))
@@ -87,10 +87,8 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 		params.Tools = tools
 	}
 
-	if req.SystemPrompt != "" {
-		params.System = []anthropic.TextBlockParam{
-			{Text: req.SystemPrompt},
-		}
+	if sys := buildAnthropicSystem(req); len(sys) > 0 {
+		params.System = sys
 	}
 
 	if req.Temperature > 0 {
@@ -139,11 +137,18 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 		}
 		var pendingTools []pendingTC
 		var currentBlockType string
+		var inputTokens, cacheCreationTokens, cacheReadTokens int64
 
 		for stream.Next() {
 			event := stream.Current()
 
 			switch event.Type {
+			case "message_start":
+				u := event.Message.Usage
+				inputTokens = u.InputTokens
+				cacheCreationTokens = u.CacheCreationInputTokens
+				cacheReadTokens = u.CacheReadInputTokens
+
 			case "content_block_start":
 				cb := event.ContentBlock
 				switch cb.Type {
@@ -193,11 +198,20 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 				currentBlockType = ""
 
 			case "message_delta":
-				if event.Usage.OutputTokens > 0 {
+				if event.Usage.OutputTokens > 0 || cacheCreationTokens > 0 || cacheReadTokens > 0 {
+					slog.Info("anthropic stream usage",
+						"input_tokens", inputTokens,
+						"output_tokens", event.Usage.OutputTokens,
+						"cache_creation_input_tokens", cacheCreationTokens,
+						"cache_read_input_tokens", cacheReadTokens,
+					)
 					events <- ChatEvent{
 						Type: EventDone,
 						Usage: &Usage{
-							OutputTokens: int(event.Usage.OutputTokens),
+							InputTokens:              int(inputTokens),
+							OutputTokens:             int(event.Usage.OutputTokens),
+							CacheCreationInputTokens: int(cacheCreationTokens),
+							CacheReadInputTokens:     int(cacheReadTokens),
 						},
 					}
 				}
@@ -289,7 +303,7 @@ func anthropicSupportsThinking(model string) bool {
 // calls). Without coalescing, the API rejects the second tool_result
 // because the immediately preceding message is itself a tool_result, not
 // an assistant message containing the matching tool_use.
-func buildAnthropicMessages(in []Message) []anthropic.MessageParam {
+func buildAnthropicMessages(in []Message, cacheLast bool) []anthropic.MessageParam {
 	msgs := make([]anthropic.MessageParam, 0, len(in))
 	for i := 0; i < len(in); i++ {
 		m := in[i]
@@ -337,7 +351,36 @@ func buildAnthropicMessages(in []Message) []anthropic.MessageParam {
 			}
 		}
 	}
+	// Cache marker on the last block of the last message. Anthropic accepts
+	// up to 4 cache_control markers per request; combined with the static
+	// system block this is at most 2.
+	if cacheLast && len(msgs) > 0 {
+		tail := &msgs[len(msgs)-1]
+		if len(tail.Content) > 0 {
+			setCacheControlOnBlock(&tail.Content[len(tail.Content)-1])
+		}
+	}
 	return msgs
+}
+
+// setCacheControlOnBlock attaches an ephemeral cache_control marker to the
+// underlying param of any ContentBlockParamUnion variant that has a
+// CacheControl field. The SDK union type does not expose a direct setter,
+// so we mutate the variant struct directly. Variants other than text /
+// tool_result / image / tool_use are out of scope; the runtime never
+// produces them as the tail of a user message.
+func setCacheControlOnBlock(block *anthropic.ContentBlockParamUnion) {
+	cc := anthropic.NewCacheControlEphemeralParam()
+	switch {
+	case block.OfText != nil:
+		block.OfText.CacheControl = cc
+	case block.OfToolResult != nil:
+		block.OfToolResult.CacheControl = cc
+	case block.OfImage != nil:
+		block.OfImage.CacheControl = cc
+	case block.OfToolUse != nil:
+		block.OfToolUse.CacheControl = cc
+	}
 }
 
 // buildToolResultBlock converts a single tool_result Message (a user
@@ -374,4 +417,33 @@ func buildToolResultBlock(m Message) anthropic.ContentBlockParamUnion {
 		return anthropic.ContentBlockParamUnion{OfToolResult: &toolBlock}
 	}
 	return anthropic.NewToolResultBlock(m.ToolCallID, m.Content, m.IsError)
+}
+
+// buildAnthropicSystem builds the System param array from a ChatRequest.
+// Prefers SystemPromptParts when set: each non-empty part becomes one
+// TextBlockParam; parts with Cache=true get an ephemeral cache_control marker.
+// Falls back to a single un-cached block built from SystemPrompt when parts
+// are absent. Returns nil when both inputs are empty.
+func buildAnthropicSystem(req ChatRequest) []anthropic.TextBlockParam {
+	if len(req.SystemPromptParts) > 0 {
+		blocks := make([]anthropic.TextBlockParam, 0, len(req.SystemPromptParts))
+		for _, p := range req.SystemPromptParts {
+			if p.Text == "" {
+				continue
+			}
+			b := anthropic.TextBlockParam{Text: p.Text}
+			if p.Cache {
+				b.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			}
+			blocks = append(blocks, b)
+		}
+		if len(blocks) > 0 {
+			return blocks
+		}
+		return nil
+	}
+	if req.SystemPrompt != "" {
+		return []anthropic.TextBlockParam{{Text: req.SystemPrompt}}
+	}
+	return nil
 }

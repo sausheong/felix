@@ -565,6 +565,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		Permission: permission,
 		CortexFn:   resolveCortex,
 		AgentLoop:  cfg.AgentLoop,
+		Config:     cfg,
 	}
 
 	// Subagent input builder shared by all three call sites in this file
