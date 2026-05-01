@@ -845,7 +845,7 @@ Skills are Markdown files with YAML frontmatter that get injected into the agent
 
 ### Skill file format
 
-Create a `SKILL.md` file in `~/.felix/skills/<skill-name>/SKILL.md` or in the agent's workspace at `<workspace>/skills/<skill-name>/SKILL.md`:
+You can either drop a flat `<name>.md` directly into `~/.felix/skills/`, or create a `SKILL.md` file in `~/.felix/skills/<skill-name>/SKILL.md` (or the agent's workspace at `<workspace>/skills/<skill-name>/SKILL.md`). The flat form is what the Settings UI uploads:
 
 ```markdown
 ---
@@ -876,6 +876,27 @@ For example, if the user says "commit my changes", skills tagged with `git` or `
 Skills are loaded from:
 1. `~/.felix/skills/` — shared across all agents
 2. `<agent-workspace>/skills/` — agent-specific skills
+
+### Manage skills via the Settings UI
+
+Open `http://127.0.0.1:18789/settings` and click the **Skills** tab. From there you can:
+
+- **Upload** a `.md` file (256 KB max). The file is written to `~/.felix/skills/` and immediately picked up — the loader refreshes in place, so the new skill is available on the very next chat turn with no restart needed.
+- **View** the raw markdown of any uploaded skill in a side panel.
+- **Delete** an uploaded skill. The file is removed from disk and dropped from the loader on the same turn.
+
+Skills with malformed YAML frontmatter or missing required binaries (declared via `metadata.openclaw.requires.bins`) still appear in the list with a warning indicator so you can fix or remove them — they're just not loaded into the agent's context.
+
+The same operations are available over REST:
+
+| Method | Path | Body | Response |
+|--------|------|------|----------|
+| `GET` | `/settings/api/skills` | — | `{"skills":[{name,filename,description,tags,size_bytes,modified,unavailable,missing_bins,parse_error}, ...]}` |
+| `GET` | `/settings/api/skills/{name}` | — | Raw markdown as `text/plain` |
+| `POST` | `/settings/api/skills` | `multipart/form-data` with field `file` | `{"ok":true,"name":"...","filename":"..."}`; `409` if a file with that name already exists |
+| `DELETE` | `/settings/api/skills/{name}` | — | `{"ok":true}`; `404` if missing |
+
+All four routes inherit the gateway's bearer-auth middleware (when `gateway.auth.token` is set in `felix.json5`).
 
 ---
 
@@ -1377,7 +1398,8 @@ When the gateway is running (`felix start`), it exposes a JSON-RPC 2.0 API over 
 | `GET /chat` | Web chat interface (light/dark mode, streaming, agent selector) |
 | `GET /jobs` | Cron jobs dashboard (view active scheduled tasks) |
 | `GET /logs` | Recent gateway log viewer (live tail at `/logs/stream`) |
-| `GET /settings` | Settings UI — Agents / Providers / Models / Intelligence / Security / Messaging / MCP / Gateway tabs |
+| `GET /settings` | Settings UI — Agents / Providers / Models / Intelligence / Security / Messaging / MCP / Gateway / Skills tabs |
+| `GET/POST/DELETE /settings/api/skills*` | Manage skills in `~/.felix/skills/` (list / view / upload / delete). See the [Skills](#skills) section. |
 
 ### Send a chat message
 
