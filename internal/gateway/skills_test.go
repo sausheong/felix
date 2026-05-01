@@ -1,10 +1,32 @@
 package gateway
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/sausheong/felix/internal/skill"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// newSkillTest builds a fresh SkillHandlers wired to a temp skills dir.
+func newSkillTest(t *testing.T) (*SkillHandlers, string, *skill.Loader) {
+	t.Helper()
+	dir := t.TempDir()
+	loader := skill.NewLoader()
+	require.NoError(t, loader.LoadFrom(dir))
+	h := NewSkillHandlers(loader, dir, []string{dir})
+	return h, dir, loader
+}
+
+// writeSkill writes a skill file with the given filename and content into dir.
+func writeSkill(t *testing.T, dir, filename, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o644))
+}
 
 func TestValidateSkillName(t *testing.T) {
 	tests := []struct {
@@ -36,4 +58,64 @@ func TestValidateSkillName(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestList_Empty(t *testing.T) {
+	h, _, _ := newSkillTest(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/settings/api/skills", nil)
+	w := httptest.NewRecorder()
+	h.List(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"skills":[]}`, w.Body.String())
+}
+
+func TestList_ParsesFrontmatter(t *testing.T) {
+	h, dir, _ := newSkillTest(t)
+	writeSkill(t, dir, "alpha.md", "---\nname: alpha\ndescription: First skill\ntags: [a, b]\n---\nbody1\n")
+	writeSkill(t, dir, "beta.md", "---\nname: beta\ndescription: Second skill\n---\nbody2\n")
+
+	req := httptest.NewRequest(http.MethodGet, "/settings/api/skills", nil)
+	w := httptest.NewRecorder()
+	h.List(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	body := w.Body.String()
+	assert.Contains(t, body, `"name":"alpha"`)
+	assert.Contains(t, body, `"description":"First skill"`)
+	assert.Contains(t, body, `"filename":"alpha.md"`)
+	assert.Contains(t, body, `"name":"beta"`)
+	assert.Contains(t, body, `"tags":["a","b"]`)
+}
+
+func TestList_MalformedFrontmatter(t *testing.T) {
+	h, dir, _ := newSkillTest(t)
+	writeSkill(t, dir, "broken.md", "---\nname: [unclosed\n---\nbody\n")
+
+	req := httptest.NewRequest(http.MethodGet, "/settings/api/skills", nil)
+	w := httptest.NewRecorder()
+	h.List(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "list must not fail on individual bad files")
+	body := w.Body.String()
+	assert.Contains(t, body, `"filename":"broken.md"`)
+	assert.Contains(t, body, `"parse_error":`)
+	assert.NotContains(t, body, `"parse_error":""`)
+}
+
+func TestList_MissingBins(t *testing.T) {
+	h, dir, _ := newSkillTest(t)
+	writeSkill(t, dir, "needsbin.md",
+		"---\nname: needsbin\nmetadata:\n  openclaw:\n    requires:\n      bins: [definitely-not-installed-xyz-123]\n---\nbody\n")
+
+	req := httptest.NewRequest(http.MethodGet, "/settings/api/skills", nil)
+	w := httptest.NewRecorder()
+	h.List(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	body := w.Body.String()
+	assert.Contains(t, body, `"unavailable":true`)
+	assert.Contains(t, body, `"missing_bins":["definitely-not-installed-xyz-123"]`)
 }

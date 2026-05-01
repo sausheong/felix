@@ -4,10 +4,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/sausheong/felix/internal/skill"
 )
+
+// skillListEntry is a single skill returned by the List endpoint.
+type skillListEntry struct {
+	Name        string   `json:"name"`
+	Filename    string   `json:"filename"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
+	SizeBytes   int64    `json:"size_bytes"`
+	Modified    string   `json:"modified"`
+	Unavailable bool     `json:"unavailable"`
+	MissingBins []string `json:"missing_bins"`
+	ParseError  string   `json:"parse_error"`
+}
 
 // skillReloader is the subset of *skill.Loader the handler needs. Defined
 // as an interface so tests can inject a fake whose LoadFrom returns an error.
@@ -38,7 +56,59 @@ type SkillHandlers struct {
 func NewSkillHandlers(loader skillReloader, skillsDir string, reloadDirs []string) *SkillHandlers {
 	h := &SkillHandlers{}
 	h.List = func(w http.ResponseWriter, r *http.Request) {
-		writeSkillJSONError(w, http.StatusNotImplemented, "list not implemented")
+		entries, err := os.ReadDir(skillsDir)
+		if err != nil && !os.IsNotExist(err) {
+			writeSkillJSONError(w, http.StatusInternalServerError, "read skills dir: "+err.Error())
+			return
+		}
+
+		out := struct {
+			Skills []skillListEntry `json:"skills"`
+		}{Skills: []skillListEntry{}}
+
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			fname := e.Name()
+			if !strings.HasSuffix(strings.ToLower(fname), ".md") {
+				continue
+			}
+			full := filepath.Join(skillsDir, fname)
+			info, err := os.Stat(full)
+			if err != nil {
+				continue
+			}
+			entry := skillListEntry{
+				Filename:    fname,
+				Tags:        []string{},
+				MissingBins: []string{},
+				SizeBytes:   info.Size(),
+				Modified:    info.ModTime().UTC().Format(time.RFC3339),
+			}
+			s, perr := skill.ParseSkillFile(full)
+			if perr != nil {
+				entry.Name = strings.TrimSuffix(fname, filepath.Ext(fname))
+				entry.ParseError = perr.Error()
+			} else {
+				entry.Name = s.Name
+				entry.Description = s.Description
+				if s.Tags != nil {
+					entry.Tags = s.Tags
+				}
+				if missing := skill.MissingBins(s); len(missing) > 0 {
+					entry.Unavailable = true
+					entry.MissingBins = missing
+				}
+			}
+			out.Skills = append(out.Skills, entry)
+		}
+
+		sort.Slice(out.Skills, func(i, j int) bool {
+			return out.Skills[i].Filename < out.Skills[j].Filename
+		})
+
+		writeSkillJSON(w, out)
 	}
 	h.Get = func(w http.ResponseWriter, r *http.Request) {
 		writeSkillJSONError(w, http.StatusNotImplemented, "get not implemented")
@@ -51,7 +121,6 @@ func NewSkillHandlers(loader skillReloader, skillsDir string, reloadDirs []strin
 	}
 	// Silence unused-arg warnings until subsequent tasks fill in the handlers.
 	_ = loader
-	_ = skillsDir
 	_ = reloadDirs
 	return h
 }
