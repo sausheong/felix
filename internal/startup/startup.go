@@ -445,6 +445,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	if err := skillLoader.LoadFrom(skillDirs...); err != nil {
 		slog.Warn("failed to load skills", "error", err)
 	}
+	skillHandlers := gateway.NewSkillHandlers(skillLoader, filepath.Join(dataDir, "skills"), skillDirs)
 
 	// Init memory manager
 	var memMgr *memory.Manager
@@ -768,6 +769,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			wsHandler.UpdateConfig(newCfg)
 			slog.Info("config updated via settings page")
 		}),
+		Skills:    skillHandlers,
 		LogBuffer: logBuf,
 	})
 
