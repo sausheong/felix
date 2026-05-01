@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -312,6 +313,71 @@ func FormatForPrompt(entries []Entry) string {
 	}
 
 	return b.String()
+}
+
+// MaxMemoryIndexEntries caps how many entries FormatIndex includes. The
+// index is injected into the cached static system prompt every turn, so
+// it must stay bounded — a few hundred entries × ~80 chars/line is fine
+// (~25 KB). Entries beyond the cap are silently elided.
+const MaxMemoryIndexEntries = 200
+
+// FormatIndex returns a markdown index of every loaded memory entry
+// (id + title + 1-line description). Mirrors skill.Loader.FormatIndex.
+// The agent loads full bodies on demand via the load_memory tool
+// instead of having Top-N hits jammed into every prefill — saves
+// 5–10 KB of system-prompt prefix and lets the model decide what's
+// worth pulling. Returns "" for empty Manager.
+//
+// Entries are sorted by id for stable cache-prefix ordering across turns.
+// One-line description is the first non-empty line of the body that is
+// not the title heading; trimmed to ~120 chars.
+func (m *Manager) FormatIndex() string {
+	m.mu.RLock()
+	entries := make([]Entry, 0, len(m.entries))
+	for _, e := range m.entries {
+		entries = append(entries, e)
+	}
+	m.mu.RUnlock()
+
+	if len(entries) == 0 {
+		return ""
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	if len(entries) > MaxMemoryIndexEntries {
+		entries = entries[:MaxMemoryIndexEntries]
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n## Memory Index\n\nThe following memory entries are available. Use the `load_memory` tool with an entry id to read its full body when relevant — entries are not injected automatically. Always check whether memory is relevant before answering domain or user-context questions.\n\n")
+	for _, e := range entries {
+		b.WriteString("- **")
+		b.WriteString(e.ID)
+		b.WriteString("** — ")
+		b.WriteString(e.Title)
+		if d := indexDescription(e); d != "" {
+			b.WriteString(": ")
+			b.WriteString(d)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// indexDescription returns a short one-line teaser for the index entry —
+// the first non-empty body line that isn't the H1 title, trimmed to
+// 120 chars. Returns "" when the body has nothing beyond the title.
+func indexDescription(e Entry) string {
+	for _, line := range strings.Split(e.Content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "# ") {
+			continue
+		}
+		if len(line) > 120 {
+			line = line[:120] + "…"
+		}
+		return line
+	}
+	return ""
 }
 
 // extractTitle pulls the first H1 heading from content, falling back to the id.

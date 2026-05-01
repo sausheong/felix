@@ -71,12 +71,56 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 		cx = deps.CortexFn(a.Model)
 	}
 
+	// Register the on-demand load tools (sub-project 5) onto the agent's
+	// tool registry. Doing this here means every BuildRuntimeForAgent call
+	// site (chat, gateway, cron, subagent factory) gets the tools without
+	// having to remember to register them — and skipping registration
+	// when the corresponding manager is nil keeps test runtimes lean.
+	//
+	// Type-assert to *tools.Registry rather than widening tools.Executor
+	// with Register: the Executor interface is consumed by partition,
+	// dispatch, and gateway code paths plus several test fakes; broadening
+	// it would force every fake to add a method none of them need.
+	// Production callers always pass *tools.Registry; test paths that
+	// don't won't get load tools registered (which is fine for them).
+	if reg, ok := inputs.Tools.(*tools.Registry); ok {
+		if deps.Skills != nil {
+			reg.Register(&tools.LoadSkillTool{
+				Lookup: func(name string) (string, bool) {
+					for _, s := range deps.Skills.Skills() {
+						if s.Name == name {
+							return s.Body, true
+						}
+					}
+					return "", false
+				},
+			})
+		}
+		if deps.Memory != nil {
+			reg.Register(&tools.LoadMemoryTool{
+				Lookup: func(id string) (string, bool) {
+					e, ok := deps.Memory.Get(id)
+					if !ok {
+						return "", false
+					}
+					return e.Content, true
+				},
+			})
+		}
+	}
+
 	// Pre-compute the static portion of the system prompt so the per-turn
-	// hot loop never reads config or rebuilds the skills index.
+	// hot loop never reads config or rebuilds the skills/memory indices.
+	// The load tools are registered above so toolNames includes them in
+	// the default-identity tool hints.
 	configSummary := BuildConfigSummary(deps.Config)
 	skillsIndex := ""
 	if deps.Skills != nil {
 		skillsIndex = deps.Skills.FormatIndex()
+	}
+	memoryIndex := ""
+	if deps.Memory != nil {
+		memoryIndex = deps.Memory.FormatIndex()
 	}
 	var toolNames []string
 	if inputs.Tools != nil {
@@ -86,7 +130,7 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 	staticPrompt := BuildStaticSystemPrompt(
 		a.Workspace, a.SystemPrompt, a.ID, a.Name,
 		toolNames, configSummary, skillsIndex,
-		memoryFiles,
+		memoryIndex, memoryFiles,
 	)
 
 	return &Runtime{

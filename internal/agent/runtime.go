@@ -312,11 +312,6 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			maxTurns = 25
 		}
 
-		// Cached per-request: skill / memory matches don't change between
-		// turns since they're keyed on userMsg.
-		var matchedSkills []skill.Skill
-		var matchedMemory []memory.Entry
-
 		// Computed once per Run so the date stays stable across turns of
 		// this request (avoids cache misses on long-running loops that
 		// happen to cross midnight).
@@ -331,22 +326,11 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 
 			// Assemble dynamic suffix only — the static portion was pre-computed
 			// at Runtime construction time and lives on r.StaticSystemPrompt.
+			// Skill bodies and memory entries are no longer matched here
+			// (sub-project 5): the Skills / Memory indices live in the
+			// cached static prompt and the agent loads bodies on demand
+			// via the load_skill / load_memory tools.
 			phaseStart := time.Now()
-
-			// Match relevant skills (cached per-request: result doesn't change
-			// across turns since the user message is the same).
-			if r.Skills != nil && turn == 0 {
-				skillStart := time.Now()
-				matchedSkills = r.Skills.MatchSkills(userMsg, 1)
-				tr.Mark("skills.match", "turn", turn, "matched", len(matchedSkills), "dur_ms_local", time.Since(skillStart).Milliseconds())
-			}
-
-			// Search relevant memory (same per-request caching as skills).
-			if r.Memory != nil && turn == 0 {
-				memStart := time.Now()
-				matchedMemory = r.Memory.Search(userMsg, 3)
-				tr.Mark("memory.search", "turn", turn, "hits", len(matchedMemory), "dur_ms_local", time.Since(memStart).Milliseconds())
-			}
 
 			// Cortex hint: on first turn wait for the background Recall (with
 			// 800ms cap so a slow embedder can't stall the request).
@@ -364,7 +348,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				cortexCh = nil
 			}
 
-			dynamicSuffix := buildDynamicSystemPromptSuffix(dateLine, matchedSkills, matchedMemory, cortexContext)
+			dynamicSuffix := buildDynamicSystemPromptSuffix(dateLine, cortexContext)
 
 			// Build the structured system prompt: static (cached) + dynamic
 			// (not cached).

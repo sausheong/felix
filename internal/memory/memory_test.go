@@ -1,8 +1,10 @@
 package memory
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -165,4 +167,93 @@ func TestFormatMemoryForPromptTruncation(t *testing.T) {
 
 	result := FormatForPrompt(entries)
 	assert.Contains(t, result, "[truncated]")
+}
+
+// --- FormatIndex (sub-project 5: index injection, on-demand load) ---
+
+func TestFormatIndexEmptyManagerReturnsEmpty(t *testing.T) {
+	m := NewManager(t.TempDir())
+	require.Equal(t, "", m.FormatIndex())
+}
+
+func TestFormatIndexListsEntriesSortedByID(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.entries = map[string]Entry{
+		"zebra":  {ID: "zebra", Title: "Z", Content: "# Z\n\nlast line about zebras."},
+		"apple":  {ID: "apple", Title: "A", Content: "# A\n\nfirst line about apples."},
+		"banana": {ID: "banana", Title: "B", Content: "# B\n\nbody about bananas."},
+	}
+	got := m.FormatIndex()
+	require.Contains(t, got, "## Memory Index")
+	// Order must be apple, banana, zebra. Sorting matters: the index
+	// goes into the cached static prompt, so any non-deterministic
+	// ordering would invalidate the prompt cache every turn.
+	a := strings.Index(got, "**apple**")
+	b := strings.Index(got, "**banana**")
+	z := strings.Index(got, "**zebra**")
+	require.True(t, a >= 0 && b > a && z > b,
+		"entries must be sorted by id; got positions %d %d %d", a, b, z)
+}
+
+func TestFormatIndexIncludesTitleAndDescription(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.entries = map[string]Entry{
+		"e1": {
+			ID:      "e1",
+			Title:   "First entry title",
+			Content: "# First entry title\n\nThis is the one-line description.",
+		},
+	}
+	got := m.FormatIndex()
+	require.Contains(t, got, "**e1**")
+	require.Contains(t, got, "First entry title")
+	require.Contains(t, got, "This is the one-line description.")
+}
+
+func TestFormatIndexSkipsTitleInDescription(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.entries = map[string]Entry{
+		"e1": {
+			ID:      "e1",
+			Title:   "Has only title",
+			Content: "# Has only title\n",
+		},
+	}
+	got := m.FormatIndex()
+	require.Contains(t, got, "**e1**")
+	require.Contains(t, got, "Has only title")
+	// No body beyond the title means no description suffix —
+	// indexDescription must walk past the H1 line.
+	require.NotContains(t, got, ": # ")
+}
+
+func TestFormatIndexCapsAtMax(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.entries = make(map[string]Entry)
+	// 250 entries with sortable IDs (e_001 .. e_250) so the cap is
+	// observable: the LAST entry (e_250) must be elided when the cap
+	// is 200.
+	for i := 1; i <= 250; i++ {
+		id := fmt.Sprintf("e_%03d", i)
+		m.entries[id] = Entry{ID: id, Title: id, Content: ""}
+	}
+	got := m.FormatIndex()
+	require.Contains(t, got, "**e_001**")
+	require.Contains(t, got, "**e_200**")
+	require.NotContains(t, got, "**e_201**")
+	require.NotContains(t, got, "**e_250**")
+}
+
+func TestFormatIndexTrimsLongDescription(t *testing.T) {
+	m := NewManager(t.TempDir())
+	long := strings.Repeat("x", 500)
+	m.entries = map[string]Entry{
+		"e1": {ID: "e1", Title: "T", Content: "# T\n" + long},
+	}
+	got := m.FormatIndex()
+	// 120-char cap + ellipsis. Anything close to 500 chars on the
+	// description line means the cap silently failed.
+	require.Contains(t, got, "…")
+	// The description segment must end with the ellipsis, not the full string.
+	require.NotContains(t, got, long)
 }

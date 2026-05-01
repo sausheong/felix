@@ -44,7 +44,7 @@ func TestBuildStaticSystemPromptIdentity(t *testing.T) {
 	require.NoError(t, err)
 
 	result := BuildStaticSystemPrompt(dir, "", "test", "Test Agent",
-		[]string{"read_file", "bash"}, "", "", "")
+		[]string{"read_file", "bash"}, "", "", "", "")
 	assert.Contains(t, result, identityContent)
 	assert.Contains(t, result, "configuration file")
 }
@@ -52,7 +52,7 @@ func TestBuildStaticSystemPromptIdentity(t *testing.T) {
 func TestBuildStaticSystemPromptDefaultIdentityAndPaths(t *testing.T) {
 	dir := t.TempDir() // workspace, no IDENTITY.md
 	result := BuildStaticSystemPrompt(dir, "", "default", "Assistant",
-		[]string{"read_file", "bash"}, "", "", "")
+		[]string{"read_file", "bash"}, "", "", "", "")
 	assert.Contains(t, result, defaultIdentityBase)
 	assert.Contains(t, result, "read files")
 	assert.Contains(t, result, "bash commands")
@@ -69,7 +69,7 @@ func TestBuildStaticSystemPromptSystemPromptOverride(t *testing.T) {
 
 	configPrompt := "You are a custom agent from config."
 	result := BuildStaticSystemPrompt(dir, configPrompt, "custom", "Custom Agent",
-		[]string{"read_file"}, "", "", "")
+		[]string{"read_file"}, "", "", "", "")
 	assert.Contains(t, result, configPrompt)
 	assert.NotContains(t, result, "FROM_IDENTITY_FILE")
 }
@@ -77,7 +77,7 @@ func TestBuildStaticSystemPromptSystemPromptOverride(t *testing.T) {
 func TestBuildStaticSystemPromptSelfIdentityLine(t *testing.T) {
 	dir := t.TempDir()
 	result := BuildStaticSystemPrompt(dir, "", "supervisor", "Supervisor",
-		nil, "", "", "")
+		nil, "", "", "", "")
 	assert.Contains(t, result, `"Supervisor" agent (id: supervisor)`)
 }
 

@@ -455,8 +455,8 @@ func TestRuntimeDynamicSuffixIncludesDate(t *testing.T) {
 // this proves the date is stable across turns of a single Run.
 func TestRuntimeDateLineComputedOncePerRun(t *testing.T) {
 	dl := "Today's date is 2026-05-01."
-	a := buildDynamicSystemPromptSuffix(dl, nil, nil, "")
-	b := buildDynamicSystemPromptSuffix(dl, nil, nil, "")
+	a := buildDynamicSystemPromptSuffix(dl, "")
+	b := buildDynamicSystemPromptSuffix(dl, "")
 	require.Equal(t, a, b)
 }
 

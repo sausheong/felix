@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/sausheong/felix/internal/config"
-	"github.com/sausheong/felix/internal/memory"
-	"github.com/sausheong/felix/internal/skill"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,6 +54,7 @@ func TestBuildStaticSystemPromptWithIdentityFile(t *testing.T) {
 		[]string{"read_file"},
 		"Configured channels: cli",
 		"\n\n## Skills Index\n\n- foo",
+		"", // memoryIndex
 		"", // memoryFiles
 	)
 	require.Contains(t, got, "CUSTOM IDENTITY")
@@ -68,14 +67,14 @@ func TestBuildStaticSystemPromptConfigOverride(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "IDENTITY.md"), []byte("FROM_IDENTITY_FILE"), 0o644))
 
-	got := BuildStaticSystemPrompt(dir, "FROM CONFIG", "id", "Name", nil, "", "", "")
+	got := BuildStaticSystemPrompt(dir, "FROM CONFIG", "id", "Name", nil, "", "", "", "")
 	require.Contains(t, got, "FROM CONFIG")
 	require.NotContains(t, got, "FROM_IDENTITY_FILE")
 }
 
 func TestBuildStaticSystemPromptDefaultIdentity(t *testing.T) {
 	dir := t.TempDir() // no IDENTITY.md
-	got := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file", "bash"}, "", "", "")
+	got := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file", "bash"}, "", "", "", "")
 	require.Contains(t, got, defaultIdentityBase)
 	require.Contains(t, got, "read files")
 	require.Contains(t, got, "bash commands")
@@ -83,31 +82,41 @@ func TestBuildStaticSystemPromptDefaultIdentity(t *testing.T) {
 
 func TestBuildStaticSystemPromptByteStableAcrossCalls(t *testing.T) {
 	dir := t.TempDir()
-	a := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file"}, "summary", "index", "")
-	b := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file"}, "summary", "index", "")
+	a := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file"}, "summary", "index", "memidx", "")
+	b := BuildStaticSystemPrompt(dir, "", "id", "Name", []string{"read_file"}, "summary", "index", "memidx", "")
 	require.Equal(t, a, b, "BuildStaticSystemPrompt must be deterministic")
 }
 
-func TestBuildDynamicSystemPromptSuffixAllSources(t *testing.T) {
-	skills := []skill.Skill{{Name: "foo", Body: "FOO BODY"}}
-	mem := []memory.Entry{{ID: "m1", Title: "Mem One", Content: "memory body"}}
-	cortex := "\n\n## Cortex hint\n..."
-
-	got := buildDynamicSystemPromptSuffix("", skills, mem, cortex)
-	require.Contains(t, got, "FOO BODY")
-	require.Contains(t, got, "Mem One")
-	require.Contains(t, got, "memory body")
-	require.Contains(t, got, "Cortex hint")
+func TestBuildStaticSystemPromptIncludesMemoryIndex(t *testing.T) {
+	dir := t.TempDir()
+	got := BuildStaticSystemPrompt(
+		dir, "", "id", "Name",
+		[]string{"read_file"},
+		"", "",
+		"\n\n## Memory Index\n\n- **note1** — A note: one-line desc",
+		"",
+	)
+	require.Contains(t, got, "## Memory Index")
+	require.Contains(t, got, "**note1**")
+	require.Contains(t, got, "one-line desc")
 }
 
 func TestBuildDynamicSystemPromptSuffixEmpty(t *testing.T) {
-	got := buildDynamicSystemPromptSuffix("", nil, nil, "")
+	got := buildDynamicSystemPromptSuffix("", "")
 	require.Equal(t, "", got)
 }
 
 func TestBuildDynamicSystemPromptSuffixCortexOnly(t *testing.T) {
-	got := buildDynamicSystemPromptSuffix("", nil, nil, "\n\nCORTEX")
+	got := buildDynamicSystemPromptSuffix("", "\n\nCORTEX")
 	require.Equal(t, "\n\nCORTEX", got)
+}
+
+func TestBuildDynamicSystemPromptSuffixDateAndCortex(t *testing.T) {
+	got := buildDynamicSystemPromptSuffix("Today's date is 2026-05-01.", "\n\nCORTEX_HINT")
+	dateIdx := strings.Index(got, "Today's date is")
+	cortexIdx := strings.Index(got, "CORTEX_HINT")
+	require.True(t, dateIdx >= 0 && cortexIdx > dateIdx,
+		"order must be date < cortex; got %d %d", dateIdx, cortexIdx)
 }
 
 func TestLoadAgentMemoryFilesEmpty(t *testing.T) {
@@ -256,8 +265,9 @@ func TestBuildStaticSystemPromptIncludesMemoryFiles(t *testing.T) {
 	got := BuildStaticSystemPrompt(
 		dir, "", "id", "Name",
 		[]string{"read_file"},
-		"",                  // configSummary
-		"",                  // skillsIndex
+		"", // configSummary
+		"", // skillsIndex
+		"", // memoryIndex
 		"\n\n## Project memory: /tmp/x\n\nUNIQUE_MEM_FILES_SENTINEL", // memoryFiles
 	)
 	require.Contains(t, got, "UNIQUE_MEM_FILES_SENTINEL")
@@ -283,23 +293,7 @@ func TestFormatDateLine(t *testing.T) {
 }
 
 func TestBuildDynamicSystemPromptSuffixIncludesDate(t *testing.T) {
-	got := buildDynamicSystemPromptSuffix(
-		"Today's date is 2026-05-01.",
-		nil, nil, "",
-	)
+	got := buildDynamicSystemPromptSuffix("Today's date is 2026-05-01.", "")
 	require.True(t, strings.HasPrefix(got, "Today's date is 2026-05-01."),
 		"date line must appear at the top of the dynamic suffix")
-}
-
-func TestBuildDynamicSystemPromptSuffixDatePrependedBeforeOtherSources(t *testing.T) {
-	skills := []skill.Skill{{Name: "foo", Body: "FOO_BODY"}}
-	got := buildDynamicSystemPromptSuffix(
-		"Today's date is 2026-05-01.",
-		skills, nil, "\n\nCORTEX_HINT",
-	)
-	dateIdx := strings.Index(got, "Today's date is")
-	skillIdx := strings.Index(got, "FOO_BODY")
-	cortexIdx := strings.Index(got, "CORTEX_HINT")
-	require.True(t, dateIdx >= 0 && skillIdx > dateIdx && cortexIdx > skillIdx,
-		"order must be date < skills < cortex; got %d %d %d", dateIdx, skillIdx, cortexIdx)
 }

@@ -11,9 +11,7 @@ import (
 
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
-	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
-	"github.com/sausheong/felix/internal/skill"
 )
 
 const maxToolResultLen = 4000 // truncate tool results longer than this
@@ -133,19 +131,22 @@ func BuildConfigSummary(cfg *config.Config) string {
 // does not change across turns within a Run: identity (from systemPrompt
 // arg, IDENTITY.md, or the built-in default tailored to toolNames), agent
 // self-identity, the configuration/data dir paths, the pre-computed
-// configSummary, the pre-computed skillsIndex, and the pre-computed
-// memoryFiles (FELIX.md / AGENTS.md walk-up).
+// configSummary, the pre-computed skillsIndex, the pre-computed
+// memoryIndex (id+title+1-line desc, agent loads bodies on demand via
+// load_memory tool), and the pre-computed memoryFiles (FELIX.md /
+// AGENTS.md walk-up).
 //
 // Pure with one allowed exception: it reads IDENTITY.md from workspace
 // when systemPrompt is empty. Caller pre-resolves configSummary,
-// skillsIndex, and memoryFiles so neither config.Load nor skill-index
-// assembly nor memory-file disk reads happen per-turn. Suitable to call
-// once at Runtime construction.
+// skillsIndex, memoryIndex, and memoryFiles so neither config.Load nor
+// skill/memory index assembly nor memory-file disk reads happen
+// per-turn. Suitable to call once at Runtime construction.
 func BuildStaticSystemPrompt(
 	workspace, systemPrompt, agentID, agentName string,
 	toolNames []string,
 	configSummary string,
 	skillsIndex string,
+	memoryIndex string,
 	memoryFiles string,
 ) string {
 	var base string
@@ -174,6 +175,9 @@ func BuildStaticSystemPrompt(
 	if skillsIndex != "" {
 		base += skillsIndex
 	}
+	if memoryIndex != "" {
+		base += memoryIndex
+	}
 	if memoryFiles != "" {
 		base += memoryFiles
 	}
@@ -182,26 +186,20 @@ func BuildStaticSystemPrompt(
 }
 
 // buildDynamicSystemPromptSuffix concatenates the per-turn dynamic context
-// — the date line, matched skill bodies, matched memory entries, and the
-// cortex hint — into a single string the runtime sends as the second
-// (un-cached) SystemPromptPart. The date line, when non-empty, appears at
-// the top so the model anchors on "today" before the per-turn content.
-// Returns "" when all inputs are empty/nil.
-func buildDynamicSystemPromptSuffix(
-	dateLine string,
-	matchedSkills []skill.Skill,
-	matchedMemory []memory.Entry,
-	cortexContext string,
-) string {
+// — the date line and the cortex hint — into a single string the runtime
+// sends as the second (un-cached) SystemPromptPart. The date line, when
+// non-empty, appears at the top so the model anchors on "today" before
+// the per-turn content. Returns "" when all inputs are empty/nil.
+//
+// As of sub-project 5, skill bodies and memory entries are no longer
+// auto-injected here. Their indices live in the cached static prompt
+// and the agent loads bodies on demand via the load_skill / load_memory
+// tools. This trims 5–15 KB of speculative skill bodies and 5–10 KB of
+// speculative memory bodies from every prefill.
+func buildDynamicSystemPromptSuffix(dateLine, cortexContext string) string {
 	var sb strings.Builder
 	if dateLine != "" {
 		sb.WriteString(dateLine)
-	}
-	if extra := skill.FormatForPrompt(matchedSkills); extra != "" {
-		sb.WriteString(extra)
-	}
-	if extra := memory.FormatForPrompt(matchedMemory); extra != "" {
-		sb.WriteString(extra)
 	}
 	if cortexContext != "" {
 		sb.WriteString(cortexContext)
