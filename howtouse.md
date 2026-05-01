@@ -1,6 +1,6 @@
 # How to Use Felix
 
-Felix is a self-hosted AI agent gateway. It runs as a single binary on your machine and connects messaging channels (CLI, Telegram, WhatsApp) to LLM providers (Claude, GPT, Ollama, and more). You talk to it, and it talks back — with the ability to read files, write code, run commands, and browse the web on your behalf.
+Felix is a self-hosted AI agent gateway. It runs as a single binary on your machine and connects you (via CLI or web chat) to LLM providers (Claude, GPT, Gemini, Qwen, Ollama, and any OpenAI-compatible API). You talk to it, and it talks back — with the ability to read files, write code, run commands, browse the web, and delegate subtasks to other agents on your behalf.
 
 ## Table of Contents
 
@@ -20,7 +20,7 @@ Felix is a self-hosted AI agent gateway. It runs as a single binary on your mach
 - [Browser Tool](#browser-tool)
 - [Send Message Tool](#send-message-tool)
 - [Dynamic Cron Tool](#dynamic-cron-tool)
-- [Ask Agent Tool](#ask-agent-tool)
+- [Task Tool (subagent delegation)](#task-tool-subagent-delegation)
 - [Tool Policies](#tool-policies)
 - [WebSocket API](#websocket-api)
 - [Security](#security)
@@ -44,7 +44,7 @@ make build-app-windows  # Windows system tray app (felix-app.exe)
 ./felix onboard
 ```
 
-The wizard walks you through choosing an LLM provider, entering your API key, and optionally setting up Telegram or WhatsApp.
+The wizard walks you through choosing an LLM provider and entering your API key (or picking a bundled local model if you want to run fully offline).
 
 ### 3. Start chatting
 
@@ -53,7 +53,7 @@ The wizard walks you through choosing an LLM provider, entering your API key, an
 ./felix chat
 ```
 
-**Or start the full gateway (enables Telegram, WhatsApp, WebSocket API):**
+**Or start the full gateway (web chat, Settings UI, WebSocket API, cron, heartbeat):**
 ```bash
 ./felix start
 ```
@@ -79,14 +79,19 @@ This checks your config file, data directories, API keys, agent workspaces, and 
 | Command | Description |
 |---------|-------------|
 | `felix onboard` | Interactive setup wizard |
-| `felix start` | Start the gateway server (HTTP + WebSocket + all channels) |
-| `felix chat` | Start an interactive CLI chat session |
+| `felix start` | Start the gateway server (HTTP + WebSocket + web chat + cron + heartbeat) |
+| `felix start -c path/to/config.json5` | Start with a custom config path |
+| `felix chat` | Start an interactive CLI chat session with the default agent |
 | `felix chat myagent` | Chat with a specific agent |
-| `felix chat -m openai/gpt-4o` | Chat with a model override |
+| `felix chat -m openai/gpt-4o` | Chat with a model override for this session only |
+| `felix clear [agent]` | Clear local CLI session history for an agent |
+| `felix sessions [agent]` | List all sessions for an agent |
+| `felix model list \| pull <name> \| rm <name> \| status` | Manage local Ollama models pulled by Felix into the bundled runtime |
 | `felix status` | Query the running gateway for agent status |
-| `felix doctor` | Run diagnostic checks |
+| `felix doctor` | Run diagnostic checks (config, data dirs, API keys, agent workspaces) |
 | `felix doctor -c /path/to/config.json5` | Doctor with a custom config path |
 | `felix version` | Print version and commit info |
+| `felix gt-harness --env-file <file>` | Smoke-test connection to a remote MCP gateway (experimental) |
 
 ### Chat session commands
 
@@ -274,14 +279,16 @@ Felix supports multiple LLM providers simultaneously. Each provider is defined i
 | `anthropic` | Anthropic's native API (custom SSE streaming) | Claude models |
 | `openai` | OpenAI's native API | GPT models |
 | `gemini` | Google's Gemini API (native SDK) | Gemini models |
+| `qwen` | Alibaba Cloud's Qwen (DashScope) | Qwen models |
 | `openai-compatible` | Any API that implements the OpenAI chat completions spec | Ollama, LM Studio, DeepSeek, LiteLLM, vLLM, and more |
+| `local` | Bundled Ollama runtime supervised by Felix; wired up by the onboarding wizard | Fully offline / no API key |
 
 ### Provider config fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `kind` | string | Required. One of `"anthropic"`, `"openai"`, or `"openai-compatible"` |
-| `api_key` | string | API key or auth token. Not needed for local servers like Ollama |
+| `kind` | string | Required. One of `"anthropic"`, `"openai"`, `"gemini"`, `"qwen"`, `"openai-compatible"`, or `"local"` |
+| `api_key` | string | API key or auth token. Not needed for `local` or for self-hosted servers like Ollama |
 | `base_url` | string | Custom API endpoint. Required for `"openai-compatible"`, optional for others |
 
 ### Setting up standard providers
@@ -569,7 +576,9 @@ Only providers that are actually referenced by agents are initialized at startup
 
 ### CLI
 
-The CLI channel is always available via `felix chat`. It renders Markdown responses in your terminal.
+The CLI is the only inbound channel currently shipped. It is always
+available via `felix chat` and renders Markdown responses in your
+terminal.
 
 ```bash
 # Default agent
@@ -582,80 +591,33 @@ felix chat coder
 felix chat -m anthropic/claude-opus-4-0-20250514
 ```
 
-### Telegram
+The web chat page served by the gateway at `http://127.0.0.1:18789/chat`
+talks to the same agent runtime over the WebSocket API, so any agent
+bound to the `cli` channel is reachable from the browser too.
 
-Connect a Telegram bot so you can chat with your agent from your phone.
+### Outbound-only Telegram via the `send_message` tool
 
-**Setup:**
-
-1. Open Telegram and message [@BotFather](https://t.me/BotFather)
-2. Send `/newbot`, follow the prompts, and copy the bot token
-3. Add to your config:
-
-```json5
-{
-  "channels": {
-    "telegram": {
-      "token": "123456:ABC-DEF...",
-      "mode": "polling"
-    }
-  },
-  "bindings": [
-    { "agentId": "default", "match": { "channel": "telegram" } }
-  ]
-}
-```
-
-4. Start the gateway: `felix start`
-5. Message your bot on Telegram
-
-**Group chats:** By default, the bot only responds in groups when mentioned (`@yourbotname`). This is controlled by the `security.groupPolicy.requireMention` setting.
-
-**Image support:** Send a photo to the bot (with or without a caption) and the LLM will analyze it. Photos under 10MB are automatically downloaded and passed to the model for vision analysis.
-
-### WhatsApp
-
-Connect your personal WhatsApp account via the Web multidevice protocol. No Meta Business account or public URL needed — everything runs locally.
-
-**Setup:**
-
-1. Add to your config:
-
-```json5
-{
-  "channels": {
-    "whatsapp": {
-      "db_path": "~/.felix/whatsapp.db",
-      "phone_number": "+1234567890"  // optional, for display only
-    }
-  },
-  "bindings": [
-    { "agentId": "default", "match": { "channel": "whatsapp" } }
-  ]
-}
-```
-
-2. Start the gateway: `felix start`
-3. On first start, a QR code appears in the terminal
-4. Open WhatsApp on your phone > Settings > Linked Devices > Link a Device
-5. Scan the QR code
-
-After the initial pairing, credentials are stored in the SQLite database and reconnection is automatic on subsequent starts.
-
-**Group chats:** In WhatsApp groups, the sender's JID identifies who sent the message, while the group JID is used for replying.
-
-**Image support:** Send a photo to the bot and the LLM will describe and analyze it. Image bytes are downloaded automatically via the WhatsApp protocol.
+There is no inbound Telegram or WhatsApp channel adapter — Felix used to
+ship those but they were retired. What remains is the **outbound**
+`send_message` tool, which can push a message to a Telegram chat via
+the Bot API. Use this for heartbeat/cron alerts when you want
+notifications on your phone but the agent itself runs on your machine
+and is reached via CLI or the web chat. See
+[Send Message Tool](#send-message-tool) below.
 
 ---
 
 ## Image / Vision Support
 
-Felix supports sending images to vision-capable LLMs (Claude, GPT-4o, etc.) across all three channels. The LLM sees the actual image pixels — not just metadata.
+Felix supports sending images to vision-capable LLMs (Claude, GPT-4o,
+Gemini, multimodal Ollama models). The LLM sees the actual image
+pixels — not just metadata. Images can be attached from `felix chat`
+(by typing a file path) or from the web chat page (paste / drag-drop).
 
 ### How it works
 
-1. **You send an image** via Telegram, WhatsApp, or CLI
-2. **Felix downloads the image bytes** (from Telegram's API, WhatsApp's protocol, or the local filesystem)
+1. **You attach an image** via the CLI (file path in your message), the web chat page (paste or drag-drop), or the WebSocket API
+2. **Felix reads the image bytes** from the local filesystem (CLI) or from the WebSocket payload (web chat / API)
 3. **The image is passed to the LLM** as a multipart content block alongside your text
 4. **The LLM responds** with a description, analysis, or answer about the image
 5. **Images are persisted** in the session history (base64-encoded in JSONL) so the LLM can reference them in follow-up messages
@@ -713,23 +675,11 @@ Use the `/screenshot` command in `felix chat` to interactively capture a window 
 | Linux | `maim`, `gnome-screenshot`, or `scrot` | Click a window or drag to select |
 | Windows | PowerShell + .NET `System.Windows.Forms` | Full screen capture |
 
-### Telegram
+### Web chat
 
-Send a photo to your bot — with or without a caption. The bot downloads the photo from Telegram's servers and passes it to the LLM.
-
-```
-[Send photo with caption: "What breed is this dog?"]
-Agent: That looks like a Golden Retriever! It has the characteristic...
-```
-
-### WhatsApp
-
-Send an image message to the bot. The image is downloaded via the WhatsApp protocol and sent to the LLM.
-
-```
-[Send image with caption: "Can you read the text in this screenshot?"]
-Agent: The screenshot shows a terminal with the following output...
-```
+The web chat page at `http://127.0.0.1:18789/chat` accepts pasted
+images and drag-and-drop. Bytes are sent over the WebSocket to the
+agent, which forwards them to the LLM as a multipart content block.
 
 ### Supported LLM providers
 
@@ -739,7 +689,8 @@ Image/vision support works with providers that support multimodal input:
 |----------|---------------|
 | Anthropic (Claude) | Yes — uses `image` content blocks |
 | OpenAI (GPT-4o, etc.) | Yes — uses `image_url` with data URIs |
-| Ollama | Depends on the model (e.g., `llava`, `bakllava`) |
+| Gemini | Yes — uses inline image parts |
+| Ollama | Depends on the model (e.g., `llava`, `bakllava`, `gemma3`) |
 
 If the model doesn't support vision, it will typically ignore the image or return an error.
 
@@ -800,7 +751,7 @@ felix chat local
 
 ### Inter-agent delegation
 
-Agents can delegate subtasks to other agents using the `ask_agent` tool. This enables supervisor/worker patterns where a powerful model orchestrates cheaper or specialized models. See [Ask Agent Tool](#ask-agent-tool) for details.
+Agents can delegate subtasks to other agents using the `task` tool. This enables supervisor/worker patterns where a powerful model orchestrates cheaper or specialized models. See [Task Tool (subagent delegation)](#task-tool-subagent-delegation) for details.
 
 ### Agent identity
 
@@ -837,7 +788,7 @@ Every agent automatically knows:
 - **Who it is** — its own name and ID (e.g., "You are the 'Coder' agent (id: coder)")
 - **Where its config lives** — the path to `felix.json5` and the data directory
 - **What other agents exist** — a summary of all configured agents with their IDs, models, and tools
-- **What channels are connected** — which messaging channels (Telegram, WhatsApp, CLI) are configured
+- **What channels are connected** — currently `cli` (the only inbound channel; web chat shares the same agent runtime)
 
 This is injected automatically into every agent's system prompt, so agents can reference each other and understand the broader system topology without any manual configuration.
 
@@ -864,36 +815,25 @@ If the primary model's provider is unavailable, the agent can fall back to alter
 
 ## Message Routing
 
-Bindings control which agent handles messages from which channel/sender. They are evaluated in order, with more specific matches taking priority.
+Bindings control which agent handles messages from which channel/sender.
+Today the only inbound channel is `cli`, so routing in practice means
+"which agent does the CLI talk to" (and which agent the web chat
+selector defaults to). The matcher itself is more general — kept that
+way because future channel adapters and the existing web-chat agent
+selector both go through it — but a current config is usually one
+binding per agent against `channel: "cli"`.
 
 **Priority order:** `peer.id` > `peer.kind` > `accountId` > `channel` > default
 
 ```json5
 {
   "bindings": [
-    // Alice always talks to the coder agent, on any channel
-    {
-      "agentId": "coder",
-      "match": { "peer": { "id": "alice_telegram_id" } }
-    },
+    // The default agent handles the CLI / web chat
+    { "agentId": "default", "match": { "channel": "cli" } }
 
-    // All group chats on Telegram go to the researcher
-    {
-      "agentId": "researcher",
-      "match": { "channel": "telegram", "peer": { "kind": "group" } }
-    },
-
-    // WhatsApp messages go to a specific agent
-    {
-      "agentId": "personal",
-      "match": { "channel": "whatsapp" }
-    },
-
-    // Everything else (CLI, unmatched Telegram DMs) goes to default
-    {
-      "agentId": "default",
-      "match": { "channel": "cli" }
-    }
+    // (Multi-agent setups: bind each agent to channel cli; the user
+    //  picks the agent in the web chat selector or via
+    //  `felix chat <agent-id>` on the CLI.)
   ]
 }
 ```
@@ -1103,14 +1043,28 @@ The browser context is destroyed after the action completes, so state (cookies, 
 
 ## Send Message Tool
 
-The `send_message` tool lets agents proactively send messages to users or groups on any connected channel (Telegram, WhatsApp, CLI).
+The `send_message` tool lets agents proactively push messages to a
+Telegram chat via the Bot API. This is the **only** outbound channel
+currently wired up — useful for heartbeat / cron alerts so you get
+notified on your phone without running an inbound channel adapter.
 
-### Enable for an agent
+### Configure
+
+Set the bot token (from [@BotFather](https://t.me/BotFather)) under
+`telegram.bot_token` in your config, then allow the tool on the
+agent that needs it:
 
 ```json5
 {
-  "tools": {
-    "allow": ["send_message"]
+  "telegram": {
+    "enabled": true,
+    "bot_token": "123456:ABC-DEF...",
+    "default_chat_id": "123456789"  // optional fallback when the agent omits chat_id
+  },
+  "agents": {
+    "list": [
+      { "id": "default", "tools": { "allow": ["send_message"] } }
+    ]
   }
 }
 ```
@@ -1119,29 +1073,25 @@ The `send_message` tool lets agents proactively send messages to users or groups
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `channel` | string | Channel to send on: `"telegram"`, `"whatsapp"`, or `"cli"` |
-| `chat_id` | string | Recipient identifier (Telegram chat ID, WhatsApp JID, etc.) |
-| `text` | string | Message content |
+| `chat_id` | string | Telegram chat id. Optional if `telegram.default_chat_id` is set in the config |
+| `text` | string | Message content (Markdown rendering follows Telegram's MarkdownV2 rules) |
 
-### Example conversation
+### Example use
 
 ```
-You: If the API health check fails, alert me on Telegram.
+You: If the API health check fails, alert me.
 Agent: [checks API, finds it's down]
-       [uses send_message tool: channel="telegram", chat_id="123456789", text="Alert: API health check failed at 14:32 UTC"]
-       I've sent you an alert on Telegram about the API being down.
+       [send_message: chat_id="123456789",
+        text="Alert: API health check failed at 14:32 UTC"]
+       Sent.
 ```
 
-### Use cases
+### Finding your chat id
 
-- **Heartbeat alerts** — Agent detects an issue during a heartbeat check and notifies you on Telegram or WhatsApp
-- **Cross-channel relay** — Agent receives a message on CLI and forwards a summary to a Telegram group
-- **Scheduled notifications** — Combined with cron, agent sends periodic reports to a chat
-
-### Finding chat IDs
-
-- **Telegram:** Your numeric user ID (visible when the bot receives a message from you, logged in gateway output)
-- **WhatsApp:** The JID, e.g., `1234567890@s.whatsapp.net` for direct messages or `groupid@g.us` for groups
+Open a chat with your bot in Telegram, send any message, and watch
+the gateway log — Felix logs the `chat_id` of incoming Bot API
+updates as it polls. You can also use any third-party "userinfobot"
+to look up your numeric Telegram user id.
 
 ---
 
@@ -1243,18 +1193,18 @@ Both use the same underlying scheduler. Static jobs are ideal for always-on task
 
 ---
 
-## Ask Agent Tool
+## Task Tool (subagent delegation)
 
-The `ask_agent` tool lets an agent delegate a task to another configured agent and get back the result. This enables multi-agent workflows where a supervisor agent can orchestrate specialized worker agents — for example, a powerful model delegating subtasks to cheaper or faster models.
+The `task` tool lets an agent delegate a task to another configured agent and get back the result. This enables multi-agent workflows where a supervisor agent can orchestrate specialized worker agents — for example, a powerful model delegating subtasks to cheaper or faster models.
 
 ### Enable for an agent
 
-Add `ask_agent` to the supervisor agent's tool allow list:
+Add `task` to the supervisor agent's tool allow list:
 
 ```json5
 {
   "tools": {
-    "allow": ["read_file", "bash", "ask_agent"]
+    "allow": ["read_file", "bash", "task"]
   }
 }
 ```
@@ -1274,10 +1224,10 @@ The tool's description dynamically lists all available agents so the LLM knows w
 You: Research the top 3 trending Go libraries this week, then have the coder agent
      write a summary file.
 
-Supervisor: [uses ask_agent: agent_id="researcher", prompt="Find the top 3 trending
+Supervisor: [uses task: agent_id="researcher", prompt="Find the top 3 trending
              Go libraries this week with brief descriptions"]
             [researcher agent uses web_search, returns results]
-            [uses ask_agent: agent_id="coder", prompt="Write a file at /tmp/trending-go.md
+            [uses task: agent_id="coder", prompt="Write a file at /tmp/trending-go.md
              summarizing these libraries: 1. ..."]
             [coder agent uses write_file, returns confirmation]
             Done! I delegated the research to the researcher agent and had the coder
@@ -1295,7 +1245,7 @@ Supervisor: [uses ask_agent: agent_id="researcher", prompt="Find the top 3 trend
         "name": "Supervisor",
         "model": "anthropic/claude-sonnet-4-5-20250514",
         "tools": {
-          "allow": ["read_file", "ask_agent"]
+          "allow": ["read_file", "task"]
         }
       },
       {
@@ -1327,7 +1277,7 @@ Supervisor: [uses ask_agent: agent_id="researcher", prompt="Find the top 3 trend
 
 ### Recursion prevention
 
-To prevent infinite delegation loops, the delegated agent does **not** get the `ask_agent` tool registered in its tool set. Delegation is limited to one level deep: a supervisor can ask a worker, but the worker cannot further delegate.
+To prevent infinite delegation loops, the delegated agent does **not** get the `task` tool registered in its tool set. Delegation is limited to one level deep: a supervisor can ask a worker, but the worker cannot further delegate.
 
 ### Use cases
 
@@ -1353,9 +1303,12 @@ Each agent can have its own tool allow/deny list, controlling what actions it ca
 | `web_fetch` | Fetch a URL and return its content |
 | `web_search` | Search the web |
 | `browser` | Headless Chrome automation (navigate, click, type, screenshot, evaluate JS). All actions accept an optional `url` to navigate before acting |
-| `send_message` | Send a message to a user/group on any connected channel |
+| `send_message` | Push a message to a Telegram chat via the Bot API (outbound only) |
 | `cron` | Dynamically schedule, list, pause, resume, remove, and update recurring tasks |
-| `ask_agent` | Delegate a task to another agent and get back the result |
+| `task` | Delegate a subtask to another configured agent and get back the result |
+| `todo_write` | Per-workspace persistent todo list at `<workspace>/.felix/todos.json`. Used by the agent to externalise plans for any task with 3+ distinct steps |
+| `load_skill` | Load a skill body on demand by name. Felix injects only the skills index into every turn — bodies are fetched only when the agent decides it needs one |
+| `load_memory` | Same on-demand pattern for memory entries — load a single entry by id when the memory index says it's relevant |
 
 ### Policy examples
 
@@ -1422,8 +1375,10 @@ When the gateway is running (`felix start`), it exposes a JSON-RPC 2.0 API over 
 | `GET /ws` | WebSocket endpoint |
 | `GET /metrics` | Prometheus-style metrics (if enabled) |
 | `GET /ui` | Control panel UI |
-| `GET /chat` | Web chat interface (light/dark mode, streaming) |
+| `GET /chat` | Web chat interface (light/dark mode, streaming, agent selector) |
 | `GET /jobs` | Cron jobs dashboard (view active scheduled tasks) |
+| `GET /logs` | Recent gateway log viewer (live tail at `/logs/stream`) |
+| `GET /settings` | Settings UI — Agents / Providers / Models / Intelligence / Security / Messaging / MCP / Gateway tabs |
 
 ### Send a chat message
 
@@ -1468,8 +1423,11 @@ ws.send(JSON.stringify({
 |--------|-------------|
 | `chat.send` | Send a message to an agent (streams response events) |
 | `chat.abort` | Cancel the active response for this connection |
-| `agent.status` | List all configured agents |
-| `session.list` | List sessions |
+| `chat.compact` | Force-compact the active session immediately |
+| `agent.status` | List all configured agents and their state |
+| `session.list` | List sessions for an agent |
+| `session.new` | Start a fresh session for an agent |
+| `session.switch` | Switch the active session for an agent |
 | `session.history` | Load conversation history for an agent |
 | `session.clear` | Clear an agent's session history |
 
@@ -1499,28 +1457,19 @@ Protect the WebSocket API with a bearer token:
 
 WebSocket clients must include the token in the connection header.
 
-### DM policy
+### Group policy (vestige from inbound channel adapters)
 
-Control how the agent responds to unknown senders on messaging channels:
-
-```json5
-{
-  "security": {
-    "dmPolicy": {
-      "unknownSenders": "ignore"  // "ignore", "respond", or "notify"
-    }
-  }
-}
-```
-
-### Group policy
+The `groupPolicy.requireMention` field is preserved in the config
+schema for forward compatibility with future group-chat channel
+adapters. With only the `cli` channel today it has no effect — the
+default value (`true`) is fine. Leaving it documented so downgrading
+back to a prior Felix that had Telegram/WhatsApp inbound doesn't
+silently change behaviour.
 
 ```json5
 {
   "security": {
-    "groupPolicy": {
-      "requireMention": true  // bot only responds in groups when @mentioned
-    }
+    "groupPolicy": { "requireMention": true }
   }
 }
 ```
@@ -1529,15 +1478,16 @@ Control how the agent responds to unknown senders on messaging channels:
 
 ## Example Configurations
 
-### Personal assistant (Claude + Telegram + WhatsApp)
+### Personal assistant (Claude + outbound Telegram alerts)
+
+The assistant chats over CLI / web; it can also push notifications to
+your phone via the `send_message` tool when something interesting
+happens during a heartbeat or cron tick.
 
 ```json5
 {
   "providers": {
-    "anthropic": {
-      "kind": "anthropic",
-      "api_key": "sk-ant-..."
-    }
+    "anthropic": { "kind": "anthropic", "api_key": "sk-ant-..." }
   },
   "agents": {
     "list": [
@@ -1547,27 +1497,27 @@ Control how the agent responds to unknown senders on messaging channels:
         "model": "anthropic/claude-sonnet-4-5-20250514",
         "workspace": "~/.felix/workspace-assistant",
         "tools": {
-          "allow": ["read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search"]
+          "allow": ["read_file", "write_file", "edit_file", "bash",
+                    "web_fetch", "web_search", "send_message"]
         }
       }
     ]
   },
   "bindings": [
-    { "agentId": "assistant", "match": { "channel": "cli" } },
-    { "agentId": "assistant", "match": { "channel": "telegram" } },
-    { "agentId": "assistant", "match": { "channel": "whatsapp" } }
+    { "agentId": "assistant", "match": { "channel": "cli" } }
   ],
-  "channels": {
-    "telegram": { "token": "123456:ABC...", "mode": "polling" },
-    "whatsapp": { "db_path": "~/.felix/whatsapp.db" },
-    "cli": { "enabled": true, "interactive": true }
+  "channels": { "cli": { "enabled": true, "interactive": true } },
+  "telegram": {
+    "enabled": true,
+    "bot_token": "123456:ABC...",
+    "default_chat_id": "123456789"
   },
-  "memory": { "enabled": true },
+  "memory":    { "enabled": true },
   "heartbeat": { "enabled": false }
 }
 ```
 
-### Multi-agent dev team (Claude + GPT + Ollama)
+### Multi-agent dev team (Claude + GPT + Ollama, supervisor delegates with `task`)
 
 ```json5
 {
@@ -1583,7 +1533,7 @@ Control how the agent responds to unknown senders on messaging channels:
         "name": "Tech Lead",
         "model": "anthropic/claude-sonnet-4-5-20250514",
         // The lead can delegate to the coder or reviewer
-        "tools": { "allow": ["read_file", "bash", "ask_agent"] }
+        "tools": { "allow": ["read_file", "bash", "task", "todo_write"] }
       },
       {
         "id": "coder",
@@ -1606,18 +1556,18 @@ Control how the agent responds to unknown senders on messaging channels:
     ]
   },
   "bindings": [
-    { "agentId": "lead",     "match": { "channel": "cli" } },
-    { "agentId": "reviewer", "match": { "channel": "telegram", "peer": { "kind": "group" } } },
-    { "agentId": "quick",    "match": { "channel": "telegram" } }
+    { "agentId": "lead", "match": { "channel": "cli" } }
+    // The other agents are reachable via the web chat agent selector
+    // and via `task` delegation from the lead.
   ],
-  "channels": {
-    "telegram": { "token": "123456:ABC...", "mode": "polling" },
-    "cli": { "enabled": true }
-  }
+  "channels": { "cli": { "enabled": true } }
 }
 ```
 
-The lead agent can use `ask_agent` to delegate coding tasks to the coder and review tasks to the reviewer, while keeping orchestration control.
+The lead agent uses `task` to delegate coding to the coder and review to
+the reviewer; `todo_write` lets it externalise its plan so the user can
+see what's queued. Each delegated agent runs with its own model + tool
+policy + isolated session.
 
 ### Locked-down read-only agent (safe for shared use)
 
@@ -1637,15 +1587,11 @@ The lead agent can use `ask_agent` to delegate coding tasks to the coder and rev
     ]
   },
   "bindings": [
-    { "agentId": "safe", "match": { "channel": "telegram" } }
+    { "agentId": "safe", "match": { "channel": "cli" } }
   ],
-  "channels": {
-    "telegram": { "token": "123456:ABC...", "mode": "polling" }
-  },
+  "channels": { "cli": { "enabled": true } },
   "security": {
-    "execApprovals": { "level": "deny" },
-    "dmPolicy": { "unknownSenders": "ignore" },
-    "groupPolicy": { "requireMention": true }
+    "execApprovals": { "level": "deny" }
   },
   "gateway": {
     "auth": { "token": "my-secret-token" }
@@ -1690,16 +1636,19 @@ All Felix state lives in `~/.felix/` (on Windows: `C:\Users\<you>\.felix\`):
 
 ```
 ~/.felix/
-  felix.json5           # Configuration file
-  felix-app.log         # Tray app log file (macOS & Windows)
+  felix.json5            # Configuration file
+  felix-app.log          # Tray app log file (macOS & Windows)
   sessions/              # Conversation history (JSONL files)
   memory/entries/        # Memory entries (Markdown files)
-  skills/                # Shared skills (SKILL.md files)
+  skills/                # Shared skills (SKILL.md files; bundled
+                         # starter skills seeded on first run)
+  brain.db               # Cortex knowledge graph (SQLite, when enabled)
+  ollama/                # Bundled Ollama model store (when enabled)
   workspace-default/     # Default agent workspace
     IDENTITY.md          # Agent identity/personality
     HEARTBEAT.md         # Heartbeat checklist
     skills/              # Agent-specific skills
-  whatsapp.db            # WhatsApp device credentials (SQLite)
+    .felix/todos.json    # Per-workspace todo list (todo_write tool)
 ```
 
 No external database is required. Everything is files on disk.

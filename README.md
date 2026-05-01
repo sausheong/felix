@@ -27,6 +27,7 @@ Felix connects you (via CLI or web chat) to LLMs (Claude, GPT, Gemini, DeepSeek,
 - **Session persistence** — append-only JSONL files with DAG structure and branching
 - **Smart compaction** — token-threshold-triggered summarization with a 9-section structured prompt; three-stage fallback chain (full → small-only → placeholder) and per-session circuit breaker so a runaway summarizer can't block conversation
 - **Cache-stability invariant** — request prefixes are byte-stable across turns (sorted tool definitions, deterministic schema normalization, "Resume directly" continuation directive after compaction) so Anthropic and OpenAI prompt caches keep hitting
+- **Stream-failure resilience** — when a streaming response dies mid-flight (TCP reset, idle timeout, partial SSE) the runtime discards the partial output and retries the same request via the provider's non-streaming endpoint, preserving the byte-identical prompt prefix so the cache stays warm. Pre-flight failures (malformed request, 4xx) surface as before
 - **Config hot-reload** — edit felix.json5 while running, changes apply immediately
 - **WebSocket API** — JSON-RPC 2.0 control plane for programmatic access
 - **Local-first** — all data lives on your filesystem, no external database
@@ -466,6 +467,10 @@ Built-in tools that agents can use:
 | `browser` | Headless Chrome automation (navigate, click, type, screenshot, evaluate JS). All actions accept an optional `url` to navigate before acting |
 | `cron` | Dynamically schedule, list, pause, resume, remove, and update recurring tasks |
 | `send_message` | Send outbound messages over a configured channel (currently Telegram via Bot API) |
+| `todo_write` | Per-workspace persistent todo list. Used by the agent to externalise plans for any task with 3+ distinct steps; state is reloaded from disk before every operation so concurrent edits are picked up |
+| `task` | Delegate a subtask to another configured agent. The supervisor agent picks up the result; the subagent runs with its own model + tool policy + isolated session |
+| `load_skill` | Load a single skill body on demand by name. The Skills Index in the system prompt lists every available skill; the body is fetched only when the agent decides it needs it (saves the per-turn injection cost) |
+| `load_memory` | Same pattern for memory entries — load a single entry body by id when the Memory Index says it's relevant |
 
 Tool access is controlled per-agent via allow/deny policies, configurable from the Settings UI's Agents tab.
 
@@ -609,21 +614,25 @@ Per-package test coverage:
 | Package | Coverage |
 |---------|----------|
 | `internal/tokens` | 90.2% |
+| `internal/heartbeat` | 88.6% |
 | `internal/skill` | 87.8% |
-| `internal/compaction` | 87.2% |
-| `internal/mcp` | 83.0% |
+| `internal/compaction` | 82.7% |
+| `internal/agent` | 79.5% |
 | `internal/local` | 77.9% |
-| `internal/memory` | 73.1% |
-| `internal/config` | 72.3% |
+| `internal/config` | 76.8% |
+| `internal/memory` | 76.4% |
+| `internal/channel` | 76.3% |
+| `internal/mcp` | 73.5% |
 | `internal/llm/llmtest` | 68.4% |
 | `internal/router` | 63.6% |
-| `internal/agent` | 60.7% |
-| `internal/session` | 58.9% |
-| `internal/tools` | 47.8% |
-| `internal/llm` | 36.1% |
+| `internal/session` | 61.2% |
+| `internal/tools` | 55.8% |
+| `internal/llm` | 53.4% |
+| `internal/startup` | 37.3% |
 | `internal/cron` | 34.4% |
-| `internal/cortex` | 27.2% |
-| `internal/gateway` | 16.3% |
+| `internal/cortex` | 20.7% |
+| `internal/gateway` | 15.6% |
+| `cmd/felix` | 4.9% |
 
 ---
 
