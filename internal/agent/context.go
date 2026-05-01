@@ -392,39 +392,101 @@ func injectMissingToolResults(msgs []llm.Message) []llm.Message {
 	return out
 }
 
-// truncationMarker uniquely identifies content that pruneToolResults has
-// already shortened, so re-runs across turns become cheap no-ops instead
-// of re-scanning multi-hundred-KB tool outputs each time.
-const truncationMarker = "[truncated — "
+// truncationMarker / spillMarker uniquely identify content that
+// pruneToolResults has already shortened (truncated in-place) or spilled
+// to disk, so re-runs across turns become cheap no-ops instead of
+// re-scanning multi-hundred-KB tool outputs each time. Both markers are
+// recognised on idempotency check; only spillMarker is written when a
+// spillConfig is supplied and the disk write succeeds.
+const (
+	truncationMarker = "[truncated — "
+	spillMarker      = "[spilled — "
+)
 
-// pruneToolResults truncates oversized tool results in the message history
-// to prevent context window overflow and bound prefill growth. Only affects
-// tool result messages (identified by having a ToolCallID). Idempotent:
-// messages already truncated in a prior turn are skipped via marker
-// detection.
+// spillConfig configures disk-spillover behaviour for pruneToolResults.
+// Zero value (Workspace == "") disables spillover and falls back to the
+// legacy in-place truncation path — keeping tests and any code path
+// without a workspace working unchanged.
 //
-// The retained slice is the FIRST maxLen chars (cut at the nearest newline
-// boundary) plus a compact marker telling the model the original size and
-// that it can re-run the tool to fetch more. We keep the head rather than
-// the tail because most tool outputs (file reads, command output) are
-// front-loaded with the most relevant info.
-func pruneToolResults(msgs []llm.Message, maxLen int) {
+// When Workspace is set, oversized tool results are written to
+// <Workspace>/.felix/spill/<SessionKey>/<ToolCallID>.txt and the message
+// is rewritten as: head preview (first maxLen chars cut at newline) +
+// spillMarker pointing the model at the absolute path so it can recover
+// the full output via read_file (which gates on Workspace).
+type spillConfig struct {
+	Workspace  string
+	SessionKey string
+}
+
+// spillToolResult writes content to the workspace-local spill directory
+// and returns the absolute path. Caller is responsible for handing that
+// path to the model. Returns an error on any I/O failure so callers can
+// fall back to truncation.
+func spillToolResult(cfg spillConfig, toolCallID, content string) (string, error) {
+	if cfg.Workspace == "" || cfg.SessionKey == "" || toolCallID == "" {
+		return "", fmt.Errorf("spillToolResult: workspace, session key, and tool call id are required")
+	}
+	dir := filepath.Join(cfg.Workspace, ".felix", "spill", cfg.SessionKey)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("spill mkdir: %w", err)
+	}
+	path := filepath.Join(dir, toolCallID+".txt")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return "", fmt.Errorf("spill write: %w", err)
+	}
+	return path, nil
+}
+
+// pruneToolResults bounds oversized tool results in the message history
+// to prevent context window overflow and bound prefill growth. Only
+// affects tool result messages (identified by having a ToolCallID).
+// Idempotent: messages already shortened in a prior turn are skipped via
+// marker detection (truncationMarker or spillMarker).
+//
+// Two modes:
+//   - With cfg.Workspace + cfg.SessionKey set: the FULL original content
+//     is written to <Workspace>/.felix/spill/<SessionKey>/<ToolCallID>.txt
+//     and the message becomes "<head>\n\n[spilled — N of M chars saved
+//     to <abs path>; use read_file to access the full output]". The
+//     model can recover the entire output via read_file, eliminating the
+//     "re-run the tool" round-trip.
+//   - Without spill config (or on spill write failure): falls back to
+//     the legacy in-place truncation with truncationMarker. This keeps
+//     callers without a workspace (tests, edge paths) working.
+//
+// Either way the retained head is the FIRST maxLen chars cut at the
+// nearest newline boundary — most tool outputs (file reads, command
+// output) are front-loaded with the most relevant info, so the head
+// preview is usually enough on its own.
+func pruneToolResults(msgs []llm.Message, maxLen int, cfg spillConfig) {
 	for i := range msgs {
 		if msgs[i].ToolCallID == "" || len(msgs[i].Content) <= maxLen {
 			continue
 		}
-		// Already-pruned content carries the marker near the end; skip the
-		// expensive LastIndex scan over hundreds of KB.
-		if strings.Contains(msgs[i].Content, truncationMarker) {
+		// Already-shortened content carries one of the markers near the
+		// end; skip the expensive LastIndex scan over hundreds of KB.
+		if strings.Contains(msgs[i].Content, truncationMarker) ||
+			strings.Contains(msgs[i].Content, spillMarker) {
 			continue
 		}
 		originalLen := len(msgs[i].Content)
-		truncated := msgs[i].Content[:maxLen]
-		if idx := strings.LastIndex(truncated, "\n"); idx > maxLen/2 {
-			truncated = truncated[:idx]
+		head := msgs[i].Content[:maxLen]
+		if idx := strings.LastIndex(head, "\n"); idx > maxLen/2 {
+			head = head[:idx]
 		}
+
+		// Try spill first if configured. On any failure, fall through to
+		// legacy truncation so the prefill stays bounded either way.
+		if cfg.Workspace != "" && cfg.SessionKey != "" {
+			if path, err := spillToolResult(cfg, msgs[i].ToolCallID, msgs[i].Content); err == nil {
+				msgs[i].Content = fmt.Sprintf("%s\n\n%s%d of %d chars saved to %s; use read_file to access the full output]",
+					head, spillMarker, len(head), originalLen, path)
+				continue
+			}
+		}
+
 		msgs[i].Content = fmt.Sprintf("%s\n\n%s%d of %d chars; re-run the tool with offset/limit to see more]",
-			truncated, truncationMarker, len(truncated), originalLen)
+			head, truncationMarker, len(head), originalLen)
 	}
 }
 

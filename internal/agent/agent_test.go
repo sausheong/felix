@@ -210,7 +210,8 @@ func TestPruneToolResults(t *testing.T) {
 		{Role: "user", Content: longContent, ToolCallID: "tc_1"},
 	}
 
-	pruneToolResults(msgs, 10000)
+	// Empty spillConfig → legacy in-place truncation path.
+	pruneToolResults(msgs, 10000, spillConfig{})
 
 	// User message should be unchanged
 	assert.Equal(t, "hello", msgs[0].Content)
@@ -225,7 +226,7 @@ func TestPruneToolResultsShort(t *testing.T) {
 		{Role: "user", Content: "short output", ToolCallID: "tc_1"},
 	}
 
-	pruneToolResults(msgs, 10000)
+	pruneToolResults(msgs, 10000, spillConfig{})
 
 	assert.Equal(t, "short output", msgs[0].Content)
 }
@@ -243,7 +244,7 @@ func TestPruneToolResultsNewlineBoundary(t *testing.T) {
 		{Role: "user", Content: content, ToolCallID: "tc_1"},
 	}
 
-	pruneToolResults(msgs, 10000)
+	pruneToolResults(msgs, 10000, spillConfig{})
 
 	// Should be truncated and contain the truncation marker
 	truncated := msgs[0].Content
@@ -253,6 +254,72 @@ func TestPruneToolResultsNewlineBoundary(t *testing.T) {
 	// The truncated content (before the suffix) should end at a newline boundary
 	suffixIdx := strings.Index(truncated, "\n\n"+truncationMarker)
 	assert.Greater(t, suffixIdx, 0, "should contain truncation suffix")
+}
+
+func TestPruneToolResultsSpillsToDisk(t *testing.T) {
+	workspace := t.TempDir()
+	original := strings.Repeat("a", 20000)
+	msgs := []llm.Message{
+		{Role: "user", Content: original, ToolCallID: "tc_42"},
+	}
+
+	pruneToolResults(msgs, 10000, spillConfig{Workspace: workspace, SessionKey: "sess_abc"})
+
+	// Message rewritten to head + spill marker pointing at the file.
+	got := msgs[0].Content
+	assert.Less(t, len(got), len(original))
+	assert.Contains(t, got, spillMarker)
+	assert.NotContains(t, got, truncationMarker, "spill path should not also use legacy marker")
+
+	// Spill file lives where the marker text says it does, holds the
+	// full original content, and the path embedded in the message is
+	// absolute (so read_file's path handling works regardless of CWD).
+	wantPath := filepath.Join(workspace, ".felix", "spill", "sess_abc", "tc_42.txt")
+	assert.Contains(t, got, wantPath)
+	assert.True(t, filepath.IsAbs(wantPath))
+	data, err := os.ReadFile(wantPath)
+	require.NoError(t, err)
+	assert.Equal(t, original, string(data))
+}
+
+func TestPruneToolResultsIdempotentAfterSpill(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := spillConfig{Workspace: workspace, SessionKey: "sess_xyz"}
+	msgs := []llm.Message{
+		{Role: "user", Content: strings.Repeat("b", 20000), ToolCallID: "tc_99"},
+	}
+
+	pruneToolResults(msgs, 10000, cfg)
+	afterFirst := msgs[0].Content
+	require.Contains(t, afterFirst, spillMarker)
+
+	// Second call: marker is present, so the message must be untouched.
+	// Mutating it (e.g. spilling again or appending another marker)
+	// would silently grow the prefill across turns and burn cache.
+	pruneToolResults(msgs, 10000, cfg)
+	assert.Equal(t, afterFirst, msgs[0].Content)
+}
+
+func TestPruneToolResultsFallsBackToTruncationWhenSpillFails(t *testing.T) {
+	// Point Workspace at a path whose parent is a regular file — MkdirAll
+	// will fail, exercising the spill-failure → legacy-truncation
+	// fallback. Without this fallback an unwritable workspace would
+	// silently let the prefill blow past maxLen.
+	parent := t.TempDir()
+	blocker := filepath.Join(parent, "not-a-dir")
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o644))
+	workspace := filepath.Join(blocker, "ws")
+
+	msgs := []llm.Message{
+		{Role: "user", Content: strings.Repeat("c", 20000), ToolCallID: "tc_fail"},
+	}
+
+	pruneToolResults(msgs, 10000, spillConfig{Workspace: workspace, SessionKey: "sess_fail"})
+
+	got := msgs[0].Content
+	assert.Less(t, len(got), 20000, "fallback must still bound the message")
+	assert.Contains(t, got, truncationMarker, "should use legacy marker on spill failure")
+	assert.NotContains(t, got, spillMarker, "spilled marker must not appear when write failed")
 }
 
 // --- Runtime tests ---

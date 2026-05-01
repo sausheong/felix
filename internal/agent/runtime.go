@@ -309,8 +309,12 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			history := r.Session.View()
 			msgs := assembleMessages(history)
 
-			// Prune oversized tool results
-			pruneToolResults(msgs, maxToolResultLen)
+			// Prune oversized tool results — spill to workspace when both
+			// workspace and session key are available, otherwise truncate
+			// in place. spillCfg is computed once per turn so the cfg
+			// passed to all three prune sites in this iteration is consistent.
+			spillCfg := spillConfig{Workspace: r.Workspace, SessionKey: r.Session.Key}
+			pruneToolResults(msgs, maxToolResultLen, spillCfg)
 
 			toolDefs := r.Tools.ToolDefs()
 			if r.Permission != nil {
@@ -368,7 +372,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 						// Re-assemble messages after compaction.
 						history = r.Session.View()
 						msgs = assembleMessages(history)
-						pruneToolResults(msgs, maxToolResultLen)
+						pruneToolResults(msgs, maxToolResultLen, spillCfg)
 					} else {
 						r.emit(AgentEvent{Type: EventCompactionSkipped, Compaction: &res})
 					}
@@ -402,7 +406,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 						// Re-assemble + retry once.
 						history = r.Session.View()
 						msgs = assembleMessages(history)
-						pruneToolResults(msgs, maxToolResultLen)
+						pruneToolResults(msgs, maxToolResultLen, spillCfg)
 						req.Messages = msgs
 						stream, err = r.LLM.ChatStream(ctx, req)
 					} else {
