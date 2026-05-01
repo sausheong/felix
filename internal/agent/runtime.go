@@ -82,6 +82,14 @@ type Runtime struct {
 	// CacheLastMessage on outgoing ChatRequests.
 	Provider string
 
+	// FallbackModel is the bare model name (no provider prefix) to retry
+	// against on a synchronous ChatStream error matching
+	// llm.IsRetryableModelError. Empty string disables fallback.
+	// Populated from AgentConfig.FallbackModel by BuildRuntimeForAgent
+	// (provider prefix stripped — fallback always uses the same provider
+	// as the primary, since LLM is bound to a single provider client).
+	FallbackModel string
+
 	// StaticSystemPrompt is the cacheable portion of the system prompt
 	// (identity, agent metadata, configuration paths, configSummary,
 	// skillsIndex). Built once at BuildRuntimeForAgent time; reused
@@ -477,6 +485,24 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					} else {
 						r.emit(AgentEvent{Type: EventCompactionSkipped, Compaction: &res})
 					}
+				}
+				// Provider fallback (sub-project 6b): swap to FallbackModel
+				// and retry once on transient capacity failures
+				// (Anthropic 429/529, OpenAI 429/5xx). Only fires for
+				// synchronous ChatStream errors — mid-stream failures
+				// surface as EventError later and aren't recoverable
+				// here without major reshape of the event-collection
+				// loop. Single retry only; if the fallback also fails,
+				// emit EventError and exit.
+				if err != nil && r.FallbackModel != "" && r.FallbackModel != req.Model && llm.IsRetryableModelError(err) {
+					slog.Info("llm fallback model engaged",
+						"agent", r.AgentID,
+						"primary", req.Model,
+						"fallback", r.FallbackModel,
+						"err", err.Error())
+					tr.Mark("llm.fallback", "turn", turn, "primary", req.Model, "fallback", r.FallbackModel)
+					req.Model = r.FallbackModel
+					stream, err = r.LLM.ChatStream(ctx, req)
 				}
 				if err != nil {
 					r.emit(AgentEvent{Type: EventError, Error: fmt.Errorf("llm error: %w", err)})

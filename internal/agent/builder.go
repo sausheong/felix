@@ -133,6 +133,24 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 		memoryIndex, memoryFiles,
 	)
 
+	// Strip the provider prefix off FallbackModel so the runtime hands
+	// the same provider client a bare model id on retry. Cross-provider
+	// fallback isn't supported here — Runtime.LLM is one client; if the
+	// configured fallback names a different provider it's a config bug,
+	// so we log and discard.
+	fallbackModel := ""
+	if a.FallbackModel != "" {
+		fbProvider, fbModel := llm.ParseProviderModel(a.FallbackModel)
+		if fbProvider != "" && fbProvider != provider {
+			slog.Warn("fallbackModel ignored: cross-provider fallback not supported",
+				"agent", a.ID,
+				"primary_provider", provider,
+				"fallback", a.FallbackModel)
+		} else {
+			fallbackModel = fbModel
+		}
+	}
+
 	return &Runtime{
 		LLM:                inputs.Provider,
 		Tools:              inputs.Tools,
@@ -140,6 +158,7 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 		AgentID:            a.ID,
 		AgentName:          a.Name,
 		Model:              modelName,
+		FallbackModel:      fallbackModel,
 		Provider:           provider,
 		Reasoning:          reasoning,
 		Workspace:          a.Workspace,

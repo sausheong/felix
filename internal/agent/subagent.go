@@ -70,6 +70,18 @@ func MakeSubagentFactory(
 		if err != nil {
 			return nil, fmt.Errorf("subagent %q: build inputs: %w", agentID, err)
 		}
+		// InheritContext (sub-project 6a): pre-populate the subagent's
+		// fresh session with copies of parent's session entries. The
+		// subagent's first LLM call then sees the parent's history; the
+		// existing CacheLastMessage path naturally caches the inherited
+		// prefix on the subagent's subsequent turns. Done before
+		// BuildRuntimeForAgent so the static prompt isn't accidentally
+		// rebuilt from a half-populated session, and only when the
+		// parent has a non-nil session (subagent paths invoked outside
+		// a parent Run leave parent.Session nil).
+		if a.InheritContext && parent != nil && parent.Session != nil && inputs.Session != nil {
+			inheritParentHistory(inputs.Session, parent.Session)
+		}
 		rt, err := BuildRuntimeForAgent(deps, inputs, a)
 		if err != nil {
 			return nil, fmt.Errorf("subagent %q: build runtime: %w", agentID, err)
@@ -77,6 +89,27 @@ func MakeSubagentFactory(
 		rt.Parent = parent
 		rt.Depth = parentDepth + 1
 		return &subagentRunnerAdapter{rt: rt}, nil
+	}
+}
+
+// inheritParentHistory copies the parent session's current view (post
+// any compaction) into the destination subagent session via Append, so
+// the destination ends up with the same chain of entries reachable
+// from its leaf. ToolCallID linkage between tool_call and tool_result
+// entries is preserved by keeping the original IDs intact — those IDs
+// live in the subagent's own entry namespace afterwards, no clash.
+//
+// Operates outside Append's normal "stitch into leaf" path: the FIRST
+// inherited entry gets its ParentID cleared so the subagent's empty
+// leaf doesn't cause Append to leave a dangling pointer to a parent
+// entry that exists only in the parent's session.
+func inheritParentHistory(dst, src *session.Session) {
+	view := src.View()
+	for i, e := range view {
+		if i == 0 {
+			e.ParentID = ""
+		}
+		dst.Append(e)
 	}
 }
 

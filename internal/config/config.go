@@ -197,6 +197,19 @@ type AgentConfig struct {
 	// description so it knows which subagent to pick. Required when
 	// Subagent is true.
 	Description string `json:"description,omitempty"`
+	// InheritContext, when true on a Subagent: copies the parent's session
+	// entries into the subagent's fresh in-memory session so the
+	// subagent's first LLM call sees the parent's conversation history.
+	// Useful for read-only "explore" subagents that should reason over
+	// what the parent already knows; CacheLastMessage on the subagent's
+	// own subsequent turns naturally caches the inherited prefix.
+	// Defaults to false: subagents start cold, isolated from parent state.
+	InheritContext bool `json:"inheritContext,omitempty"`
+	// FallbackModel, when set, names a "provider/model" string to retry
+	// against on a synchronous LLM error matching IsRetryableModelError
+	// (Anthropic 429/529, OpenAI 429/5xx). One retry only; mid-stream
+	// errors are not recoverable here. Empty disables fallback.
+	FallbackModel string `json:"fallbackModel,omitempty"`
 }
 
 type CronConfig struct {
