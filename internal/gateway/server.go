@@ -21,6 +21,7 @@ type ServerOptions struct {
 	ChatHandler    http.HandlerFunc  // optional /chat handler
 	JobsHandler    http.HandlerFunc  // optional /jobs handler
 	Settings       *SettingsHandlers // optional /settings handlers
+	Skills         *SkillHandlers    // optional /settings/api/skills* handlers
 	LogBuffer      *LogBuffer        // optional log buffer for /logs
 }
 
@@ -99,6 +100,13 @@ func (s *Server) routes() {
 		if s.opts.Settings.BootstrapStatus != nil {
 			s.router.Get("/settings/api/bootstrap", s.opts.Settings.BootstrapStatus)
 		}
+	}
+
+	if s.opts.Skills != nil {
+		s.router.Get("/settings/api/skills", s.opts.Skills.List)
+		s.router.Get("/settings/api/skills/{name}", s.opts.Skills.Get)
+		s.router.Post("/settings/api/skills", s.opts.Skills.Upload)
+		s.router.Delete("/settings/api/skills/{name}", s.opts.Skills.Delete)
 	}
 
 	if s.opts.LogBuffer != nil {

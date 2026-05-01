@@ -9,6 +9,7 @@ import (
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/session"
+	"github.com/sausheong/felix/internal/skill"
 	"github.com/sausheong/felix/internal/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,4 +79,38 @@ func TestShutdownOnNilReceiver(t *testing.T) {
 		err := s.Shutdown(t.Context())
 		require.NoError(t, err)
 	})
+}
+
+func TestSkillRoutesMounted(t *testing.T) {
+	dir := t.TempDir()
+	loader := skill.NewLoader()
+	require.NoError(t, loader.LoadFrom(dir))
+
+	cfg := config.DefaultConfig()
+	providers := map[string]llm.LLMProvider{}
+	reg := tools.NewRegistry()
+	store := session.NewStore(t.TempDir())
+	wsHandler := NewWebSocketHandler(providers, reg, store, cfg)
+
+	srv := NewServer("127.0.0.1", 0, wsHandler, ServerOptions{
+		Skills: NewSkillHandlers(loader, dir, []string{dir}),
+	})
+
+	// GET list — should be 200, not 404
+	req := httptest.NewRequest(http.MethodGet, "/settings/api/skills", nil)
+	w := httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code, "list route not mounted")
+
+	// GET specific — empty dir, should be 404 (route is mounted, file missing)
+	req = httptest.NewRequest(http.MethodGet, "/settings/api/skills/anything.md", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code, "get route not mounted")
+
+	// DELETE specific — empty dir, should be 404
+	req = httptest.NewRequest(http.MethodDelete, "/settings/api/skills/anything.md", nil)
+	w = httptest.NewRecorder()
+	srv.router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code, "delete route not mounted")
 }
