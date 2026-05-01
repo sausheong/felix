@@ -605,10 +605,7 @@ func waitForElement(ctx context.Context, action, selector string, wait chromedp.
 func halfDeadlineContext(parent context.Context, minTimeout time.Duration) (context.Context, context.CancelFunc) {
 	if dl, ok := parent.Deadline(); ok {
 		remaining := time.Until(dl)
-		half := remaining / 2
-		if half < minTimeout {
-			half = minTimeout
-		}
+		half := max(remaining/2, minTimeout)
 		return context.WithTimeout(parent, half)
 	}
 	return context.WithTimeout(parent, minTimeout)

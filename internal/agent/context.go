@@ -119,7 +119,7 @@ func BuildConfigSummary(cfg *config.Config) string {
 			if len(a.Tools.Allow) > 0 {
 				tools = ", tools: " + strings.Join(a.Tools.Allow, ", ")
 			}
-			sb.WriteString(fmt.Sprintf("\n- %s (id: %s, model: %s%s)", a.Name, a.ID, a.Model, tools))
+			fmt.Fprintf(&sb, "\n- %s (id: %s, model: %s%s)", a.Name, a.ID, a.Model, tools)
 		}
 	}
 

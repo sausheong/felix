@@ -17,7 +17,7 @@ import (
 
 func longSession() *session.Session {
 	sess := session.NewSession("default", "test")
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		sess.Append(session.UserMessageEntry("user msg"))
 		sess.Append(session.AssistantMessageEntry("assistant reply"))
 	}
@@ -231,7 +231,7 @@ func TestDeferredForgetSessionDrainsLocksMap(t *testing.T) {
 		defer mgr.ForgetSession(sess.ID)
 		_, _ = mgr.MaybeCompact(context.Background(), sess, ReasonManual, "")
 	}
-	for i := 0; i < turns; i++ {
+	for range turns {
 		turn()
 	}
 	mgr.mu.Lock()
@@ -359,7 +359,7 @@ func TestCircuitBreakerTripsAfterMaxFailures(t *testing.T) {
 	// First MaxConsecutiveFailures calls: Compacted=true (placeholder)
 	// — each increments the failure counter. The next call sees
 	// counter >= MaxConsecutiveFailures and is blocked by the breaker.
-	for i := 0; i < MaxConsecutiveFailures; i++ {
+	for i := range MaxConsecutiveFailures {
 		res, err := mgr.MaybeCompact(context.Background(), sess, ReasonPreventive, "")
 		require.NoError(t, err, "iteration %d", i)
 		assert.True(t, res.Compacted, "iteration %d should still attempt", i)
@@ -385,7 +385,7 @@ func TestCircuitBreakerResetsOnSuccess(t *testing.T) {
 	sess := longSession()
 
 	// Run several successful compactions; failure count stays 0.
-	for i := 0; i < MaxConsecutiveFailures+5; i++ {
+	for i := range MaxConsecutiveFailures + 5 {
 		_, err := mgr.MaybeCompact(context.Background(), sess, ReasonPreventive, "")
 		require.NoError(t, err, "iteration %d", i)
 		// Don't assert Compacted=true: Split returns ok=false once the
@@ -406,7 +406,7 @@ func TestCircuitBreakerIsPerSession(t *testing.T) {
 	sessA := longSession()
 	sessB := longSession()
 
-	for i := 0; i < MaxConsecutiveFailures; i++ {
+	for range MaxConsecutiveFailures {
 		_, _ = mgr.MaybeCompact(context.Background(), sessA, ReasonPreventive, "")
 		// Add new turns so each iteration has compactable history.
 		sessA.Append(session.UserMessageEntry("follow-up"))

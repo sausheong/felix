@@ -354,7 +354,6 @@ data: {"type":"message_stop"}
 
 	var done *ChatEvent
 	for ev := range stream {
-		ev := ev
 		if ev.Type == EventDone {
 			done = &ev
 		}

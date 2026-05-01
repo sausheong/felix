@@ -32,7 +32,7 @@ func TestToolDefsAreDeterministic(t *testing.T) {
 	}
 
 	first := reg.ToolDefs()
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		got := reg.ToolDefs()
 		assert.Equal(t, len(first), len(got), "length must be stable")
 		for j := range first {

@@ -152,8 +152,7 @@ func extractCommands(cmd string) []string {
 	var cmds []string
 	for _, part := range parts {
 		// Strip leading env vars (e.g., "FOO=bar command")
-		tokens := strings.Fields(part)
-		for _, tok := range tokens {
+		for tok := range strings.FieldsSeq(part) {
 			if strings.Contains(tok, "=") && !strings.HasPrefix(tok, "-") {
 				continue // skip env var assignments
 			}
@@ -270,7 +269,7 @@ func pathSubsNotice(subs [][2]string) string {
 	var b strings.Builder
 	b.WriteString("[felix] adjusted paths in command (Unicode-whitespace recovery):\n")
 	for _, s := range subs {
-		b.WriteString(fmt.Sprintf("  %q -> %q\n", s[0], s[1]))
+		fmt.Fprintf(&b, "  %q -> %q\n", s[0], s[1])
 	}
 	b.WriteString("---\n")
 	return b.String()
