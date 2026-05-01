@@ -1564,6 +1564,21 @@ html.dark .error-state { background: #450a0a; }
 		// the conversation. Power users can override any of these via
 		// cortex.dbPath / cortex.provider / cortex.llmModel in felix.json5.
 
+		// Compaction — by default the summarizer mirrors the chat agent's
+		// model. A user can override that here (e.g. point compaction at a
+		// faster Haiku while chatting on Sonnet). Empty value = auto-mirror.
+		if (!cfg.agents) cfg.agents = {};
+		if (!cfg.agents.defaults) cfg.agents.defaults = {};
+		if (!cfg.agents.defaults.compaction) cfg.agents.defaults.compaction = {};
+		var cmp = cfg.agents.defaults.compaction;
+
+		var cmpSec = makeSection(p, 'Compaction');
+		var cmpFld = makeField(cmpSec, 'Summarizer Model (provider/model — leave blank to mirror chat agent)', 'text',
+			cmp.model || '',
+			function(v) { cfg.agents.defaults.compaction.model = (v || '').trim(); });
+		var cmpInp = cmpFld.querySelector('input');
+		if (cmpInp) cmpInp.placeholder = 'auto: matches chatting agent (e.g. anthropic/claude-haiku-4-5)';
+
 		// Agent Loop — three knobs controlling tool dispatch behavior. Lives
 		// in the Intelligence panel because it's a runtime tuning control
 		// alongside Memory/Cortex; saving any of these takes effect on the
