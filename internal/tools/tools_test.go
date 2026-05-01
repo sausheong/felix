@@ -16,9 +16,9 @@ func TestRegistry(t *testing.T) {
 	RegisterCoreTools(reg, "", nil)
 
 	names := reg.Names()
-	assert.Len(t, names, 7)
+	assert.Len(t, names, 8)
 
-	for _, name := range []string{"read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser"} {
+	for _, name := range []string{"read_file", "write_file", "edit_file", "bash", "web_fetch", "web_search", "browser", "todo_write"} {
 		tool, ok := reg.Get(name)
 		assert.True(t, ok, "tool %q should exist", name)
 		assert.Equal(t, name, tool.Name())
@@ -31,7 +31,7 @@ func TestToolDefs(t *testing.T) {
 	reg := NewRegistry()
 	RegisterCoreTools(reg, "", nil)
 	defs := reg.ToolDefs()
-	assert.Len(t, defs, 7)
+	assert.Len(t, defs, 8)
 }
 
 func TestReadFileTool(t *testing.T) {

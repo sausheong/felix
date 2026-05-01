@@ -60,6 +60,7 @@ var toolHints = map[string]string{
 	"browser":      "You can automate a headless browser for interactive pages using the browser tool.",
 	"send_message": "You can send messages to other users or channels using the send_message tool.",
 	"cron":         "You can schedule recurring tasks using the cron tool.",
+	"todo_write":   "You can track multi-step work with the todo_write tool. For any task with 3+ distinct steps, add a todo per step before starting; mark items in_progress as you work on them and completed when done. The full list is returned every call so you always see the latest state.",
 	"load_skill":   "You can load a skill body on demand by name via load_skill. Consult the Skills Index in your system prompt to pick the right skill name; the body is returned as the tool output.",
 	"load_memory":  "You can load a memory entry body on demand by id via load_memory. Consult the Memory Index in your system prompt to pick the right entry id.",
 }
