@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -140,8 +141,9 @@ func NewSkillHandlers(loader skillReloader, skillsDir string, reloadDirs []strin
 	h.Upload = func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxSkillUploadBytes)
 		if err := r.ParseMultipartForm(maxSkillUploadBytes); err != nil {
-			// MaxBytesReader's "request body too large" surfaces here.
-			if strings.Contains(err.Error(), "request body too large") {
+			// MaxBytesReader's *http.MaxBytesError surfaces here.
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
 				writeSkillJSONError(w, http.StatusRequestEntityTooLarge, "upload exceeds 256KB limit")
 				return
 			}
@@ -167,7 +169,8 @@ func NewSkillHandlers(loader skillReloader, skillsDir string, reloadDirs []strin
 
 		data, err := io.ReadAll(file)
 		if err != nil {
-			if strings.Contains(err.Error(), "request body too large") {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
 				writeSkillJSONError(w, http.StatusRequestEntityTooLarge, "upload exceeds 256KB limit")
 				return
 			}
