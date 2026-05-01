@@ -494,6 +494,7 @@ html.dark .error-state { background: #450a0a; }
 				<button class="finger-tab" data-tab="messaging">Messaging</button>
 				<button class="finger-tab" data-tab="mcp">MCP</button>
 				<button class="finger-tab" data-tab="gateway">Gateway</button>
+				<button class="finger-tab" data-tab="skills">Skills</button>
 			</div>
 			<div class="finger-panel active" id="panel-agents"></div>
 			<div class="finger-panel" id="panel-providers"></div>
@@ -503,6 +504,7 @@ html.dark .error-state { background: #450a0a; }
 			<div class="finger-panel" id="panel-messaging"></div>
 			<div class="finger-panel" id="panel-mcp"></div>
 			<div class="finger-panel" id="panel-gateway"></div>
+			<div class="finger-panel" id="panel-skills"></div>
 		</div>
 	</div>
 </div>
@@ -616,6 +618,7 @@ html.dark .error-state { background: #450a0a; }
 		renderMessaging();
 		renderMCP();
 		renderGateway();
+		renderSkills();
 	}
 
 	// === Models tab — talks directly to bundled Ollama via providers.local.base_url ===
@@ -1608,6 +1611,151 @@ html.dark .error-state { background: #450a0a; }
 			}
 		);
 	}
+
+	// === Skills tab ===
+	var skillsViewing = null; // currently-open filename in side panel, or null
+
+	function renderSkills() {
+		var panel = document.getElementById('panel-skills');
+		panel.innerHTML =
+			'<div style="margin-bottom:1rem; display:flex; gap:0.75rem; align-items:center;">' +
+				'<label class="btn btn-primary" style="cursor:pointer;">' +
+					'Upload .md' +
+					'<input type="file" id="skill-upload-input" accept=".md" style="display:none">' +
+				'</label>' +
+				'<span style="color: var(--color-text-muted); font-size: 0.85rem;">' +
+					'Files go to ~/.felix/skills/ and load on next chat turn.' +
+				'</span>' +
+			'</div>' +
+			'<div id="skills-list">Loading&#8230;</div>' +
+			'<div id="skill-view-panel" style="margin-top:1.5rem; display:none;">' +
+				'<h3 id="skill-view-name" style="margin-bottom:0.5rem;"></h3>' +
+				'<pre id="skill-view-body" style="background: var(--color-bg); padding: 1rem; border-radius: var(--radius); border: 1px solid var(--color-border); overflow:auto; max-height:60vh; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem;"></pre>' +
+			'</div>';
+
+		document.getElementById('skill-upload-input').addEventListener('change', onSkillUpload);
+		refreshSkillList();
+	}
+
+	function refreshSkillList() {
+		fetch('/settings/api/skills')
+			.then(function(r) { return r.json(); })
+			.then(function(data) {
+				var listDiv = document.getElementById('skills-list');
+				if (!data.skills || data.skills.length === 0) {
+					listDiv.innerHTML = '<p style="color: var(--color-text-muted);">No skills uploaded yet.</p>';
+					return;
+				}
+				var html = '<table style="width:100%; border-collapse: collapse;">';
+				html += '<thead><tr>' +
+					'<th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--color-border);">Name</th>' +
+					'<th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--color-border);">Description</th>' +
+					'<th style="text-align:right; padding:0.5rem; border-bottom:1px solid var(--color-border);">Size</th>' +
+					'<th style="text-align:right; padding:0.5rem; border-bottom:1px solid var(--color-border);">Actions</th>' +
+					'</tr></thead><tbody>';
+				data.skills.forEach(function(s) {
+					var rowStyle = '';
+					var note = '';
+					if (s.parse_error) {
+						rowStyle = 'color: var(--color-error);';
+						note = ' <span title="' + escapeAttr(s.parse_error) + '">&#9888; parse error</span>';
+					} else if (s.unavailable) {
+						rowStyle = 'color: var(--color-text-muted);';
+						note = ' <span title="missing: ' + escapeAttr((s.missing_bins || []).join(', ')) + '">&#9888; unavailable</span>';
+					}
+					html += '<tr style="' + rowStyle + '">' +
+						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border);"><code>' + escapeHtml(s.filename) + '</code>' + note + '</td>' +
+						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border);">' + escapeHtml(s.description || '') + '</td>' +
+						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border); text-align:right; font-variant-numeric:tabular-nums;">' + fmtBytes(s.size_bytes) + '</td>' +
+						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border); text-align:right;">' +
+							'<button class="btn-link" data-skill-view="' + escapeAttr(s.filename) + '">View</button> ' +
+							'<button class="btn-link" data-skill-delete="' + escapeAttr(s.filename) + '" style="color:var(--color-error);">Delete</button>' +
+						'</td>' +
+					'</tr>';
+				});
+				html += '</tbody></table>';
+				listDiv.innerHTML = html;
+				listDiv.querySelectorAll('[data-skill-view]').forEach(function(b) {
+					b.addEventListener('click', function() { viewSkill(b.dataset.skillView); });
+				});
+				listDiv.querySelectorAll('[data-skill-delete]').forEach(function(b) {
+					b.addEventListener('click', function() { deleteSkill(b.dataset.skillDelete); });
+				});
+			})
+			.catch(function(err) { showStatus('Skills load failed: ' + err.message, true); });
+	}
+
+	function onSkillUpload(ev) {
+		var f = ev.target.files[0];
+		if (!f) return;
+		if (!/\.md$/i.test(f.name)) {
+			showStatus('Skill files must end in .md', true);
+			ev.target.value = '';
+			return;
+		}
+		var fd = new FormData();
+		fd.append('file', f);
+		fetch('/settings/api/skills', { method: 'POST', body: fd })
+			.then(function(r) { return r.json().then(function(j) { return { ok: r.ok, status: r.status, body: j }; }); })
+			.then(function(res) {
+				ev.target.value = '';
+				if (!res.ok) {
+					showStatus('Upload failed: ' + (res.body.error || res.status), true);
+					return;
+				}
+				var msg = 'Uploaded ' + (res.body.filename || f.name);
+				if (res.body.warning) msg += ' (' + res.body.warning + ')';
+				showStatus(msg, false);
+				refreshSkillList();
+			})
+			.catch(function(err) {
+				ev.target.value = '';
+				showStatus('Upload failed: ' + err.message, true);
+			});
+	}
+
+	function viewSkill(filename) {
+		fetch('/settings/api/skills/' + encodeURIComponent(filename))
+			.then(function(r) {
+				if (!r.ok) throw new Error('HTTP ' + r.status);
+				return r.text();
+			})
+			.then(function(text) {
+				skillsViewing = filename;
+				document.getElementById('skill-view-name').textContent = filename;
+				document.getElementById('skill-view-body').textContent = text;
+				document.getElementById('skill-view-panel').style.display = '';
+			})
+			.catch(function(err) { showStatus('View failed: ' + err.message, true); });
+	}
+
+	function deleteSkill(filename) {
+		if (!confirm('Delete ' + filename + '? This cannot be undone.')) return;
+		fetch('/settings/api/skills/' + encodeURIComponent(filename), { method: 'DELETE' })
+			.then(function(r) { return r.json().then(function(j) { return { ok: r.ok, status: r.status, body: j }; }); })
+			.then(function(res) {
+				if (!res.ok) {
+					showStatus('Delete failed: ' + (res.body.error || res.status), true);
+					return;
+				}
+				var msg = 'Deleted ' + filename;
+				if (res.body.warning) msg += ' (' + res.body.warning + ')';
+				showStatus(msg, false);
+				if (skillsViewing === filename) {
+					skillsViewing = null;
+					document.getElementById('skill-view-panel').style.display = 'none';
+				}
+				refreshSkillList();
+			})
+			.catch(function(err) { showStatus('Delete failed: ' + err.message, true); });
+	}
+
+	function escapeHtml(s) {
+		return String(s).replace(/[&<>"']/g, function(c) {
+			return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c];
+		});
+	}
+	function escapeAttr(s) { return escapeHtml(s); }
 })();
 </script>
 </body>
