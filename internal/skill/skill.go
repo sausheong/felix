@@ -71,25 +71,16 @@ func (l *Loader) LoadFrom(dirs ...string) error {
 				return nil
 			}
 
-			skill, err := parseSkillFile(path)
+			skill, err := ParseSkillFile(path)
 			if err != nil {
 				slog.Warn("failed to parse skill file", "path", path, "error", err)
 				return nil
 			}
 
 			// Skip skills whose required binaries are not installed
-			if bins := skill.Metadata.OpenClaw.Requires.Bins; len(bins) > 0 {
-				missing := false
-				for _, bin := range bins {
-					if _, err := exec.LookPath(bin); err != nil {
-						slog.Info("skill skipped (missing binary)", "name", skill.Name, "binary", bin)
-						missing = true
-						break
-					}
-				}
-				if missing {
-					return nil
-				}
+			if missing := MissingBins(skill); len(missing) > 0 {
+				slog.Info("skill skipped (missing binary)", "name", skill.Name, "binary", missing[0])
+				return nil
 			}
 
 			loaded = append(loaded, skill)
@@ -196,14 +187,14 @@ func (l *Loader) MatchSkills(userMsg string, maxSkills int) []Skill {
 	return matched
 }
 
-// parseSkillFile reads a SKILL.md file and parses its frontmatter and body.
-func parseSkillFile(path string) (Skill, error) {
+// ParseSkillFile reads a SKILL.md file and parses its frontmatter and body.
+func ParseSkillFile(path string) (Skill, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Skill{}, err
 	}
 
-	frontmatter, body := splitFrontmatter(string(data))
+	frontmatter, body := SplitFrontmatter(string(data))
 
 	var skill Skill
 	if frontmatter != "" {
@@ -227,8 +218,8 @@ func parseSkillFile(path string) (Skill, error) {
 	return skill, nil
 }
 
-// splitFrontmatter extracts YAML frontmatter (between --- delimiters) from Markdown.
-func splitFrontmatter(content string) (frontmatter, body string) {
+// SplitFrontmatter extracts YAML frontmatter (between --- delimiters) from Markdown.
+func SplitFrontmatter(content string) (frontmatter, body string) {
 	content = strings.TrimSpace(content)
 
 	if !strings.HasPrefix(content, "---") {
@@ -311,4 +302,21 @@ func (l *Loader) FormatIndex() string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// MissingBins returns the names of binaries declared in the skill's
+// metadata.openclaw.requires.bins that are not currently on $PATH.
+// Returns nil when the skill declares no required bins or all are present.
+func MissingBins(s Skill) []string {
+	bins := s.Metadata.OpenClaw.Requires.Bins
+	if len(bins) == 0 {
+		return nil
+	}
+	var missing []string
+	for _, bin := range bins {
+		if _, err := exec.LookPath(bin); err != nil {
+			missing = append(missing, bin)
+		}
+	}
+	return missing
 }

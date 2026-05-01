@@ -44,7 +44,7 @@ func TestSplitFrontmatter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fm, body := splitFrontmatter(tt.input)
+			fm, body := SplitFrontmatter(tt.input)
 			assert.Equal(t, tt.wantFM, fm)
 			assert.Equal(t, tt.wantBody, body)
 		})
@@ -80,7 +80,7 @@ changed since your training cutoff, use the web_search tool.
 	skillPath := filepath.Join(skillDir, "SKILL.md")
 	os.WriteFile(skillPath, []byte(content), 0o644)
 
-	skill, err := parseSkillFile(skillPath)
+	skill, err := ParseSkillFile(skillPath)
 	require.NoError(t, err)
 
 	assert.Equal(t, "web-search", skill.Name)
@@ -196,6 +196,32 @@ Body here
 	skills := loader.Skills()
 	assert.Len(t, skills, 1)
 	assert.Equal(t, "simple", skills[0].Name)
+}
+
+func TestMissingBins(t *testing.T) {
+	t.Run("no requires returns nil", func(t *testing.T) {
+		s := Skill{Name: "foo"}
+		assert.Nil(t, MissingBins(s))
+	})
+	t.Run("present binary returns nil", func(t *testing.T) {
+		var s Skill
+		s.Metadata.OpenClaw.Requires.Bins = []string{"sh"} // sh is on every POSIX system
+		assert.Nil(t, MissingBins(s))
+	})
+	t.Run("missing binary returned", func(t *testing.T) {
+		var s Skill
+		s.Metadata.OpenClaw.Requires.Bins = []string{"definitely-not-installed-xyz-123"}
+		got := MissingBins(s)
+		require.Len(t, got, 1)
+		assert.Equal(t, "definitely-not-installed-xyz-123", got[0])
+	})
+	t.Run("partial — one present one missing", func(t *testing.T) {
+		var s Skill
+		s.Metadata.OpenClaw.Requires.Bins = []string{"sh", "definitely-not-installed-xyz-123"}
+		got := MissingBins(s)
+		require.Len(t, got, 1)
+		assert.Equal(t, "definitely-not-installed-xyz-123", got[0])
+	})
 }
 
 func TestLoaderLoadFromNonexistent(t *testing.T) {
