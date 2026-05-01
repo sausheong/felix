@@ -15,6 +15,9 @@ type skillReloader interface {
 	LoadFrom(dirs ...string) error
 }
 
+// Compile-time guarantee that *skill.Loader satisfies skillReloader.
+var _ skillReloader = (*skill.Loader)(nil)
+
 // SkillHandlers exposes HTTP handlers for managing user-uploaded skill files
 // in ~/.felix/skills/. All routes are mounted under /settings/api/skills* by
 // the gateway server and inherit the global bearer-auth middleware.
@@ -50,7 +53,6 @@ func NewSkillHandlers(loader skillReloader, skillsDir string, reloadDirs []strin
 	_ = loader
 	_ = skillsDir
 	_ = reloadDirs
-	_ = skill.Skill{}
 	return h
 }
 
