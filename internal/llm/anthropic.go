@@ -35,16 +35,17 @@ func (p *AnthropicProvider) Models() []ModelInfo {
 	}
 }
 
-func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
-	// Build messages
+// buildMessageParams assembles the anthropic.MessageNewParams shared by
+// ChatStream and ChatNonStreaming. Pure: same input → same output (so a
+// stream-fallback non-streaming retry sends the same bytes the streaming
+// call did, preserving the prompt cache prefix).
+func (p *AnthropicProvider) buildMessageParams(req ChatRequest) anthropic.MessageNewParams {
 	msgs := buildAnthropicMessages(req.Messages, req.CacheLastMessage)
 
-	// Build tools
 	tools := make([]anthropic.ToolUnionParam, 0, len(req.Tools))
 	for _, t := range req.Tools {
 		var props any
 		var required []string
-		// Parse the JSON Schema to extract properties and required fields
 		var schema struct {
 			Properties any      `json:"properties"`
 			Required   []string `json:"required"`
@@ -53,7 +54,6 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 			props = schema.Properties
 			required = schema.Required
 		}
-
 		tools = append(tools, anthropic.ToolUnionParam{
 			OfTool: &anthropic.ToolParam{
 				Name:        t.Name,
@@ -66,12 +66,10 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 		})
 	}
 
-	// Build params
 	maxTokens := int64(req.MaxTokens)
 	if maxTokens == 0 {
 		maxTokens = 4096
 	}
-
 	model := req.Model
 	if model == "" {
 		model = "claude-sonnet-4-5-20250514"
@@ -82,22 +80,16 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 		MaxTokens: maxTokens,
 		Messages:  msgs,
 	}
-
 	if len(tools) > 0 {
 		params.Tools = tools
 	}
-
 	if sys := buildAnthropicSystem(req); len(sys) > 0 {
 		params.System = sys
 	}
-
 	if req.Temperature > 0 {
 		params.Temperature = anthropic.Float(req.Temperature)
 	}
-
 	if cfg, ok := p.BuildThinkingConfig(model, req.Reasoning); ok {
-		// SDK requires BudgetTokens < MaxTokens. Bump MaxTokens to the
-		// budget plus a 4K headroom for the actual completion tokens.
 		required := cfg.BudgetTokens + 4096
 		if maxTokens < required {
 			maxTokens = required
@@ -119,6 +111,11 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 			"requested", string(req.Reasoning),
 			"reason", "model does not support thinking")
 	}
+	return params
+}
+
+func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
+	params := p.buildMessageParams(req)
 
 	// Create stream
 	stream := p.client.Messages.NewStreaming(ctx, params)
@@ -232,6 +229,70 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 		}
 	}()
 
+	return events, nil
+}
+
+// ChatNonStreaming implements llm.NonStreamingProvider — same request
+// shape as ChatStream, but uses the non-streaming Messages.New endpoint
+// and synthesises the same event sequence the streaming path would have
+// emitted on success. The runtime falls back to this when a stream dies
+// mid-flight; the partial output of the failed stream is discarded so
+// the prompt cache prefix on the next turn stays byte-identical.
+//
+// Note: thinking blocks (when reasoning is enabled) are NOT surfaced —
+// matches the streaming path which also doesn't emit thinking deltas.
+// Tool-use input is converted to JSON via the SDK's RawJSON field.
+func (p *AnthropicProvider) ChatNonStreaming(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
+	params := p.buildMessageParams(req)
+	msg, err := p.client.Messages.New(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	events := make(chan ChatEvent, 16)
+	go func() {
+		defer close(events)
+		for _, block := range msg.Content {
+			switch block.Type {
+			case "text":
+				if block.Text != "" {
+					events <- ChatEvent{Type: EventTextDelta, Text: block.Text}
+				}
+			case "tool_use":
+				// Stream path emits Start then Done; mirror that so the
+				// runtime's collection loop sees the same event ordering
+				// either way.
+				events <- ChatEvent{
+					Type: EventToolCallStart,
+					ToolCall: &ToolCall{
+						ID:   block.ID,
+						Name: block.Name,
+					},
+				}
+				inputJSON, mErr := json.Marshal(block.Input)
+				if mErr != nil {
+					inputJSON = []byte("{}")
+				}
+				events <- ChatEvent{
+					Type: EventToolCallDone,
+					ToolCall: &ToolCall{
+						ID:    block.ID,
+						Name:  block.Name,
+						Input: json.RawMessage(inputJSON),
+					},
+				}
+			}
+		}
+		events <- ChatEvent{
+			Type: EventDone,
+			Usage: &Usage{
+				InputTokens:              int(msg.Usage.InputTokens),
+				OutputTokens:             int(msg.Usage.OutputTokens),
+				CacheCreationInputTokens: int(msg.Usage.CacheCreationInputTokens),
+				CacheReadInputTokens:     int(msg.Usage.CacheReadInputTokens),
+			},
+		}
+	}()
 	return events, nil
 }
 

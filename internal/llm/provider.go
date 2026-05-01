@@ -156,6 +156,21 @@ type LLMProvider interface {
 	NormalizeToolSchema(tools []ToolDef) ([]ToolDef, []Diagnostic)
 }
 
+// NonStreamingProvider is an optional capability some providers implement
+// alongside ChatStream. The runtime type-asserts to it when a stream
+// dies mid-flight (some tokens received, then EventError before
+// EventDone) and retries the same request as a non-streaming call —
+// the partial output is discarded so the prompt cache prefix stays
+// byte-identical to what would have been there on a clean stream.
+//
+// Returns the events the provider would have emitted on a successful
+// stream (text deltas, tool_call_start, tool_call_done, done with
+// usage). Caller drains the channel as it would for ChatStream;
+// channel closes when complete.
+type NonStreamingProvider interface {
+	ChatNonStreaming(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error)
+}
+
 // ParseProviderModel splits "provider/model" into (provider, model).
 // If no slash is present, returns ("", name) and the caller should use a default.
 func ParseProviderModel(name string) (provider, model string) {

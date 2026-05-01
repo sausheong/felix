@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -364,4 +365,55 @@ data: {"type":"message_stop"}
 	require.Equal(t, 17, done.Usage.CacheReadInputTokens)
 	require.Equal(t, 5, done.Usage.OutputTokens)
 	require.Equal(t, 10, done.Usage.InputTokens)
+}
+
+// TestBuildMessageParamsIsPure protects the cache-prefix invariant
+// behind the stream-fallback feature: when a stream dies mid-flight
+// the runtime retries via ChatNonStreaming with the SAME ChatRequest,
+// and both call sites share buildMessageParams. If buildMessageParams
+// were non-deterministic (timestamp, RNG, map iteration leaking into
+// output) the retry would send different bytes and Anthropic would
+// invalidate the prompt cache. We compare wire-form JSON to catch
+// drift the Go struct's `==` would miss (e.g. nil vs empty slice).
+func TestBuildMessageParamsIsPure(t *testing.T) {
+	p := NewAnthropicProvider("test-key", "")
+	req := ChatRequest{
+		Model:       "claude-sonnet-4-5",
+		MaxTokens:   4096,
+		Temperature: 0.7,
+		SystemPromptParts: []SystemPromptPart{
+			{Text: "you are felix", Cache: true},
+			{Text: "today is 2026-05-01"},
+		},
+		Messages: []Message{
+			{Role: "user", Content: "hello"},
+			{
+				Role:    "assistant",
+				Content: "ok",
+				ToolCalls: []ToolCall{
+					{ID: "A", Name: "search", Input: []byte(`{"q":"a"}`)},
+					{ID: "B", Name: "search", Input: []byte(`{"q":"b"}`)},
+				},
+			},
+			{Role: "tool", Content: "ra", ToolCallID: "A"},
+			{Role: "tool", Content: "rb", ToolCallID: "B"},
+		},
+		Tools: []ToolDef{
+			{Name: "search", Description: "search the web", Parameters: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}`)},
+		},
+		CacheLastMessage: true,
+	}
+
+	first := p.buildMessageParams(req)
+	second := p.buildMessageParams(req)
+
+	firstJSON, err := json.Marshal(first)
+	require.NoError(t, err)
+	secondJSON, err := json.Marshal(second)
+	require.NoError(t, err)
+
+	assert.Equal(t, string(firstJSON), string(secondJSON),
+		"buildMessageParams must be a pure function — the stream-fallback "+
+			"non-streaming retry depends on byte-identical params to keep the "+
+			"prompt cache prefix valid")
 }

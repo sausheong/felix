@@ -526,62 +526,105 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			kickoffs := map[string]chan kickoffResult{}
 			kickoffStopped := false
 
-			for event := range stream {
-				switch event.Type {
-				case llm.EventTextDelta:
-					if !gotFirstToken {
-						gotFirstToken = true
-						tr.Mark("llm.first_token", "turn", turn, "ttft_ms", time.Since(llmStart).Milliseconds())
-					}
-					textContent.WriteString(event.Text)
-					r.emit(AgentEvent{Type: EventTextDelta, Text: event.Text})
+			// Mid-stream-failure retry state (sub-project 8a). If the stream
+			// dies after we've started receiving tokens AND the provider
+			// implements NonStreamingProvider, we discard the partial output
+			// (so the prompt cache prefix stays byte-identical), retry the
+			// same request via the non-streaming endpoint, and resume event
+			// collection on the new channel. One retry only.
+			streamSource := stream
+			retriedNonStreaming := false
+		streamLoop:
+			for {
+				for event := range streamSource {
+					switch event.Type {
+					case llm.EventTextDelta:
+						if !gotFirstToken {
+							gotFirstToken = true
+							tr.Mark("llm.first_token", "turn", turn, "ttft_ms", time.Since(llmStart).Milliseconds())
+						}
+						textContent.WriteString(event.Text)
+						r.emit(AgentEvent{Type: EventTextDelta, Text: event.Text})
 
-				case llm.EventToolCallStart:
-					if !gotFirstToken {
-						gotFirstToken = true
-						tr.Mark("llm.first_token", "turn", turn, "ttft_ms", time.Since(llmStart).Milliseconds(), "kind", "tool_call")
-					}
-					r.emit(AgentEvent{Type: EventToolCallStart, ToolCall: event.ToolCall})
+					case llm.EventToolCallStart:
+						if !gotFirstToken {
+							gotFirstToken = true
+							tr.Mark("llm.first_token", "turn", turn, "ttft_ms", time.Since(llmStart).Milliseconds(), "kind", "tool_call")
+						}
+						r.emit(AgentEvent{Type: EventToolCallStart, ToolCall: event.ToolCall})
 
-				case llm.EventToolCallDone:
-					if event.ToolCall == nil {
-						continue
-					}
-					tc := *event.ToolCall
-					toolCalls = append(toolCalls, tc)
-					if !streamingOn || kickoffStopped {
-						continue
-					}
-					if !isCallConcurrencySafe(tc, r.Tools) {
-						kickoffStopped = true
-						continue
-					}
-					ch := make(chan kickoffResult, 1)
-					kickoffs[tc.ID] = ch
-					tcCopy := tc // capture by value before launching goroutine
-					go func() {
-						// Phase D: run the tool WITHOUT touching session or
-						// cortex thread; the main goroutine appends the
-						// paired entries post-stream in stream order so the
-						// AssistantMessage save (which happens after the
-						// stream ends) lands BEFORE the ToolCall entry. See
-						// executeToolKickoff and the post-stream resolve loop.
-						result, aborted := r.executeToolKickoff(ctx, tcCopy)
-						// Live UI emit happens here; session writes are deferred.
-						r.emitToolResult(tr, turn, tcCopy, result, aborted)
-						ch <- kickoffResult{tc: tcCopy, result: result, aborted: aborted}
-					}()
+					case llm.EventToolCallDone:
+						if event.ToolCall == nil {
+							continue
+						}
+						tc := *event.ToolCall
+						toolCalls = append(toolCalls, tc)
+						if !streamingOn || kickoffStopped {
+							continue
+						}
+						if !isCallConcurrencySafe(tc, r.Tools) {
+							kickoffStopped = true
+							continue
+						}
+						ch := make(chan kickoffResult, 1)
+						kickoffs[tc.ID] = ch
+						tcCopy := tc // capture by value before launching goroutine
+						go func() {
+							// Phase D: run the tool WITHOUT touching session or
+							// cortex thread; the main goroutine appends the
+							// paired entries post-stream in stream order so the
+							// AssistantMessage save (which happens after the
+							// stream ends) lands BEFORE the ToolCall entry. See
+							// executeToolKickoff and the post-stream resolve loop.
+							result, aborted := r.executeToolKickoff(ctx, tcCopy)
+							// Live UI emit happens here; session writes are deferred.
+							r.emitToolResult(tr, turn, tcCopy, result, aborted)
+							ch <- kickoffResult{tc: tcCopy, result: result, aborted: aborted}
+						}()
 
-				case llm.EventDone:
-					if event.Usage != nil && r.calibrator != nil {
-						r.calibrator.Update(event.Usage.InputTokens, tokens.Estimate(msgs, llm.JoinSystemPromptParts(parts), toolDefs))
-					}
+					case llm.EventDone:
+						if event.Usage != nil && r.calibrator != nil {
+							r.calibrator.Update(event.Usage.InputTokens, tokens.Estimate(msgs, llm.JoinSystemPromptParts(parts), toolDefs))
+						}
 
-				case llm.EventError:
-					drainKickoffs(kickoffs)
-					r.emit(AgentEvent{Type: EventError, Error: event.Error})
-					return
+					case llm.EventError:
+						// Mid-stream-failure retry: only attempts once, only
+						// when we've started receiving tokens (so the failure
+						// is plausibly a connection drop mid-flight, not a
+						// pre-flight error like 400 Bad Request) and only when
+						// the provider exposes the non-streaming endpoint.
+						if gotFirstToken && !retriedNonStreaming {
+							if ns, ok := r.LLM.(llm.NonStreamingProvider); ok {
+								slog.Warn("stream died mid-flight; retrying as non-streaming",
+									"agent", r.AgentID, "turn", turn, "err", event.Error)
+								tr.Mark("llm.stream_fallback", "turn", turn, "err", event.Error.Error())
+								// Discard partial output. Cancelling
+								// in-flight kickoffs is essential — they may
+								// still be writing tool_results that would
+								// pair with tool_calls we're about to throw
+								// away.
+								textContent.Reset()
+								toolCalls = nil
+								drainKickoffs(kickoffs)
+								kickoffs = map[string]chan kickoffResult{}
+								gotFirstToken = false
+								kickoffStopped = false
+								nsStream, retryErr := ns.ChatNonStreaming(ctx, req)
+								if retryErr != nil {
+									r.emit(AgentEvent{Type: EventError, Error: retryErr})
+									return
+								}
+								retriedNonStreaming = true
+								streamSource = nsStream
+								continue streamLoop
+							}
+						}
+						drainKickoffs(kickoffs)
+						r.emit(AgentEvent{Type: EventError, Error: event.Error})
+						return
+					}
 				}
+				break streamLoop
 			}
 			tr.Mark("llm.stream_end", "turn", turn,
 				"total_ms", time.Since(llmStart).Milliseconds(),
