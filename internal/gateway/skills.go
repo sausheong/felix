@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sausheong/felix/internal/skill"
+	"gopkg.in/yaml.v3"
 )
 
 // skillListEntry is a single skill returned by the List endpoint.
@@ -136,16 +138,91 @@ func NewSkillHandlers(loader skillReloader, skillsDir string, reloadDirs []strin
 		_, _ = w.Write(data)
 	}
 	h.Upload = func(w http.ResponseWriter, r *http.Request) {
-		writeSkillJSONError(w, http.StatusNotImplemented, "upload not implemented")
+		r.Body = http.MaxBytesReader(w, r.Body, maxSkillUploadBytes)
+		if err := r.ParseMultipartForm(maxSkillUploadBytes); err != nil {
+			// MaxBytesReader's "request body too large" surfaces here.
+			if strings.Contains(err.Error(), "request body too large") {
+				writeSkillJSONError(w, http.StatusRequestEntityTooLarge, "upload exceeds 256KB limit")
+				return
+			}
+			writeSkillJSONError(w, http.StatusBadRequest, "parse multipart: "+err.Error())
+			return
+		}
+
+		file, hdr, err := r.FormFile("file")
+		if err != nil {
+			writeSkillJSONError(w, http.StatusBadRequest, `missing "file" field`)
+			return
+		}
+		defer file.Close()
+
+		// Spec: silently sanitize the multipart filename via filepath.Base (browsers
+		// already strip path info; this is defense in depth). Then validate the
+		// regex on the sanitized name. Path-traversal protection comes from Base.
+		name := filepath.Base(hdr.Filename)
+		if err := validateSkillName(name); err != nil {
+			writeSkillJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		data, err := io.ReadAll(file)
+		if err != nil {
+			if strings.Contains(err.Error(), "request body too large") {
+				writeSkillJSONError(w, http.StatusRequestEntityTooLarge, "upload exceeds 256KB limit")
+				return
+			}
+			writeSkillJSONError(w, http.StatusBadRequest, "read upload: "+err.Error())
+			return
+		}
+
+		// Validate frontmatter if present (body-only files are valid).
+		fm, _ := skill.SplitFrontmatter(string(data))
+		if fm != "" {
+			var probe skill.Skill
+			if yerr := yaml.Unmarshal([]byte(fm), &probe); yerr != nil {
+				writeSkillJSONError(w, http.StatusUnprocessableEntity, "invalid YAML frontmatter: "+yerr.Error())
+				return
+			}
+		}
+
+		target := filepath.Join(skillsDir, name)
+		if _, err := os.Stat(target); err == nil {
+			writeSkillJSONError(w, http.StatusConflict, fmt.Sprintf("skill %q already exists; delete first to replace", name))
+			return
+		} else if !os.IsNotExist(err) {
+			writeSkillJSONError(w, http.StatusInternalServerError, "stat target: "+err.Error())
+			return
+		}
+
+		tmp := target + ".tmp"
+		if err := os.WriteFile(tmp, data, 0o644); err != nil {
+			writeSkillJSONError(w, http.StatusInternalServerError, "write tmp: "+err.Error())
+			return
+		}
+		if err := os.Rename(tmp, target); err != nil {
+			_ = os.Remove(tmp)
+			writeSkillJSONError(w, http.StatusInternalServerError, "rename: "+err.Error())
+			return
+		}
+
+		resp := map[string]any{
+			"ok":       true,
+			"name":     strings.TrimSuffix(name, filepath.Ext(name)),
+			"filename": name,
+		}
+		if rerr := loader.LoadFrom(reloadDirs...); rerr != nil {
+			resp["warning"] = "reload failed: " + rerr.Error()
+		}
+		writeSkillJSON(w, resp)
 	}
 	h.Delete = func(w http.ResponseWriter, r *http.Request) {
 		writeSkillJSONError(w, http.StatusNotImplemented, "delete not implemented")
 	}
-	// Silence unused-arg warnings until subsequent tasks fill in the handlers.
-	_ = loader
-	_ = reloadDirs
 	return h
 }
+
+// maxSkillUploadBytes caps a single skill upload at 256 KB.
+const maxSkillUploadBytes = 256 * 1024
 
 // skillNameRE matches a safe skill filename: one or more of [A-Za-z0-9._-]
 // followed by a literal ".md". Defends against path traversal and weird chars.
