@@ -54,7 +54,6 @@ Felix.app
 # ─────────────────────────────────────────────────────────────────────────────
 # Local secrets / experiments / scratchpad scripts that have shown up before
 # ─────────────────────────────────────────────────────────────────────────────
-gt-harness.txt
 internal/mcp/SDK_NOTES.md
 /design.md
 /harness.md

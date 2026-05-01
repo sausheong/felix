@@ -91,7 +91,6 @@ This checks your config file, data directories, API keys, agent workspaces, and 
 | `felix doctor` | Run diagnostic checks (config, data dirs, API keys, agent workspaces) |
 | `felix doctor -c /path/to/config.json5` | Doctor with a custom config path |
 | `felix version` | Print version and commit info |
-| `felix gt-harness --env-file <file>` | Smoke-test connection to a remote MCP gateway (experimental) |
 
 ### Chat session commands
 

@@ -60,7 +60,6 @@ func main() {
 		doctorCmd(),
 		modelCmd(),
 		mcpCmd(),
-		gtHarnessCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {

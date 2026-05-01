@@ -120,7 +120,6 @@ not interfere with any system Ollama you may have on `:11434`.
 | `felix status` | Query the running gateway for agent status |
 | `felix doctor` | Run diagnostic checks |
 | `felix version` | Print version and commit info |
-| `felix gt-harness --env-file <file>` | Smoke-test connection to a remote MCP gateway (experimental) — reads OAuth client-credentials from a dotenv file and lists exposed tools |
 
 ---
 
