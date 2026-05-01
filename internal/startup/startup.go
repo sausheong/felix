@@ -617,6 +617,10 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			agentCfg := agentCfg
 			agentFn := func(ctx context.Context, prompt string) (string, error) {
 				sess := session.NewSession(agentCfg.ID, "heartbeat")
+				// Drain compactionMgr's per-Session.ID lock entry on
+				// return — Session.ID is freshly generated per call,
+				// so without this the locks map grows by one per tick.
+				defer startupCompactionMgr.ForgetSession(sess.ID)
 				hbToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(hbToolReg, agentCfg.Workspace, execPolicy)
 				if _, err := mcp.RegisterTools(hbToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
@@ -624,13 +628,16 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				}
 				tools.RegisterSendMessage(hbToolReg, sendMsgConfigFn)
 
-				rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+				rt, err := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
 					Provider:     provider,
 					Tools:        hbToolReg,
 					Session:      sess,
 					Compaction:   startupCompactionMgr,
 					IngestSource: "heartbeat",
 				}, &agentCfg)
+				if err != nil {
+					return "", fmt.Errorf("build runtime for heartbeat agent %q: %w", agentCfg.ID, err)
+				}
 				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
 					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
 					hbToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
@@ -657,19 +664,25 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			cronJob := cronJob
 			agentFn := func(ctx context.Context, prompt string) (string, error) {
 				sess := session.NewSession(agentCfg.ID, "cron_"+cronJob.Name)
+				// Drain compactionMgr's per-Session.ID lock entry on
+				// return — Session.ID is freshly generated per call.
+				defer startupCompactionMgr.ForgetSession(sess.ID)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace, execPolicy)
 				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
-				rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+				rt, err := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
 					Provider:     provider,
 					Tools:        cronToolReg,
 					Session:      sess,
 					Compaction:   startupCompactionMgr,
 					IngestSource: "cron",
 				}, &agentCfg)
+				if err != nil {
+					return "", fmt.Errorf("build runtime for cron job %q on agent %q: %w", cronJob.Name, agentCfg.ID, err)
+				}
 				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
 					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
 					cronToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
@@ -699,19 +712,25 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					return "", fmt.Errorf("provider %q not available", pName)
 				}
 				cronSess := session.NewSession(defaultCfg.ID, "cron_"+jobName)
+				// Drain compactionMgr's per-Session.ID lock entry on
+				// return — Session.ID is freshly generated per call.
+				defer startupCompactionMgr.ForgetSession(cronSess.ID)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreTools(cronToolReg, defaultCfg.Workspace, execPolicy)
 				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
 				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
-				rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+				rt, err := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
 					Provider:     p,
 					Tools:        cronToolReg,
 					Session:      cronSess,
 					Compaction:   startupCompactionMgr,
 					IngestSource: "cron",
 				}, &defaultCfg)
+				if err != nil {
+					return "", fmt.Errorf("build runtime for cron adapter job %q: %w", jobName, err)
+				}
 				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
 					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
 					cronToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))

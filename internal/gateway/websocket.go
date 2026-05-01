@@ -367,6 +367,11 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		}
 	}
 	compactionMgr := compProv.For(agentCfg.Model)
+	// Session.ID is freshly generated on every Load (in-memory instance
+	// ID, not a persistent identifier). compactionMgr keys per-session
+	// locks/failures by that ID, so without ForgetSession at end of
+	// turn the locks map grows by one entry per chat.send forever.
+	defer compactionMgr.ForgetSession(sess.ID)
 
 	runtimeDeps := agent.RuntimeDeps{
 		Skills:     sk,
@@ -377,12 +382,20 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		Config:     cfg,
 	}
 
-	rt, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+	rt, err := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
 		Provider:   provider,
 		Tools:      executor,
 		Session:    sess,
 		Compaction: compactionMgr,
 	}, agentCfg)
+	if err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32603, "message": "Build runtime failed: " + err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
 
 	// Wire the task tool for subagent dispatch. The shared h.tools registry
 	// can't hold the per-call task tool (which captures THIS rt as Parent),

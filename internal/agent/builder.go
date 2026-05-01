@@ -55,9 +55,11 @@ type RuntimeInputs struct {
 //  2. Parsing the reasoning mode (with default-to-off + warning on invalid)
 //  3. Resolving the per-agent Cortex via deps.CortexFn (nil-safe)
 //
-// Returns (*Runtime, nil) — the error return is reserved for future
-// validation (e.g., "agent config requires X feature this build doesn't have")
-// but is currently always nil.
+// Returns the constructed Runtime and a nil error today, but callers MUST
+// check the error: the return is reserved for future validation (e.g.,
+// "agent config requires X feature this build doesn't have"). Discarding
+// it and dereferencing the *Runtime would nil-panic the moment any
+// validation lands.
 func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.AgentConfig) (*Runtime, error) {
 	provider, modelName := llm.ParseProviderModel(a.Model)
 	reasoning, err := llm.ParseReasoningMode(a.Reasoning)

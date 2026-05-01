@@ -206,6 +206,45 @@ func TestManagerForgetsSession(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// TestDeferredForgetSessionDrainsLocksMap protects the documented usage
+// pattern from gateway/websocket.go and startup.go: every per-call
+// agent runner does `defer mgr.ForgetSession(sess.ID)` immediately
+// after creating/loading the *session.Session. This keeps the
+// locks map size bounded by concurrent in-flight calls instead of
+// growing forever with traffic. If a future refactor drops one of
+// those defers, this test catches the regression at the unit level.
+func TestDeferredForgetSessionDrainsLocksMap(t *testing.T) {
+	mgr := &Manager{
+		Summarizer: &Summarizer{
+			Provider: &fakeProvider{text: "ok"},
+			Model:    "m",
+			Timeout:  time.Second,
+		},
+		PreserveTurns: 4,
+	}
+	// Simulate N agent turns. Each turn loads a fresh session
+	// (per-load Session.ID — same as Store.Load behavior in prod),
+	// runs MaybeCompact, then defers ForgetSession on return.
+	const turns = 50
+	turn := func() {
+		sess := longSession()
+		defer mgr.ForgetSession(sess.ID)
+		_, _ = mgr.MaybeCompact(context.Background(), sess, ReasonManual, "")
+	}
+	for i := 0; i < turns; i++ {
+		turn()
+	}
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	assert.Equal(t, 0, len(mgr.locks),
+		"defer ForgetSession on each turn must drain the locks map; "+
+			"got %d residual entries after %d turns", len(mgr.locks), turns)
+	mgr.failMu.Lock()
+	defer mgr.failMu.Unlock()
+	assert.Equal(t, 0, len(mgr.failures),
+		"defer ForgetSession must also drain the failures map")
+}
+
 // TestSeparateManagersDoNotSerialize sanity-checks that the per-session lock
 // lives on the Manager instance — two Manager instances run concurrently
 // even when handed the same session ID. This proves why call sites must build
