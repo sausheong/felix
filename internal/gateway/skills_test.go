@@ -332,3 +332,53 @@ func TestUpload_ReloadFailure(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, fr.calls)
 }
+
+func TestDelete_Happy(t *testing.T) {
+	h, dir, loader := newSkillTest(t)
+	writeSkill(t, dir, "gone.md", "---\nname: gone\n---\nbody\n")
+	require.NoError(t, loader.LoadFrom(dir))
+	// Sanity: loader sees it before delete
+	preCount := len(loader.Skills())
+	require.GreaterOrEqual(t, preCount, 1)
+
+	req := httptest.NewRequest(http.MethodDelete, "/settings/api/skills/gone.md", nil)
+	req = withChiName(req, "gone.md")
+	w := httptest.NewRecorder()
+	h.Delete(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	// File gone from disk
+	_, err := os.Stat(filepath.Join(dir, "gone.md"))
+	assert.True(t, os.IsNotExist(err))
+	// Loader no longer reports it
+	for _, s := range loader.Skills() {
+		assert.NotEqual(t, "gone", s.Name)
+	}
+}
+
+func TestDelete_NotFound(t *testing.T) {
+	h, _, _ := newSkillTest(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/settings/api/skills/never-here.md", nil)
+	req = withChiName(req, "never-here.md")
+	w := httptest.NewRecorder()
+	h.Delete(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestDelete_PathTraversal(t *testing.T) {
+	h, _, _ := newSkillTest(t)
+	bad := []string{"../etc/passwd", "foo/bar.md", "foo bar.md"}
+	for _, name := range bad {
+		t.Run(name, func(t *testing.T) {
+			// Use a fixed safe URL; inject the bad name via withChiName
+			// (since URLs with spaces panic httptest.NewRequest).
+			req := httptest.NewRequest(http.MethodDelete, "/settings/api/skills/x", nil)
+			req = withChiName(req, name)
+			w := httptest.NewRecorder()
+			h.Delete(w, req)
+			assert.Equal(t, http.StatusBadRequest, w.Code, "name %q must be rejected", name)
+		})
+	}
+}

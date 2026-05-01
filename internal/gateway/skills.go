@@ -219,7 +219,33 @@ func NewSkillHandlers(loader skillReloader, skillsDir string, reloadDirs []strin
 		writeSkillJSON(w, resp)
 	}
 	h.Delete = func(w http.ResponseWriter, r *http.Request) {
-		writeSkillJSONError(w, http.StatusNotImplemented, "delete not implemented")
+		// Validate the raw chi param first (rejects '/', '\', spaces, etc. with
+		// 400 — same approach as Get); then defensively apply filepath.Base
+		// before joining to skillsDir.
+		raw := chi.URLParam(r, "name")
+		if err := validateSkillName(raw); err != nil {
+			writeSkillJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		name := filepath.Base(raw)
+		target := filepath.Join(skillsDir, name)
+		if _, err := os.Stat(target); err != nil {
+			if os.IsNotExist(err) {
+				writeSkillJSONError(w, http.StatusNotFound, "skill not found")
+				return
+			}
+			writeSkillJSONError(w, http.StatusInternalServerError, "stat: "+err.Error())
+			return
+		}
+		if err := os.Remove(target); err != nil {
+			writeSkillJSONError(w, http.StatusInternalServerError, "remove: "+err.Error())
+			return
+		}
+		resp := map[string]any{"ok": true}
+		if rerr := loader.LoadFrom(reloadDirs...); rerr != nil {
+			resp["warning"] = "reload failed: " + rerr.Error()
+		}
+		writeSkillJSON(w, resp)
 	}
 	return h
 }
