@@ -53,3 +53,29 @@ func TestHealthEndpointContentType(t *testing.T) {
 
 	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
 }
+
+// TestShutdownBeforeStart — Shutdown must be safe to call before
+// Start has run. The startup.StartGateway cleanup chain calls
+// Shutdown unconditionally on error teardown paths that may run
+// before the caller has launched Start in its own goroutine; without
+// nil-safety here the cleanup panics and leaks every other resource
+// that was supposed to be released after it.
+func TestShutdownBeforeStart(t *testing.T) {
+	s := newTestServer(t)
+	require.NotPanics(t, func() {
+		err := s.Shutdown(t.Context())
+		require.NoError(t, err)
+	})
+}
+
+// TestShutdownOnNilReceiver — defensive: the cleanup func captures
+// `srv` by closure value; even if a future refactor accidentally
+// initialises that to nil for some teardown path, Shutdown should
+// degrade to a no-op rather than crash the whole shutdown chain.
+func TestShutdownOnNilReceiver(t *testing.T) {
+	var s *Server
+	require.NotPanics(t, func() {
+		err := s.Shutdown(t.Context())
+		require.NoError(t, err)
+	})
+}

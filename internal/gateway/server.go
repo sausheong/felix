@@ -130,7 +130,14 @@ func (s *Server) Start() error {
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown gracefully stops the server.
+// Shutdown gracefully stops the server. Safe to call before Start —
+// httpServer is only allocated by Start, and the cleanup chain in
+// startup.StartGateway calls Shutdown unconditionally on error
+// teardown paths that may run before the caller has launched Start
+// in its own goroutine.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s == nil || s.httpServer == nil {
+		return nil
+	}
 	return s.httpServer.Shutdown(ctx)
 }
