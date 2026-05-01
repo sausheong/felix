@@ -60,6 +60,8 @@ var toolHints = map[string]string{
 	"browser":      "You can automate a headless browser for interactive pages using the browser tool.",
 	"send_message": "You can send messages to other users or channels using the send_message tool.",
 	"cron":         "You can schedule recurring tasks using the cron tool.",
+	"load_skill":   "You can load a skill body on demand by name via load_skill. Consult the Skills Index in your system prompt to pick the right skill name; the body is returned as the tool output.",
+	"load_memory":  "You can load a memory entry body on demand by id via load_memory. Consult the Memory Index in your system prompt to pick the right entry id.",
 }
 
 // buildDefaultIdentity constructs the default identity prompt tailored to
