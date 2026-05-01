@@ -595,3 +595,107 @@ func LoadAgentMemoryFiles(workspace string) string {
 func FormatDateLine(now time.Time) string {
 	return fmt.Sprintf("Today's date is %s.", now.Format("2006-01-02"))
 }
+
+// PostCompactRestoreFiles caps how many recently-touched files
+// buildPostCompactRestore re-injects after a successful compaction.
+// 5 mirrors Claude Code's harness behaviour (harness.md §3) and keeps
+// the restore message bounded.
+const PostCompactRestoreFiles = 5
+
+// PostCompactRestoreBytesPerFile bounds the per-file byte budget for
+// the restore message. ~5 KB per file × 5 files ≈ 25 KB total — modest
+// next to a 200K-token context window, large enough to carry a typical
+// source file's relevant region.
+const PostCompactRestoreBytesPerFile = 5 * 1024
+
+// extractPathFromInput returns the "path" field from a tool call's
+// JSON input, or "" if absent / unparseable. Used by Runtime to record
+// which files the agent has touched (read_file/write_file/edit_file
+// all share the same {"path": "..."} schema).
+func extractPathFromInput(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var probe struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return ""
+	}
+	return probe.Path
+}
+
+// buildPostCompactRestore produces a single user-role llm.Message
+// containing the latest contents of the most-recent K touched files,
+// or returns an empty message (Content == "") when there's nothing
+// useful to inject.
+//
+// Selection: walks files newest-to-oldest (caller passes them in
+// touch order, so we range from the back), takes up to maxFiles paths
+// that exist and read successfully. Files larger than maxBytesPerFile
+// are read up to the cap and a short "[truncated]" marker appended —
+// truncating from the head matches our tool-result spillover convention
+// and keeps imports/declarations visible.
+//
+// Format is wrapped in <system-reminder>...<file path="...">...</file>
+// tags so the model recognises it as out-of-band context, not a fresh
+// user request. Mirrors how Claude Code re-injects POST_COMPACT files.
+func buildPostCompactRestore(files []string, maxFiles, maxBytesPerFile int) llm.Message {
+	if len(files) == 0 || maxFiles <= 0 || maxBytesPerFile <= 0 {
+		return llm.Message{}
+	}
+	var sb strings.Builder
+	sb.WriteString("<system-reminder>\nFiles you were recently working with — full contents below for context restoration after history compaction. The file system is the source of truth; re-read with the read_file tool if you need updated content.\n\n")
+	picked := 0
+	for i := len(files) - 1; i >= 0 && picked < maxFiles; i-- {
+		path := files[i]
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		truncated := false
+		if len(data) > maxBytesPerFile {
+			data = data[:maxBytesPerFile]
+			if idx := strings.LastIndex(string(data), "\n"); idx > maxBytesPerFile/2 {
+				data = data[:idx]
+			}
+			truncated = true
+		}
+		fmt.Fprintf(&sb, "<file path=%q>\n", path)
+		sb.Write(data)
+		if !strings.HasSuffix(string(data), "\n") {
+			sb.WriteString("\n")
+		}
+		if truncated {
+			fmt.Fprintf(&sb, "[truncated — over %d bytes]\n", maxBytesPerFile)
+		}
+		sb.WriteString("</file>\n\n")
+		picked++
+	}
+	if picked == 0 {
+		return llm.Message{}
+	}
+	sb.WriteString("</system-reminder>")
+	return llm.Message{Role: "user", Content: sb.String()}
+}
+
+// prependPostCompactRestore is the runtime-facing helper: builds the
+// restore message with the standard caps and prepends it to msgs when
+// non-empty. Returns msgs unchanged when there are no touched files,
+// when every file fails to read, or when buildPostCompactRestore
+// otherwise produces an empty message — keeps the call sites in
+// runtime.go to a single line and centralises the cap policy.
+func prependPostCompactRestore(msgs []llm.Message, touched []string) []llm.Message {
+	restore := buildPostCompactRestore(touched, PostCompactRestoreFiles, PostCompactRestoreBytesPerFile)
+	if restore.Content == "" {
+		return msgs
+	}
+	out := make([]llm.Message, 0, len(msgs)+1)
+	out = append(out, restore)
+	out = append(out, msgs...)
+	return out
+}

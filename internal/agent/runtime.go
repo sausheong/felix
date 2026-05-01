@@ -114,6 +114,15 @@ type Runtime struct {
 	// Held briefly only around the slice append; never around tool execution.
 	cortexMu sync.Mutex
 
+	// touchedFiles is the in-order list of file paths the agent has
+	// successfully read/written/edited during this Runtime's lifetime
+	// (deduped — re-touching a path moves it to the back). Used by the
+	// post-compact file-restore path to re-inject the most recent K
+	// files' contents after MaybeCompact rewrites history. Held across
+	// turns because compaction can happen at any turn boundary.
+	touchedMu    sync.Mutex
+	touchedFiles []string
+
 	// IngestSource controls whether this run's thread is ingested into Cortex.
 	// "chat" (or empty for backward compatibility) ingests; "cron" / "heartbeat"
 	// / any other value skips ingest. Recall always runs regardless — only the
@@ -153,6 +162,67 @@ func (r *Runtime) emit(ev AgentEvent) {
 // CacheLastMessage on outgoing ChatRequests.
 func (r *Runtime) providerSupportsCaching() bool {
 	return r.Provider == "anthropic"
+}
+
+// providerSupportsMidLoopCompaction returns true for hosted frontier
+// providers that handle mid-loop summary injection cleanly. The
+// preventive-compaction comment near runtime.go:339 cites
+// "small local model confusion" as the reason for the original
+// turn==0-only restriction; that concern is provider-specific. We allow
+// mid-loop compaction for anthropic/openai/gemini and keep the hard
+// turn==0 gate for "local"/"ollama"/empty (treat empty as local for
+// safety so a misconfigured provider doesn't accidentally opt in).
+func (r *Runtime) providerSupportsMidLoopCompaction() bool {
+	switch r.Provider {
+	case "anthropic", "openai", "gemini":
+		return true
+	default:
+		return false
+	}
+}
+
+// recordFileTouch appends path to the touched-files list for post-compact
+// restore, deduping by moving an existing entry to the end so it's
+// counted as the most recent. Empty paths and tool calls without a
+// "path" field are silently ignored. Safe to call from multiple
+// goroutines (Phase B parallel dispatch).
+func (r *Runtime) recordFileTouch(path string) {
+	if path == "" || r == nil {
+		return
+	}
+	r.touchedMu.Lock()
+	defer r.touchedMu.Unlock()
+	for i, p := range r.touchedFiles {
+		if p == path {
+			r.touchedFiles = append(append(r.touchedFiles[:i:i], r.touchedFiles[i+1:]...), path)
+			return
+		}
+	}
+	r.touchedFiles = append(r.touchedFiles, path)
+}
+
+// snapshotTouchedFiles returns a copy of the current touched-files list
+// safe to read without holding touchedMu. Used by the post-compact
+// restore path which reads files from disk (slow) without blocking
+// concurrent tool dispatches.
+func (r *Runtime) snapshotTouchedFiles() []string {
+	r.touchedMu.Lock()
+	defer r.touchedMu.Unlock()
+	out := make([]string, len(r.touchedFiles))
+	copy(out, r.touchedFiles)
+	return out
+}
+
+// isFileTool reports whether a tool name's input contains a "path" field
+// whose target file the agent has just touched. Centralised so adding a
+// new path-bearing tool (or a future load_skill tool) only requires
+// editing this one switch.
+func isFileTool(name string) bool {
+	switch name {
+	case "read_file", "write_file", "edit_file":
+		return true
+	}
+	return false
 }
 
 // Run executes the agent loop for a user message, returning a channel of events.
@@ -344,14 +414,23 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			//     (32K tokens default) so the threshold-based check almost
 			//     never fires; the count cap keeps prefill bounded for fast TTFT.
 			//
-			// Only fires at turn==0 (start of a new user-initiated run).
-			// Compacting mid-loop — between a tool_call and the assistant's
-			// final reply — rewrites history under the model and tends to
-			// confuse small local models that conflate the freshly-injected
-			// summary with the in-flight tool result. The reactive overflow
-			// handler below still covers all turns.
-			// See CompactionConfig.MessageCap for incident rationale.
-			if turn == 0 && r.Compaction != nil && r.Model != "" {
+			// Mid-loop firing policy:
+			//   - Local/ollama/empty providers: turn==0 only. Compacting
+			//     between a tool_call and the assistant's final reply
+			//     rewrites history under the model and confuses small
+			//     local models that conflate the freshly-injected summary
+			//     with the in-flight tool result.
+			//   - Frontier providers (anthropic/openai/gemini): every
+			//     turn. They handle the splice cleanly, and waiting for
+			//     turn==0 forces a long session into the reactive
+			//     overflow path (one wasted API call per overflow) instead
+			//     of compacting proactively when prefill crosses the
+			//     threshold mid-turn.
+			// The reactive overflow handler below still covers all turns
+			// regardless. See CompactionConfig.MessageCap for incident
+			// rationale.
+			compactionAllowed := turn == 0 || r.providerSupportsMidLoopCompaction()
+			if compactionAllowed && r.Compaction != nil && r.Model != "" {
 				if r.calibrator == nil {
 					r.calibrator = tokens.NewCalibrator()
 				}
@@ -373,6 +452,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 						history = r.Session.View()
 						msgs = assembleMessages(history)
 						pruneToolResults(msgs, maxToolResultLen, spillCfg)
+						msgs = prependPostCompactRestore(msgs, r.snapshotTouchedFiles())
 					} else {
 						r.emit(AgentEvent{Type: EventCompactionSkipped, Compaction: &res})
 					}
@@ -407,6 +487,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 						history = r.Session.View()
 						msgs = assembleMessages(history)
 						pruneToolResults(msgs, maxToolResultLen, spillCfg)
+						msgs = prependPostCompactRestore(msgs, r.snapshotTouchedFiles())
 						req.Messages = msgs
 						stream, err = r.LLM.ChatStream(ctx, req)
 					} else {
@@ -712,6 +793,13 @@ func (r *Runtime) dispatchTool(
 		r.cortexMu.Unlock()
 	}
 
+	// 7. Track touched files for post-compact restore. Only on success
+	// (no Error) — failed read_files don't establish that the path exists,
+	// and adding bogus paths would just waste post-compact budget.
+	if result.Error == "" && isFileTool(tc.Name) {
+		r.recordFileTouch(extractPathFromInput(tc.Input))
+	}
+
 	return result, false
 }
 
@@ -745,6 +833,12 @@ func (r *Runtime) executeToolKickoff(ctx context.Context, tc llm.ToolCall) (resu
 	// Post-execute cancel check.
 	if ctx.Err() != nil {
 		return tools.ToolResult{Error: "aborted by user"}, true
+	}
+	// Track touched files for post-compact restore (mirrors dispatchTool
+	// step 7). Streaming-tool kickoff bypasses dispatchTool, so without
+	// this hook a kickoff-spawned read_file would never be tracked.
+	if result.Error == "" && isFileTool(tc.Name) {
+		r.recordFileTouch(extractPathFromInput(tc.Input))
 	}
 	return result, false
 }
