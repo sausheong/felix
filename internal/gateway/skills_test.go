@@ -1,12 +1,14 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/sausheong/felix/internal/skill"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,6 +28,14 @@ func newSkillTest(t *testing.T) (*SkillHandlers, string, *skill.Loader) {
 func writeSkill(t *testing.T, dir, filename, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o644))
+}
+
+// withChiName attaches a chi RouteContext carrying URL param "name" to the
+// request. Handlers under /settings/api/skills/{name} read this via chi.URLParam.
+func withChiName(req *http.Request, name string) *http.Request {
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("name", name)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 }
 
 func TestValidateSkillName(t *testing.T) {
@@ -118,4 +128,49 @@ func TestList_MissingBins(t *testing.T) {
 	body := w.Body.String()
 	assert.Contains(t, body, `"unavailable":true`)
 	assert.Contains(t, body, `"missing_bins":["definitely-not-installed-xyz-123"]`)
+}
+
+func TestGet_Found(t *testing.T) {
+	h, dir, _ := newSkillTest(t)
+	const content = "---\nname: cortex\n---\nbody here\n"
+	writeSkill(t, dir, "cortex.md", content)
+
+	req := httptest.NewRequest(http.MethodGet, "/settings/api/skills/cortex.md", nil)
+	req = withChiName(req, "cortex.md")
+	w := httptest.NewRecorder()
+	h.Get(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "text/plain; charset=utf-8", w.Header().Get("Content-Type"))
+	assert.Equal(t, content, w.Body.String())
+}
+
+func TestGet_NotFound(t *testing.T) {
+	h, _, _ := newSkillTest(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/settings/api/skills/missing.md", nil)
+	req = withChiName(req, "missing.md")
+	w := httptest.NewRecorder()
+	h.Get(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestGet_PathTraversal(t *testing.T) {
+	h, _, _ := newSkillTest(t)
+	bad := []string{"../etc/passwd", "foo/bar.md", "foo bar.md", "no-extension", "with:colon.md"}
+	for _, name := range bad {
+		t.Run(name, func(t *testing.T) {
+			// Use a fixed innocuous URL path; the value the handler actually
+			// reads is the chi param injected via withChiName. Embedding the
+			// bad name in the URL would either be path-stripped by routers or
+			// (for spaces) cause httptest.NewRequest to panic on the request
+			// line — neither is what we're trying to exercise here.
+			req := httptest.NewRequest(http.MethodGet, "/settings/api/skills/x", nil)
+			req = withChiName(req, name)
+			w := httptest.NewRecorder()
+			h.Get(w, req)
+			assert.Equal(t, http.StatusBadRequest, w.Code, "name %q must be rejected", name)
+		})
+	}
 }

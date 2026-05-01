@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/sausheong/felix/internal/skill"
 )
 
@@ -111,7 +112,28 @@ func NewSkillHandlers(loader skillReloader, skillsDir string, reloadDirs []strin
 		writeSkillJSON(w, out)
 	}
 	h.Get = func(w http.ResponseWriter, r *http.Request) {
-		writeSkillJSONError(w, http.StatusNotImplemented, "get not implemented")
+		raw := chi.URLParam(r, "name")
+		// Validate the raw param first so path separators / spaces / etc. are
+		// rejected with 400 instead of being laundered through filepath.Base.
+		if err := validateSkillName(raw); err != nil {
+			writeSkillJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// Defense-in-depth: even after validation, only ever join the basename.
+		name := filepath.Base(raw)
+		full := filepath.Join(skillsDir, name)
+		data, err := os.ReadFile(full)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeSkillJSONError(w, http.StatusNotFound, "skill not found")
+				return
+			}
+			writeSkillJSONError(w, http.StatusInternalServerError, "read: "+err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
 	}
 	h.Upload = func(w http.ResponseWriter, r *http.Request) {
 		writeSkillJSONError(w, http.StatusNotImplemented, "upload not implemented")
