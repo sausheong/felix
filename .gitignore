@@ -1,58 +1,63 @@
-# Binaries
+# ─────────────────────────────────────────────────────────────────────────────
+# Build outputs
+# ─────────────────────────────────────────────────────────────────────────────
 /felix
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-
-# Test binary
 *.test
-
-# Output
 *.out
 dist/
-
-# Go workspace
 go.work
 go.work.sum
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Config with secrets
-.env
-llm.txt
-
-# Claude Code
-CLAUDE.md
-security-audit.md
-
-# others
-claw-machine.png
+# bundled Ollama binaries fetched by `make ollama-fetch`
+/bin/
 Felix.app
 
-# Bundled Ollama binaries fetched by 'make ollama-fetch'
-/bin/
+# ─────────────────────────────────────────────────────────────────────────────
+# Hide ALL dot-prefixed files; track only .gitignore and .goreleaser.yaml.
+# Catches .claude/, .venv/, .DS_Store, .idea/, .vscode/, .env, .envrc, etc.
+# ─────────────────────────────────────────────────────────────────────────────
+.*
+!.gitignore
+!.goreleaser.yaml
 
-# Local secrets / experiments
+# ─────────────────────────────────────────────────────────────────────────────
+# Hide ALL images; track only the project hero (felix.jpg) and the build
+# assets (macOS .app icon, Windows installer .ico).
+# ─────────────────────────────────────────────────────────────────────────────
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg
+*.bmp
+*.ico
+!felix.jpg
+!cmd/felix-app/icon.png
+!installer/windows/Felix.ico
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hide ALL .md and .txt; track only the user-facing docs (README, howtouse)
+# and the bundled skill bodies that are go:embed-ed into the binary.
+# ─────────────────────────────────────────────────────────────────────────────
+*.md
+*.txt
+!README.md
+!howtouse.md
+!internal/skill/bundled/**/*.md
+!skills/**/*.md
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Local secrets / experiments / scratchpad scripts that have shown up before
+# ─────────────────────────────────────────────────────────────────────────────
 gt-harness.txt
-*.env
 internal/mcp/SDK_NOTES.md
-
-# Local design notes (not project docs)
 /design.md
 /harness.md
-
-# Ad-hoc debugging / probe scripts at repo root
 /call_search_mail.py
 /mcp_list_tools.py
 /test_memory_pkce.py
