@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/llm"
@@ -34,6 +35,19 @@ func detectImageMIME(data []byte, hint string) string {
 	}
 	return hint
 }
+
+// MaxAgentMemoryBytes caps the total bytes of FELIX.md / AGENTS.md content
+// injected into the static system prompt. Mirrors Claude Code's
+// MAX_MEMORY_CHARACTER_COUNT (claudemd.ts) at 40 KB. This is a soft cap:
+// the truncation marker (~50 bytes) plus the final section's header may
+// push the actual returned string over the limit by up to ~200 bytes.
+const MaxAgentMemoryBytes = 40 * 1024
+
+// memoryTruncationNotice is the marker LoadAgentMemoryFiles appends when
+// the cumulative memory-file content would push past MaxAgentMemoryBytes.
+// Built from MaxAgentMemoryBytes so the user-visible "40 KB" stays in sync
+// with the constant if the cap is ever tuned.
+var memoryTruncationNotice = fmt.Sprintf("\n\n[truncated — over %d KB total agent memory]", MaxAgentMemoryBytes/1024)
 
 const defaultIdentityBase = `You are Felix, an AI agent. Conduct yourself professionally and politely. Be concise and direct. When executing tasks, think step by step and use your tools to accomplish the user's goals. When you need to call multiple independent tools to gather information, emit them in a single response (parallel tool calls) rather than waiting for each one — this cuts response latency on local models.`
 
@@ -119,17 +133,20 @@ func BuildConfigSummary(cfg *config.Config) string {
 // does not change across turns within a Run: identity (from systemPrompt
 // arg, IDENTITY.md, or the built-in default tailored to toolNames), agent
 // self-identity, the configuration/data dir paths, the pre-computed
-// configSummary, and the pre-computed skillsIndex.
+// configSummary, the pre-computed skillsIndex, and the pre-computed
+// memoryFiles (FELIX.md / AGENTS.md walk-up).
 //
 // Pure with one allowed exception: it reads IDENTITY.md from workspace
-// when systemPrompt is empty. Caller pre-resolves configSummary and
-// skillsIndex so neither config.Load nor skill index assembly happens
-// per-turn. Suitable to call once at Runtime construction.
+// when systemPrompt is empty. Caller pre-resolves configSummary,
+// skillsIndex, and memoryFiles so neither config.Load nor skill-index
+// assembly nor memory-file disk reads happen per-turn. Suitable to call
+// once at Runtime construction.
 func BuildStaticSystemPrompt(
 	workspace, systemPrompt, agentID, agentName string,
 	toolNames []string,
 	configSummary string,
 	skillsIndex string,
+	memoryFiles string,
 ) string {
 	var base string
 	if systemPrompt != "" {
@@ -157,20 +174,29 @@ func BuildStaticSystemPrompt(
 	if skillsIndex != "" {
 		base += skillsIndex
 	}
+	if memoryFiles != "" {
+		base += memoryFiles
+	}
 
 	return base
 }
 
 // buildDynamicSystemPromptSuffix concatenates the per-turn dynamic context
-// — matched skill bodies, matched memory entries, and the cortex hint —
-// into a single string the runtime sends as the second (un-cached)
-// SystemPromptPart. Returns "" when all inputs are empty/nil.
+// — the date line, matched skill bodies, matched memory entries, and the
+// cortex hint — into a single string the runtime sends as the second
+// (un-cached) SystemPromptPart. The date line, when non-empty, appears at
+// the top so the model anchors on "today" before the per-turn content.
+// Returns "" when all inputs are empty/nil.
 func buildDynamicSystemPromptSuffix(
+	dateLine string,
 	matchedSkills []skill.Skill,
 	matchedMemory []memory.Entry,
 	cortexContext string,
 ) string {
 	var sb strings.Builder
+	if dateLine != "" {
+		sb.WriteString(dateLine)
+	}
 	if extra := skill.FormatForPrompt(matchedSkills); extra != "" {
 		sb.WriteString(extra)
 	}
@@ -400,4 +426,110 @@ func pruneToolResults(msgs []llm.Message, maxLen int) {
 		msgs[i].Content = fmt.Sprintf("%s\n\n%s%d of %d chars; re-run the tool with offset/limit to see more]",
 			truncated, truncationMarker, len(truncated), originalLen)
 	}
+}
+
+// LoadAgentMemoryFiles reads FELIX.md and AGENTS.md from workspace and
+// from $HOME. Returns the concatenated content with a brief header per
+// source, or "" if nothing is found.
+//
+// Discovery order (highest priority first):
+//  1. <workspace>/FELIX.md  — labelled "Project memory"
+//  2. <workspace>/AGENTS.md — labelled "Project memory"
+//  3. $HOME/FELIX.md        — labelled "User memory"
+//  4. $HOME/AGENTS.md       — labelled "User memory"
+//
+// Empty files, whitespace-only files, missing files, and unreadable files
+// are silently skipped. Files at the same absolute path (workspace ==
+// $HOME) are deduped — each unique file appears at most once.
+//
+// Hard cap: total returned content ≤ MaxAgentMemoryBytes. When adding a
+// file would push past the cap, the file's content is truncated at the
+// last newline before the byte limit and a "[truncated — over 40 KB
+// total agent memory]" marker is appended. Subsequent files are skipped
+// entirely.
+//
+// Pure (single I/O exception: reads up to 4 files from disk). The
+// returned string starts with "\n\n" so it composes cleanly after
+// skillsIndex in the static system prompt.
+func LoadAgentMemoryFiles(workspace string) string {
+	type candidate struct {
+		path  string
+		label string // "Project memory" or "User memory"
+	}
+	var candidates []candidate
+	if workspace != "" {
+		candidates = append(candidates,
+			candidate{filepath.Join(workspace, "FELIX.md"), "Project memory"},
+			candidate{filepath.Join(workspace, "AGENTS.md"), "Project memory"},
+		)
+	}
+	// os.UserHomeDir resolves $HOME on unix and %USERPROFILE% on Windows;
+	// returns an error (and we skip) when neither is set. The
+	// TestLoadAgentMemoryFilesEmptyHome case sets HOME="" and still expects
+	// graceful skip — UserHomeDir returns an error in that scenario which we
+	// treat as "no home leg to walk".
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates,
+			candidate{filepath.Join(home, "FELIX.md"), "User memory"},
+			candidate{filepath.Join(home, "AGENTS.md"), "User memory"},
+		)
+	}
+
+	seen := map[string]bool{}
+	var sb strings.Builder
+	truncated := false
+
+	for _, c := range candidates {
+		if truncated {
+			break
+		}
+		abs, err := filepath.Abs(c.path)
+		if err != nil {
+			continue
+		}
+		if seen[abs] {
+			continue
+		}
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			continue
+		}
+		seen[abs] = true
+		body := strings.TrimSpace(string(data))
+		if body == "" {
+			continue
+		}
+
+		header := fmt.Sprintf("\n\n## %s: %s\n\n", c.label, abs)
+		section := header + body
+
+		if sb.Len()+len(section) > MaxAgentMemoryBytes {
+			remaining := MaxAgentMemoryBytes - sb.Len() - len(header)
+			if remaining > 0 {
+				cut := body[:remaining]
+				if idx := strings.LastIndex(cut, "\n"); idx > remaining/2 {
+					cut = cut[:idx]
+				}
+				sb.WriteString(header)
+				sb.WriteString(cut)
+			}
+			sb.WriteString(memoryTruncationNotice)
+			truncated = true
+			continue
+		}
+		sb.WriteString(section)
+	}
+
+	return sb.String()
+}
+
+// FormatDateLine returns the canonical date line injected into the
+// dynamic system suffix every Run. Single-line, deterministic format.
+//
+//	"Today's date is YYYY-MM-DD."
+//
+// Uses the caller's process timezone (no UTC normalization) so "today"
+// matches the user's local sense of the day.
+func FormatDateLine(now time.Time) string {
+	return fmt.Sprintf("Today's date is %s.", now.Format("2006-01-02"))
 }

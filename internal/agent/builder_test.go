@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sausheong/felix/internal/config"
@@ -43,4 +45,25 @@ func TestBuildRuntimeForAgentNilConfigSafe(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "anthropic", rt.Provider)
 	require.NotEmpty(t, rt.StaticSystemPrompt)
+}
+
+func TestBuildRuntimeForAgentLoadsMemoryFilesIntoStaticPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	require.NoError(t, os.WriteFile(
+		filepath.Join(workspace, "FELIX.md"),
+		[]byte("MEMFILE_END_TO_END_SENTINEL"),
+		0o644,
+	))
+
+	a := &config.AgentConfig{
+		ID:        "a",
+		Name:      "A",
+		Workspace: workspace,
+		Model:     "anthropic/claude-sonnet-4-5",
+	}
+	rt, err := BuildRuntimeForAgent(RuntimeDeps{}, RuntimeInputs{}, a)
+	require.NoError(t, err)
+	require.Contains(t, rt.StaticSystemPrompt, "MEMFILE_END_TO_END_SENTINEL")
+	require.Contains(t, rt.StaticSystemPrompt, "## Project memory:")
 }

@@ -82,9 +82,11 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 	if inputs.Tools != nil {
 		toolNames = inputs.Tools.Names()
 	}
+	memoryFiles := LoadAgentMemoryFiles(a.Workspace)
 	staticPrompt := BuildStaticSystemPrompt(
 		a.Workspace, a.SystemPrompt, a.ID, a.Name,
 		toolNames, configSummary, skillsIndex,
+		memoryFiles,
 	)
 
 	return &Runtime{
