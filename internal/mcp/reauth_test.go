@@ -37,6 +37,19 @@ func TestIsAuthFailure_RecognizesCommonSignatures(t *testing.T) {
 		// oauth2 refresh-failure patterns (rotated/revoked refresh token).
 		{"invalid_grant", errors.New(`oauth2: server response: {"error":"invalid_grant"}`), true},
 		{"oauth2_cannot_fetch_token", errors.New(`oauth2: cannot fetch token: 400 Bad Request`), true},
+		// MCP SDK session-terminal-state signals. After the first
+		// transport failure the SDK marks the client as closing, and
+		// every subsequent call surfaces these wrappers — only Reconnect
+		// recovers. See logs from the assistantai/aiap-google-workspace
+		// gateway where call N=1 returns plain Bad Request and calls
+		// N=2..N all return "client is closing: ... Bad Request".
+		{"client_is_closing", errors.New(`mcp tools/call x: connection closed: calling "tools/call": client is closing: sending "tools/call": Bad Request`), true},
+		{"connection_closed_calling", errors.New(`connection closed: calling "tools/list": context canceled`), true},
+		// First-failure pattern: HTTP 400 on a tools/call from an MCP
+		// gateway is almost always Mcp-Session-Id rejection (genuine
+		// argument errors come back as JSON-RPC isError=true with HTTP
+		// 200, not as transport-level 400s).
+		{"sending_tools_call_bad_request", errors.New(`mcp tools/call x: calling "tools/call": sending "tools/call": Bad Request`), true},
 
 		{"nil", nil, false},
 		{"context_canceled", errors.New(`context canceled`), false},
@@ -47,6 +60,10 @@ func TestIsAuthFailure_RecognizesCommonSignatures(t *testing.T) {
 		// Tighten guard around the new patterns: "no longer valid" must
 		// not promote unrelated 5xx prose to auth.
 		{"503_no_longer_available", errors.New(`HTTP 503: service is temporarily unavailable`), false},
+		// Make sure plain "bad request" without the SDK's `sending "…"`
+		// wrap is NOT promoted — a downstream HTTP 400 from a non-MCP
+		// path should stay a transport error.
+		{"plain_bad_request", errors.New(`HTTP 400: Bad Request from upstream cdn`), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

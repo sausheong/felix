@@ -123,19 +123,23 @@ func (a *mcpToolAdapter) Execute(ctx context.Context, input json.RawMessage) (to
 	return tr, nil
 }
 
-// isAuthFailure reports whether err looks like an MCP/HTTP authentication
-// failure that re-authentication would fix. Covers the common signatures
-// across providers (Cognito, Okta, Auth0, Azure AD, GitHub, Google) plus
-// the Streamable-HTTP session-rejection patterns the MCP go-sdk surfaces
-// when a server invalidates an in-flight session and the OAuth refresh
-// failure modes from golang.org/x/oauth2.
+// isAuthFailure reports whether err looks like a failure that
+// re-authentication or session reconnection would fix. Covers the
+// common auth signatures across providers (Cognito, Okta, Auth0,
+// Azure AD, GitHub, Google), the Streamable-HTTP session-rejection
+// patterns the MCP go-sdk surfaces, the OAuth refresh failure modes
+// from golang.org/x/oauth2, AND the SDK's session-terminal-state
+// signals (`client is closing`, `connection closed: calling …`)
+// that surface after the SDK has torn down the local session in
+// response to any prior failure — once that happens, only Reconnect
+// can recover.
 //
 // Conservative on purpose: a false positive turns a real failure into a
 // "please re-auth" prompt the user will safely dismiss; a false negative
 // leaves the user with a cryptic error and a restart, which we're
-// trying to avoid. Transport-level failures (connection refused, DNS,
-// raw timeouts) are deliberately NOT classified as auth — those need
-// retry/backoff, not re-authentication.
+// trying to avoid. Transport-level failures the SDK has not yet acted on
+// (raw connection refused, DNS, plain timeouts) are still NOT classified —
+// those need retry/backoff, not reconnection.
 func isAuthFailure(err error) bool {
 	if err == nil {
 		return false
@@ -172,7 +176,25 @@ func isAuthFailure(err error) bool {
 		// reset) — the user has to drive the interactive PKCE flow again.
 		strings.Contains(s, "invalid_grant"),
 		strings.Contains(s, "oauth2: cannot fetch token"),
-		strings.Contains(s, "oauth2: token expired"):
+		strings.Contains(s, "oauth2: token expired"),
+		// MCP SDK session-terminal-state signals. The SDK closes the
+		// local ClientSession after its first transport failure (e.g. a
+		// 400 from the gateway), and every subsequent CallTool fails
+		// with these wrappers regardless of the original cause. Only
+		// Reconnect (which builds a fresh session) recovers — clicking
+		// Re-authenticate is the user-facing recovery action even when
+		// the underlying issue isn't an auth one (the PKCE flow rebuilds
+		// the session as a side effect).
+		strings.Contains(s, "client is closing"),
+		strings.Contains(s, "connection closed: calling"),
+		// First-failure pattern from MCP Streamable-HTTP: a 400 from the
+		// gateway on a JSON-RPC call almost always means the server
+		// rejected the Mcp-Session-Id (expired or recycled), since
+		// genuine argument-validation errors come back as JSON-RPC errors
+		// with HTTP 200 + isError=true rather than as transport-level
+		// 400s. Match only inside the SDK's `sending "..."` wrap so
+		// unrelated 400s from other paths don't trip the heuristic.
+		strings.Contains(s, `sending "`) && strings.Contains(s, `: bad request`):
 		return true
 	}
 	return false
