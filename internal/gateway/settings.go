@@ -1505,6 +1505,23 @@ html.dark .error-state { background: #450a0a; }
 					cfg.agents.list[idx].fallbackModel = v;
 				});
 
+				// Subagent group: opt-in flag + the description that the
+				// supervisor task tool shows to its LLM + inheritContext.
+				// Setting Subagent without a description is technically
+				// allowed but the supervisor will show "(no description)"
+				// in the tool spec, which makes routing unreliable.
+				var row2c = makeRow(item);
+				makeField(row2c, 'Subagent (callable via task tool)', 'toggle', !!a.subagent, function(v) {
+					cfg.agents.list[idx].subagent = v;
+				});
+				makeField(row2c, 'Inherit Context (subagent sees parent history)', 'toggle', !!a.inheritContext, function(v) {
+					cfg.agents.list[idx].inheritContext = v;
+				});
+
+				makeField(item, 'Subagent Description (shown to supervisor; required when Subagent is on)', 'textarea',
+					a.description || '',
+					function(v) { cfg.agents.list[idx].description = v; });
+
 				makeReadOnlyField(item, 'Sandbox', 'agent-sandbox-' + idx, 'not implemented yet');
 
 				makeField(item, 'System Prompt', 'textarea', a.system_prompt || '', function(v) {
