@@ -125,11 +125,13 @@ The bundled Ollama runs as a child of Felix on `127.0.0.1:18790` (next free port
 
 Felix ships a system tray app that runs the gateway as a background service. Supported on macOS and Windows.
 
+The tray app is a thin launcher: it spawns `felix start` as a separate child process, polls `/health` for readiness, then opens the chat in your browser. The gateway runs in its own process group, so when macOS reaps the menubar app under workspace events (display sleep, fast user switching, screen lock, memory pressure), only the tray dies — the gateway is reparented to launchd and your active chat keeps working in the browser. Relaunching the tray detects the live gateway via `/health` and reattaches instead of spawning a duplicate.
+
 ### Build
 
 ```bash
-make build-app          # macOS — produces Felix.app
-make build-app-windows  # Windows — produces felix-app.exe
+make build-app          # macOS — produces Felix.app (bundles felix-app + felix + ollama)
+make build-app-windows  # Windows — produces felix-app.exe and felix.exe (ship side-by-side)
 ```
 
 ### Launch
@@ -145,8 +147,8 @@ make build-app-windows  # Windows — produces felix-app.exe
 | **Jobs** | Opens the cron jobs dashboard (`/jobs`) |
 | **Logs** | Opens the live logs view (`/logs`) |
 | **Settings** | Opens the Settings UI (`/settings`) — tabs: Agents, Providers, Models, Intelligence, Security, Messaging, MCP, Skills, Memory, Gateway |
-| **Restart** | Restarts the gateway |
-| **Quit** | Gracefully shuts down the gateway and exits |
+| **Restart** | Stops the gateway subprocess and respawns a fresh one |
+| **Quit** | Sends SIGTERM to the gateway subprocess (with an 8s graceful-exit budget) and exits the tray |
 
 ### Web chat interface
 
@@ -177,7 +179,7 @@ On both platforms, you can set API keys directly in the config file instead of u
 
 ## Architecture
 
-Single-process, hub-and-spoke. All components run in one binary. Detailed walkthrough is in [design.md](design.md); the summary:
+Single-process, hub-and-spoke. All components run in one binary.
 
 - **Gateway Server** — HTTP + WebSocket on `:18789` using chi router + gorilla/websocket.
 - **Agent Runtime** — the think-act loop: assemble static + dynamic system prompt, stream LLM response, partition tool calls into parallel batches, dispatch and re-loop.
@@ -190,6 +192,8 @@ Single-process, hub-and-spoke. All components run in one binary. Detailed walkth
 - **MCP Manager** — Streamable-HTTP and stdio clients with OAuth2 and bearer auth, with in-process re-authentication.
 - **Heartbeat + Cron** — recurring prompts on schedules.
 - **Bundled Ollama supervisor** — keeps a local LLM available without external setup.
+
+The system tray app is a thin launcher around the gateway — see the next section.
 
 ---
 
@@ -506,7 +510,4 @@ go test -race ./...        # Run tests with race detector
 
 ## Documentation
 
-- [writeup.md](writeup.md) — design philosophy in long form: what the three pillars look like in practice, where they tension each other, and the principles I derived from holding them at once.
-- [design.md](design.md) — architecture walkthrough: every package, every interface, every cross-cutting convention.
 - [howtouse.md](howtouse.md) — examples, use cases, and example configurations.
-- [CLAUDE.md](CLAUDE.md) — guidance for Claude Code agents working on the Felix codebase.
