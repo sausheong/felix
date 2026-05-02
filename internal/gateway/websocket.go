@@ -658,10 +658,11 @@ func (h *WebSocketHandler) handleAgentStatus(conn *websocket.Conn, req JSONRPCRe
 	var statuses []map[string]any
 	for _, a := range agents {
 		statuses = append(statuses, map[string]any{
-			"id":        a.ID,
-			"name":      a.Name,
-			"model":     a.Model,
-			"workspace": a.Workspace,
+			"id":             a.ID,
+			"name":           a.Name,
+			"model":          a.Model,
+			"workspace":      a.Workspace,
+			"context_window": tokens.ContextWindowFor(a.Model, a.ContextWindow),
 		})
 	}
 

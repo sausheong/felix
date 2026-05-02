@@ -519,7 +519,7 @@ html.light #header .logo {
 	<select id="session-select" title="Select session"></select>
 	<button id="new-session-btn" title="New session">+ New</button>
 	<span class="spacer"></span>
-	<span id="token-chip" title="Tokens used in last turn / context window" style="display:none;"></span>
+	<span id="token-chip" title="Tokens used / context window">—</span>
 	<button id="toggle-tools-btn" title="Hide/show tool calls">Tools</button>
 	<button id="toggle-trace-btn" title="Hide/show live trace panel">Trace</button>
 	<button id="clear-btn" title="Clear session">Clear</button>
@@ -700,32 +700,70 @@ html.light #header .logo {
 		return true;
 	}
 
-	// Token chip: rendered in the header on every EventDone with usage.
-	// Format: "INPUT/CTX_WINDOW (PCT%%) +OUT" — gives the user a feel for
-	// how close they are to compaction and how much they spent this turn.
+	// Token chip: always visible in the header. Shows the most recent
+	// turn's input usage vs the configured context window (so the user
+	// always knows how much room they have left), plus output tokens
+	// from the last turn. Before any turn fires we show "—/window +—"
+	// as a stable baseline. agentWindows maps agentId → context window
+	// in tokens; populated from agent.status so switching agents
+	// updates the chip even before the first turn on that agent runs.
 	var tokenChip = document.getElementById('token-chip');
+	var agentWindows = {};
+	var lastUsage = null;
 	function fmtTokens(n) {
-		if (n == null) return '?';
+		if (n == null) return '—';
 		if (n < 1000) return String(n);
 		if (n < 1000000) return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'K';
 		return (n / 1000000).toFixed(2) + 'M';
 	}
-	function updateTokenChip(usage, ctxWindow, model) {
-		if (!usage || !tokenChip) return;
-		var inTok = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
-		var outTok = usage.output_tokens || 0;
-		var pct = ctxWindow > 0 ? (inTok / ctxWindow) * 100 : 0;
-		tokenChip.textContent = fmtTokens(inTok) + (ctxWindow > 0 ? '/' + fmtTokens(ctxWindow) : '') +
-			(ctxWindow > 0 ? ' (' + pct.toFixed(0) + '%%)' : '') +
-			'  +' + fmtTokens(outTok);
-		tokenChip.title = 'Last turn: input=' + inTok + ', output=' + outTok +
-			(ctxWindow > 0 ? ', context window=' + ctxWindow : '') +
-			(model ? ', model=' + model : '');
-		tokenChip.classList.remove('warn', 'danger');
-		if (pct >= 80) tokenChip.classList.add('danger');
-		else if (pct >= 60) tokenChip.classList.add('warn');
-		tokenChip.style.display = '';
+	function currentWindow() {
+		var id = agentSelect && agentSelect.value;
+		return (id && agentWindows[id]) || 0;
 	}
+	function renderTokenChip() {
+		if (!tokenChip) return;
+		var ctxWindow = currentWindow();
+		if (lastUsage) {
+			var inTok = (lastUsage.input_tokens || 0) +
+				(lastUsage.cache_creation_input_tokens || 0) +
+				(lastUsage.cache_read_input_tokens || 0);
+			var outTok = lastUsage.output_tokens || 0;
+			var pct = ctxWindow > 0 ? (inTok / ctxWindow) * 100 : 0;
+			var remaining = ctxWindow > 0 ? Math.max(0, ctxWindow - inTok) : 0;
+			tokenChip.textContent = fmtTokens(inTok) +
+				(ctxWindow > 0 ? '/' + fmtTokens(ctxWindow) : '') +
+				(ctxWindow > 0 ? ' (' + pct.toFixed(0) + '%%)' : '') +
+				'  +' + fmtTokens(outTok);
+			tokenChip.title = 'Last turn input=' + inTok + ', output=' + outTok +
+				(ctxWindow > 0 ? ', remaining=' + remaining + ' / window=' + ctxWindow : '');
+			tokenChip.classList.remove('warn', 'danger');
+			if (pct >= 80) tokenChip.classList.add('danger');
+			else if (pct >= 60) tokenChip.classList.add('warn');
+		} else {
+			// No turn data yet — show baseline so the user still sees
+			// the context window of the selected agent.
+			tokenChip.textContent = '—' +
+				(ctxWindow > 0 ? '/' + fmtTokens(ctxWindow) : '') +
+				'  +—';
+			tokenChip.title = ctxWindow > 0
+				? 'Context window: ' + ctxWindow + ' tokens (no turns yet)'
+				: 'Context window unknown';
+			tokenChip.classList.remove('warn', 'danger');
+		}
+	}
+	function updateTokenChip(usage /*ctxWindow,model unused; we read from agentWindows*/) {
+		if (!usage) return;
+		lastUsage = usage;
+		renderTokenChip();
+	}
+	function resetTokenChip() {
+		// Called on session switch / new / clear — last-turn usage no
+		// longer reflects this session, so drop back to the baseline.
+		lastUsage = null;
+		renderTokenChip();
+	}
+	// Initial paint so the chip isn't blank before agent.status arrives.
+	renderTokenChip();
 
 	function pollBootstrap() {
 		fetch('/settings/api/bootstrap', { cache: 'no-store' })
@@ -831,6 +869,7 @@ html.light #header .logo {
 		messagesEl.innerHTML = '';
 		currentAssistant = null;
 		toolEls = {};
+		resetTokenChip();
 		loadSessions();
 	});
 
@@ -838,6 +877,7 @@ html.light #header .logo {
 		messagesEl.innerHTML = '';
 		currentAssistant = null;
 		toolEls = {};
+		resetTokenChip();
 		if (!ws || ws.readyState !== WebSocket.OPEN) return;
 		// Load sessions for the new agent
 		loadSessions();
@@ -854,6 +894,7 @@ html.light #header .logo {
 		messagesEl.innerHTML = '';
 		currentAssistant = null;
 		toolEls = {};
+		resetTokenChip();
 		ws.send(JSON.stringify({
 			jsonrpc: '2.0',
 			method: 'session.history',
@@ -1111,12 +1152,17 @@ html.light #header .logo {
 				if (resp.id === 'agents') {
 					var agents = resp.result.agents || [];
 					agentSelect.innerHTML = '';
+					agentWindows = {};
 					for (var i = 0; i < agents.length; i++) {
 						var opt = document.createElement('option');
 						opt.value = agents[i].id;
 						opt.textContent = agents[i].name || agents[i].id;
 						agentSelect.appendChild(opt);
+						if (agents[i].context_window) {
+							agentWindows[agents[i].id] = agents[i].context_window;
+						}
 					}
+					renderTokenChip();
 					if (agents.length === 0) {
 						var opt = document.createElement('option');
 						opt.value = 'default';
@@ -1218,7 +1264,14 @@ html.light #header .logo {
 					currentAssistant = null;
 					sending = false;
 					updateSendBtn();
-					updateTokenChip(r.usage, r.context_window, r.model);
+					if (r.context_window && agentSelect && agentSelect.value) {
+					// Per-turn context_window is the freshest server value
+					// (config hot-reload could have changed it since
+					// agent.status fired). Cache it back so subsequent
+					// renders stay consistent.
+					agentWindows[agentSelect.value] = r.context_window;
+				}
+				updateTokenChip(r.usage);
 					break;
 				case 'aborted':
 					if (currentAssistant) {
