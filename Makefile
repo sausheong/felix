@@ -470,7 +470,7 @@ install:
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
 
-OLLAMA_VERSION ?= 0.21.0
+OLLAMA_VERSION ?= 0.22.1
 OLLAMA_BASE_URL := https://github.com/ollama/ollama/releases/download/v$(OLLAMA_VERSION)
 
 ## ollama-fetch: download and extract platform Ollama binaries into bin/
