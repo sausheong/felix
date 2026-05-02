@@ -216,15 +216,16 @@ func onReady() {
 }
 
 // shutdownAndExit sends SIGTERM to the gateway subprocess and waits
-// for it to drain (bounded inside gw.stop). Five-second outer
-// deadline so a hung subprocess can't trap the user — the gateway's
-// own MCP/cortex/ollama cleanup is bounded internally, this is just
-// the ceiling.
+// for it to drain (bounded inside gw.stop's 15s grace + SIGKILL).
+// 25 s outer deadline gives gw.stop room for its full SIGTERM →
+// SIGKILL cycle plus a small margin for systray.Quit. A hung
+// subprocess can't trap the user — if we hit 25 s the menubar
+// force-exits regardless.
 func shutdownAndExit(gw *gateway, reason string) {
 	slog.Info("shutting down", "reason", reason)
 	go func() {
-		time.Sleep(15 * time.Second)
-		slog.Error("cleanup exceeded 15s, force-exiting")
+		time.Sleep(25 * time.Second)
+		slog.Error("cleanup exceeded 25s, force-exiting")
 		os.Exit(1)
 	}()
 	gw.stop()

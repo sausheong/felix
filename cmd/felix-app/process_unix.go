@@ -141,9 +141,16 @@ func startOrAttachGateway(ctx context.Context, logWriter io.Writer, readyTimeout
 
 // stop is a no-op when we did not spawn the gateway (attach mode) or
 // when it is already gone. Otherwise SIGTERMs the process group, waits
-// up to 8 s for graceful exit, then SIGKILLs as a last resort. 8 s
-// covers the gateway's own MCP-shutdown budget (5 s) plus headroom
-// for the bundled Ollama supervisor's shutdown.
+// up to 15 s for graceful exit, then SIGKILLs as a last resort.
+//
+// 15 s budget covers the gateway's full cleanup chain in the worst
+// case: localSup.Stop (~7 s SIGTERM+SIGKILL grace for the bundled
+// ollama, which lives in its own process group and would otherwise be
+// orphaned), MCP close (8 s), heartbeats and cron stop (~instant),
+// HTTP server Shutdown (~instant for an idle server). The cleanup
+// runs localSup.Stop FIRST so even if SIGKILL arrives early, ollama
+// is already gone before the gateway dies — this is the load-bearing
+// invariant for "menubar Quit kills the whole tree".
 func (g *gateway) stop() {
 	if g == nil || !g.owned || g.cmd == nil || g.cmd.Process == nil {
 		return
@@ -160,8 +167,8 @@ func (g *gateway) stop() {
 	select {
 	case <-g.exitCh:
 		slog.Info("gateway subprocess exited gracefully")
-	case <-time.After(8 * time.Second):
-		slog.Warn("gateway subprocess did not exit within 8s, sending SIGKILL")
+	case <-time.After(15 * time.Second):
+		slog.Warn("gateway subprocess did not exit within 15s, sending SIGKILL")
 		signalGroup(syscall.SIGKILL)
 		<-g.exitCh
 	}

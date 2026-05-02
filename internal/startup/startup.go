@@ -824,11 +824,20 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	})
 
 	cleanup := func() {
+		// Ollama supervisor goes FIRST. Bundled ollama lives in its own
+		// process group (Setpgid in supervisor_unix.go) so it does NOT
+		// receive a SIGTERM that the menubar app sends to the gateway's
+		// process group. Killing it here, before the slower cleanup
+		// steps below, guarantees ollama dies even if the gateway is
+		// itself SIGKILLed shortly after for taking too long. Up to ~7s
+		// worst case (5s SIGTERM grace + 2s SIGKILL fallback inside Stop).
+		if localSup != nil {
+			_ = localSup.Stop()
+		}
 		tools.ShutdownBrowsers()
-		// Bound MCP close so a slow/unreachable upstream can't hang the whole
-		// shutdown chain (which would also leave the bundled Ollama supervisor
-		// running, leaking processes across runs). 8s budget covers the SDK's
-		// 5s stdin-close → SIGTERM grace period for stdio child processes,
+		// Bound MCP close so a slow/unreachable upstream can't hang the
+		// whole shutdown chain. 8s budget covers the SDK's 5s
+		// stdin-close → SIGTERM grace period for stdio child processes,
 		// plus ~3s headroom for the JSON-RPC shutdown handshake.
 		mcpDone := make(chan error, 1)
 		go func() { mcpDone <- mcpMgr.Close() }()
@@ -843,9 +852,6 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		cronScheduler.Stop()
 		for _, hb := range heartbeats {
 			hb.Stop()
-		}
-		if localSup != nil {
-			_ = localSup.Stop()
 		}
 		if configWatcher != nil {
 			configWatcher.Stop()
