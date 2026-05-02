@@ -60,3 +60,4 @@ internal/mcp/SDK_NOTES.md
 /call_search_mail.py
 /mcp_list_tools.py
 /test_memory_pkce.py
+test-otlp-http.sh
