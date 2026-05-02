@@ -17,25 +17,38 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)
 
 ## build-app: compile the menu bar app as a macOS .app bundle
+##
+## felix-app is now a thin launcher that spawns `felix start` as a
+## subprocess (so a macOS Cocoa-level reap of the menubar app does
+## not bring down the gateway). Both binaries land in the bundle —
+## felix-app at Contents/MacOS/felix-app, felix at
+## Contents/Resources/bin/felix (alongside ollama).
 build-app: ollama-fetch
 	go build -ldflags "$(LDFLAGS)" -o felix-app ./cmd/felix-app
+	go build -ldflags "$(LDFLAGS)" -o felix ./cmd/felix
 	rm -rf Felix.app
-	mkdir -p Felix.app/Contents/MacOS Felix.app/Contents/Resources
+	mkdir -p Felix.app/Contents/MacOS Felix.app/Contents/Resources/bin
 	cp felix-app Felix.app/Contents/MacOS/felix-app
+	cp felix Felix.app/Contents/Resources/bin/felix
+	chmod +x Felix.app/Contents/Resources/bin/felix
 	cp cmd/felix-app/Info.plist Felix.app/Contents/Info.plist
 	cp cmd/felix-app/icon.icns Felix.app/Contents/Resources/icon.icns
-	mkdir -p Felix.app/Contents/Resources/bin
 	@if [ -f bin/ollama-darwin-arm64 ]; then \
 	  cp bin/ollama-darwin-arm64 Felix.app/Contents/Resources/bin/ollama; \
 	  chmod +x Felix.app/Contents/Resources/bin/ollama; \
 	fi
-	rm -f felix-app
+	rm -f felix-app felix
 	@echo "Built Felix.app"
 
-## build-app-windows: cross-compile the menu bar app for Windows
+## build-app-windows: cross-compile the menu bar app + CLI for Windows
+##
+## felix-app.exe spawns felix.exe as a subprocess at runtime; both
+## binaries must ship side-by-side. Place them next to each other in
+## the same directory when distributing.
 build-app-windows:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS) -H windowsgui" -o felix-app.exe ./cmd/felix-app
-	@echo "Built felix-app.exe"
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o felix.exe ./cmd/felix
+	@echo "Built felix-app.exe and felix.exe"
 
 ## build-small: compile a smaller, statically-linked binary (+ UPX on Linux)
 build-small:

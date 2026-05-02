@@ -482,9 +482,9 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 			case agent.EventTextDelta:
 				result = map[string]any{"type": "text_delta", "text": event.Text}
 			case agent.EventToolCallStart:
-				result = map[string]any{"type": "tool_call_start", "tool": event.ToolCall.Name, "id": event.ToolCall.ID, "input": event.ToolCall.Input}
+				result = map[string]any{"type": "tool_call_start", "tool": event.ToolCall.Name, "id": event.ToolCall.ID, "input": safeRawMessage(event.ToolCall.Input)}
 			case agent.EventToolResult:
-				r := map[string]any{"type": "tool_result", "tool": event.ToolCall.Name, "id": event.ToolCall.ID, "input": event.ToolCall.Input, "output": event.Result.Output, "error": event.Result.Error}
+				r := map[string]any{"type": "tool_result", "tool": event.ToolCall.Name, "id": event.ToolCall.ID, "input": safeRawMessage(event.ToolCall.Input), "output": event.Result.Output, "error": event.Result.Error}
 				if id, ok := event.Result.Metadata["auth_required"].(string); ok && id != "" {
 					// Surface MCP re-auth signal to the chat client so it
 					// can render an inline "Re-authenticate" button bound
@@ -1282,4 +1282,25 @@ func (e *taskOverlayExecutor) Get(name string) (tools.Tool, bool) {
 		return e.task, true
 	}
 	return e.base.Get(name)
+}
+
+// safeRawMessage returns the input json.RawMessage when it is
+// non-empty and parses as valid JSON, and `nil` (which marshals to
+// `null`) otherwise. The encoding/json marshaler refuses to emit a
+// json.RawMessage whose bytes don't form valid JSON, so without this
+// guard a single bad ToolCall.Input bubbles up as
+// `json: error calling MarshalJSON for type json.RawMessage:
+// unexpected end of JSON input` and aborts the WebSocket write —
+// breaking the chat client's view of the in-flight turn.
+//
+// Bad inputs typically come from upstream model glitches: an empty
+// `tool_use` arguments stream that never produced a valid JSON
+// object, or a "thought" tool call from a reasoning model where the
+// arguments slot wasn't populated. Either way, surfacing `null` to
+// the chat client is more useful than dropping the whole event.
+func safeRawMessage(m json.RawMessage) any {
+	if len(m) == 0 || !json.Valid(m) {
+		return nil
+	}
+	return m
 }

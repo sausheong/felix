@@ -10,13 +10,11 @@ Felix connects you (via CLI or web chat) to LLMs — Claude, GPT, Gemini, Qwen, 
 
 ## Three pillars
 
-Every design decision in Felix flows from three commitments. They're explained at length in [writeup.md](writeup.md); the short version:
+Every design decision in Felix flows from three commitments:
 
 1. **Self-sufficient.** Felix runs on one machine, owns its own state, and has no required network dependency. The LLM can be local. The vector index is in-process. The knowledge graph is a SQLite file. There is no Felix cloud, no Felix account, no Felix backend that anyone could turn off.
 2. **Robust.** Long-running agents touch files, shell out, talk to flaky APIs, and accumulate state across restarts. Every external call has a timeout. Every queue has a cap. Every per-call resource has a paired cleanup. On-disk state heals itself on the next load.
 3. **Usable out of the box by non-technical people.** The default install — no config edits, no API keys, no `vim` — must just work. A first-time user installs Felix, clicks through onboarding, and has a useful agent running locally within minutes. Advanced configuration can be as complex as it needs to be, but it must not be in the way of the default path.
-
-The architecture in [design.md](design.md) is the working-out of these three.
 
 ---
 
@@ -25,7 +23,7 @@ The architecture in [design.md](design.md) is the working-out of these three.
 - **Single binary** — no runtime dependencies, no Node.js, no npm. Download and run.
 - **System tray app** — runs the gateway in the background with a tray icon, web chat, and one-click access to settings (macOS and Windows).
 - **Two interfaces** — local CLI (`felix chat`) and a web chat page served by the gateway.
-- **Bundled local LLM** — ships an Ollama binary so you can run agents with no API key.
+- **Bundled local LLM** — ships an Ollama binary so you can run agents with no API key. Downloads Gemma4 on first startup if it doesn't find any other models.
 - **Model-agnostic** — Claude, GPT, Gemini, Qwen, Ollama, LM Studio, DeepSeek, or any OpenAI-compatible API.
 - **Multi-agent** — multiple agents with different models, tools, and personas.
 - **Extended reasoning** — `reasoning: off|low|medium|high` per-agent, mapped to Claude thinking budgets, OpenAI o-series `reasoning_effort`, and Gemini 2.5 thinking config.
