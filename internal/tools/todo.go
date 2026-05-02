@@ -48,7 +48,7 @@ type TodoWriteTool struct {
 func (t *TodoWriteTool) Name() string { return "todo_write" }
 
 func (t *TodoWriteTool) Description() string {
-	return "Manage a persistent todo list for tracking multi-step work. Use this for any task with 3+ distinct steps; mark items in_progress before starting and completed when done. Operations: list (default), add, update, complete, remove. The full current list is returned as the tool output every time so you always see the latest state without a separate fetch."
+	return "Persistent todo list for tracking long, multi-stage work. DO NOT use this as a planning scratchpad before starting a task — start working directly and call your real tools. Reserve todo_write for genuinely long-running work with roughly 5+ independent subtasks that will span many turns. When initializing a list, emit every `add` call as a parallel tool call in the SAME assistant response (the runtime serialises them safely) — never call `add` once per turn, that wastes round trips. Operations: list (default), add, update, complete, remove. The full current list is returned every call."
 }
 
 func (t *TodoWriteTool) Parameters() json.RawMessage {
