@@ -66,6 +66,16 @@ func (a *mcpToolAdapter) Execute(ctx context.Context, input json.RawMessage) (to
 			return tools.ToolResult{Error: fmt.Sprintf("invalid arguments JSON: %v", err)}, nil
 		}
 	}
+	// Defensive default: a nil args map serializes to JSON `null`, which
+	// some MCP gateways reject at the transport layer with HTTP 400 (Bad
+	// Request) instead of returning a JSON-RPC validation error. Always
+	// send an empty object instead so the envelope is well-formed even
+	// when the upstream LLM produced no input. Belt-and-braces for the
+	// llm-side fix: the Anthropic stream parser now defaults missing
+	// inputs to "{}" too.
+	if args == nil {
+		args = map[string]any{}
+	}
 	// Pre-flight circuit breaker: if this server has failed
 	// MaxConsecutiveAuthFailures times in a row even after auto-Reconnect,
 	// stop hitting the network — return a strong "do not call this

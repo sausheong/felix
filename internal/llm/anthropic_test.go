@@ -416,3 +416,107 @@ func TestBuildMessageParamsIsPure(t *testing.T) {
 			"non-streaming retry depends on byte-identical params to keep the "+
 			"prompt cache prefix valid")
 }
+
+// TestAnthropicStream_ToolUseInputOnContentBlockStart verifies the
+// proxy-fallback path: some Anthropic-shaped gateways (e.g. platformai
+// routing Gemini-Pro / Flash through the Anthropic API) emit the FULL
+// tool input on content_block_start with NO subsequent input_json_delta
+// events, because Gemini doesn't natively stream tool arguments.
+//
+// Without the fallback, the parser would emit `Input: ""` and the
+// downstream MCP adapter would forward an empty/null `arguments`
+// payload — which the gateway rejects with HTTP 400 (Bad Request).
+// This was the actual production failure for the assistantai server
+// only-when-using-Gemini.
+func TestAnthropicStream_ToolUseInputOnContentBlockStart(t *testing.T) {
+	const sseBody = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_g","type":"message","role":"assistant","content":[],"model":"gemini-3.1-pro","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_abc","name":"nl_search_ms_mail","input":{"query":"latest","limit":5}}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":11}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := NewAnthropicProvider("test-key", srv.URL)
+	stream, err := p.ChatStream(context.Background(), ChatRequest{Model: "gemini-test"})
+	require.NoError(t, err)
+
+	var done *ChatEvent
+	var toolDone *ChatEvent
+	for ev := range stream {
+		switch ev.Type {
+		case EventToolCallDone:
+			ev := ev // capture
+			toolDone = &ev
+		case EventDone:
+			ev := ev
+			done = &ev
+		}
+	}
+	require.NotNil(t, done, "expected EventDone")
+	require.NotNil(t, toolDone, "expected EventToolCallDone")
+	require.NotNil(t, toolDone.ToolCall)
+	assert.Equal(t, "call_abc", toolDone.ToolCall.ID)
+	assert.Equal(t, "nl_search_ms_mail", toolDone.ToolCall.Name)
+	assert.JSONEq(t, `{"query":"latest","limit":5}`, string(toolDone.ToolCall.Input),
+		"input from content_block_start must be captured when no input_json_delta arrives — "+
+			"otherwise Gemini-via-Anthropic-proxy tool calls reach MCP with empty args and 400")
+}
+
+// TestAnthropicStream_EmptyToolInputDefaultsToObject verifies that a
+// tool_use that genuinely has no arguments still produces a valid empty
+// object instead of an empty string, so MCP adapters always send a
+// well-formed `arguments` field over the wire.
+func TestAnthropicStream_EmptyToolInputDefaultsToObject(t *testing.T) {
+	const sseBody = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_e","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_e","name":"ping","input":{}}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := NewAnthropicProvider("test-key", srv.URL)
+	stream, err := p.ChatStream(context.Background(), ChatRequest{Model: "claude-test"})
+	require.NoError(t, err)
+
+	var toolDone *ChatEvent
+	for ev := range stream {
+		if ev.Type == EventToolCallDone {
+			ev := ev
+			toolDone = &ev
+		}
+	}
+	require.NotNil(t, toolDone)
+	require.NotNil(t, toolDone.ToolCall)
+	assert.Equal(t, `{}`, string(toolDone.ToolCall.Input),
+		"argument-less tool call must serialize as {} so MCP transport accepts it")
+}

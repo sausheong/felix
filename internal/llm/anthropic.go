@@ -126,11 +126,22 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 		defer close(events)
 		defer stream.Close()
 
-		// Track tool calls being built up across events
+		// Track tool calls being built up across events.
+		//
+		// startInput captures any input that arrives on content_block_start.
+		// Canonical Anthropic streams send `{}` here and stream the real
+		// input via input_json_delta events, but Anthropic-shaped proxies
+		// that route non-Anthropic responses (e.g., platformai routing
+		// Gemini-Pro/Flash through an Anthropic API) emit the FULL tool
+		// input on content_block_start with NO subsequent deltas — Gemini
+		// doesn't natively stream tool arguments. Without capturing it
+		// here we'd hand the MCP tool an empty input and the server would
+		// reject the JSON-RPC envelope as Bad Request.
 		type pendingTC struct {
-			id        string
-			name      string
-			inputJSON string
+			id         string
+			name       string
+			inputJSON  string // built from input_json_delta events
+			startInput string // captured from content_block_start (proxy fallback)
 		}
 		var pendingTools []pendingTC
 		var currentBlockType string
@@ -153,10 +164,19 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 					currentBlockType = "text"
 				case "tool_use":
 					currentBlockType = "tool_use"
-					pendingTools = append(pendingTools, pendingTC{
+					pending := pendingTC{
 						id:   cb.ID,
 						name: cb.Name,
-					})
+					}
+					if cb.Input != nil {
+						if data, err := json.Marshal(cb.Input); err == nil {
+							s := string(data)
+							if s != "null" && s != "{}" {
+								pending.startInput = s
+							}
+						}
+					}
+					pendingTools = append(pendingTools, pending)
 					events <- ChatEvent{
 						Type: EventToolCallStart,
 						ToolCall: &ToolCall{
@@ -183,12 +203,23 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, req ChatRequest) (<-
 			case "content_block_stop":
 				if currentBlockType == "tool_use" && len(pendingTools) > 0 {
 					tc := pendingTools[len(pendingTools)-1]
+					// Prefer streamed deltas (canonical Anthropic). Fall
+					// back to start-time input (proxy emitting full input
+					// upfront). Default to "{}" so MCP servers receive a
+					// valid empty-args envelope rather than null/empty.
+					inp := tc.inputJSON
+					if inp == "" {
+						inp = tc.startInput
+					}
+					if inp == "" {
+						inp = "{}"
+					}
 					events <- ChatEvent{
 						Type: EventToolCallDone,
 						ToolCall: &ToolCall{
 							ID:    tc.id,
 							Name:  tc.name,
-							Input: json.RawMessage(tc.inputJSON),
+							Input: json.RawMessage(inp),
 						},
 					}
 				}
@@ -270,7 +301,10 @@ func (p *AnthropicProvider) ChatNonStreaming(ctx context.Context, req ChatReques
 					},
 				}
 				inputJSON, mErr := json.Marshal(block.Input)
-				if mErr != nil {
+				if mErr != nil || len(inputJSON) == 0 || string(inputJSON) == "null" {
+					// Default to "{}" so MCP / tool adapters never receive
+					// null/empty inputs that would be rejected at the
+					// transport layer (Bad Request).
 					inputJSON = []byte("{}")
 				}
 				events <- ChatEvent{
