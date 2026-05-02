@@ -17,9 +17,12 @@ var ErrBinaryNotFound = errors.New("ollama binary not found")
 //
 // Search order:
 //  1. $FELIX_OLLAMA_BIN (env override, for dev/testing)
-//  2. <felixBinDir>/bin/ollama(.exe) — sibling to felix in unpacked zips
-//  3. macOS app bundle: <felixBinDir>/../Resources/bin/ollama
-//  4. PATH lookup (last resort, dev convenience)
+//  2. <felixBinDir>/ollama(.exe) — sibling to felix (the .app bundle layout:
+//     Felix.app/Contents/Resources/bin/{felix,ollama})
+//  3. <felixBinDir>/bin/ollama(.exe) — nested under felixBinDir in unpacked
+//     release zips (felix at root, ollama at bin/ollama)
+//  4. macOS app bundle (legacy): <felixBinDir>/../Resources/bin/ollama
+//  5. PATH lookup (last resort, dev convenience)
 //
 // felixBinDir should be the directory containing the running felix binary.
 func Discover(felixBinDir string) (string, error) {
@@ -36,10 +39,11 @@ func Discover(felixBinDir string) (string, error) {
 	}
 
 	candidates := []string{
+		filepath.Join(felixBinDir, exe),
 		filepath.Join(felixBinDir, "bin", exe),
 	}
 	if runtime.GOOS == "darwin" {
-		// felix CLI inside Felix.app/Contents/MacOS — bundle is at ../Resources/bin
+		// Legacy: felix CLI inside Felix.app/Contents/MacOS, bundle at ../Resources/bin
 		candidates = append(candidates, filepath.Join(felixBinDir, "..", "Resources", "bin", exe))
 	}
 

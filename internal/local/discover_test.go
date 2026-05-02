@@ -49,6 +49,24 @@ func TestDiscoverNextToFelixBinary(t *testing.T) {
 	assert.Equal(t, bin, got)
 }
 
+func TestDiscoverSiblingToFelixBinary(t *testing.T) {
+	// Bundle layout: Felix.app/Contents/Resources/bin/{felix,ollama}.
+	// felixBinDir is Resources/bin and ollama is its sibling — must resolve.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX exec bit")
+	}
+	t.Setenv("FELIX_OLLAMA_BIN", "")
+	t.Setenv("PATH", "")
+
+	felixDir := t.TempDir()
+	bin := filepath.Join(felixDir, "ollama")
+	touch(t, bin, true)
+
+	got, err := Discover(felixDir)
+	require.NoError(t, err)
+	assert.Equal(t, bin, got)
+}
+
 func TestDiscoverNotFound(t *testing.T) {
 	t.Setenv("FELIX_OLLAMA_BIN", "")
 	t.Setenv("PATH", "")
