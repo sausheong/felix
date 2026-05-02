@@ -336,21 +336,45 @@ installer-windows: ollama-fetch
 
 ## sign: sign, notarize, and staple the macOS PKG installer
 sign: build-app
-	# Sign the app bundle
-	codesign --deep --force --options runtime \
+	# Sign nested helpers in Contents/Resources/bin/ first as standalone
+	# Mach-O binaries. They live OUTSIDE the bundle's standard executable
+	# paths (Contents/MacOS/) so codesign --deep doesn't reach them
+	# correctly — Apple's notary rejected v0.6.0's first attempt with
+	# "not signed with a valid Developer ID certificate" on
+	# Resources/bin/felix when only --deep was used.
+	codesign --force --options runtime --timestamp \
+		--sign "$(APP_SIGN_ID)" \
+		Felix.app/Contents/Resources/bin/felix
+	@if [ -f Felix.app/Contents/Resources/bin/ollama ]; then \
+	  codesign --force --options runtime --timestamp \
+	    --sign "$(APP_SIGN_ID)" \
+	    Felix.app/Contents/Resources/bin/ollama; \
+	fi
+	# Now sign the bundle itself. Pointing codesign at Felix.app (NOT
+	# Contents/MacOS/felix-app) lets it sign the main executable in the
+	# correct bundle context — embedded Info.plist reference, code
+	# requirements, the lot. Signing Contents/MacOS/felix-app as a bare
+	# Mach-O produced "signature of the binary is invalid" on v0.6.0's
+	# third notarization attempt because the resulting signature wasn't
+	# a valid bundle main-executable signature. No --deep — the helpers
+	# above are already correctly signed and we don't want codesign to
+	# re-touch them and break things.
+	codesign --force --options runtime --timestamp \
 		--sign "$(APP_SIGN_ID)" \
 		Felix.app
 	# Wipe any stale staging area BEFORE assembling so an aborted previous run
 	# (or files dropped in by hand for testing) can't leak into the signed pkg.
 	rm -rf installer/payload
-	# Assemble payload with signed app
+	# Assemble payload with signed app. CRITICAL: do not modify Felix.app
+	# in any way after this point — its bundle seal includes a hash tree
+	# of every file, and dropping a fresh ollama binary into the payload's
+	# Resources/bin/ (as an earlier version of this target did) breaks the
+	# seal and the notary rejects the package with "signature of the binary
+	# is invalid". The build-app target already bundled ollama into Felix.app
+	# *before* we signed it; the cp -r below preserves that.
 	mkdir -p installer/payload/Applications
 	mkdir -p installer/payload/usr/local/share/felix/skills
 	cp -r Felix.app installer/payload/Applications/Felix.app
-	@if [ -f bin/ollama-darwin-arm64 ]; then \
-	  mkdir -p installer/payload/Applications/Felix.app/Contents/Resources/bin; \
-	  cp bin/ollama-darwin-arm64 installer/payload/Applications/Felix.app/Contents/Resources/bin/ollama; \
-	fi
 	cp skills/*.md installer/payload/usr/local/share/felix/skills/
 	@$(MAKE) --no-print-directory _payload-secret-scan
 	pkgbuild \
