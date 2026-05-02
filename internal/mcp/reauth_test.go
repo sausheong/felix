@@ -27,6 +27,16 @@ func TestIsAuthFailure_RecognizesCommonSignatures(t *testing.T) {
 		{"expired_token", errors.New(`expired_token: refresh required`), true},
 		{"access_denied", errors.New(`access denied`), true},
 		{"permission_denied", errors.New(`permission denied`), true},
+		// MCP Streamable-HTTP session-rejection patterns.
+		{"session_not_found", errors.New(`mcp tools/call echo: session not found`), true},
+		{"session_not_found_underscore", errors.New(`server returned session_not_found`), true},
+		{"session_terminated", errors.New(`mcp: session terminated by server`), true},
+		{"session_no_longer_valid", errors.New(`mcp: session is no longer valid`), true},
+		{"must_reauthenticate", errors.New(`upstream says you must re-authenticate`), true},
+		{"please_reauthenticate", errors.New(`please re-authenticate to continue`), true},
+		// oauth2 refresh-failure patterns (rotated/revoked refresh token).
+		{"invalid_grant", errors.New(`oauth2: server response: {"error":"invalid_grant"}`), true},
+		{"oauth2_cannot_fetch_token", errors.New(`oauth2: cannot fetch token: 400 Bad Request`), true},
 
 		{"nil", nil, false},
 		{"context_canceled", errors.New(`context canceled`), false},
@@ -34,6 +44,9 @@ func TestIsAuthFailure_RecognizesCommonSignatures(t *testing.T) {
 		{"timeout", errors.New(`Client.Timeout exceeded while awaiting headers`), false},
 		{"500_server_error", errors.New(`HTTP 500: internal server error`), false},
 		{"tool_validation", errors.New(`invalid arguments: missing field "query"`), false},
+		// Tighten guard around the new patterns: "no longer valid" must
+		// not promote unrelated 5xx prose to auth.
+		{"503_no_longer_available", errors.New(`HTTP 503: service is temporarily unavailable`), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

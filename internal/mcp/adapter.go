@@ -74,6 +74,23 @@ func (a *mcpToolAdapter) Execute(ctx context.Context, input json.RawMessage) (to
 		}, nil
 	}
 	res, err := client.CallTool(ctx, a.remoteName, args)
+	if err != nil && isAuthFailure(err) {
+		// In-memory MCP session may be dead even though the on-disk token
+		// is still valid (token refreshed by the oauth2 RoundTripper but
+		// the server-side Streamable-HTTP session was invalidated). Try
+		// one Reconnect+retry before surfacing auth_required to the UI.
+		// We stay silent on success; the agent sees a clean tool result.
+		// On reconnect or retry failure we fall through to the standard
+		// auth_required path below so the user can still drive the
+		// browser-based PKCE flow.
+		if rcErr := a.entry.Reconnect(ctx); rcErr == nil {
+			if retryClient := a.entry.Live(); retryClient != nil {
+				if rRes, rErr := retryClient.CallTool(ctx, a.remoteName, args); rErr == nil {
+					res, err = rRes, nil
+				}
+			}
+		}
+	}
 	if err != nil {
 		// Transport-level failure — surface as tool error, not a Go error,
 		// so the agent loop can keep going. If the failure looks like an
@@ -108,11 +125,17 @@ func (a *mcpToolAdapter) Execute(ctx context.Context, input json.RawMessage) (to
 
 // isAuthFailure reports whether err looks like an MCP/HTTP authentication
 // failure that re-authentication would fix. Covers the common signatures
-// across providers (Cognito, Okta, Auth0, Azure AD, GitHub, Google).
+// across providers (Cognito, Okta, Auth0, Azure AD, GitHub, Google) plus
+// the Streamable-HTTP session-rejection patterns the MCP go-sdk surfaces
+// when a server invalidates an in-flight session and the OAuth refresh
+// failure modes from golang.org/x/oauth2.
+//
 // Conservative on purpose: a false positive turns a real failure into a
 // "please re-auth" prompt the user will safely dismiss; a false negative
 // leaves the user with a cryptic error and a restart, which we're
-// trying to avoid.
+// trying to avoid. Transport-level failures (connection refused, DNS,
+// raw timeouts) are deliberately NOT classified as auth — those need
+// retry/backoff, not re-authentication.
 func isAuthFailure(err error) bool {
 	if err == nil {
 		return false
@@ -130,7 +153,26 @@ func isAuthFailure(err error) bool {
 		strings.Contains(s, "session expired"),
 		strings.Contains(s, "expired_token"),
 		strings.Contains(s, "access denied"),
-		strings.Contains(s, "permission denied"):
+		strings.Contains(s, "permission denied"),
+		// MCP Streamable-HTTP session-level rejections. The server has
+		// torn down the Mcp-Session-Id we negotiated at startup; a fresh
+		// Connect (Reconnect) is what fixes it, and that's exactly what
+		// the auth_required path drives.
+		strings.Contains(s, "session not found"),
+		strings.Contains(s, "session_not_found"),
+		strings.Contains(s, "session terminated"),
+		strings.Contains(s, "session is no longer valid"),
+		strings.Contains(s, "no longer valid"),
+		strings.Contains(s, "must re-authenticate"),
+		strings.Contains(s, "must reauthenticate"),
+		strings.Contains(s, "please re-authenticate"),
+		strings.Contains(s, "re-authentication required"),
+		// golang.org/x/oauth2 refresh-failure shapes. These surface when
+		// the cached refresh_token is rejected (rotated, revoked, IdP
+		// reset) — the user has to drive the interactive PKCE flow again.
+		strings.Contains(s, "invalid_grant"),
+		strings.Contains(s, "oauth2: cannot fetch token"),
+		strings.Contains(s, "oauth2: token expired"):
 		return true
 	}
 	return false
