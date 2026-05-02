@@ -186,13 +186,17 @@ publish-release:
 	  exit 1; \
 	fi; \
 	gh release create "$$latest" --title "$$latest" --notes-file "$$notes_file" || exit 1; \
-	artifacts=$$(ls $(RELEASE_DIR)/*.zip $(RELEASE_DIR)/*.pkg 2>/dev/null); \
+	artifacts=$$(ls $(RELEASE_DIR)/*$$latest*.zip $(RELEASE_DIR)/*$$latest*.pkg 2>/dev/null); \
 	if [ -n "$$artifacts" ]; then \
-	  echo "==> Uploading artifacts from $(RELEASE_DIR)/"; \
+	  echo "==> Uploading artifacts for $$latest from $(RELEASE_DIR)/"; \
 	  echo "$$artifacts" | sed 's/^/    /'; \
 	  gh release upload "$$latest" $$artifacts --clobber; \
 	else \
-	  echo "    No artifacts in $(RELEASE_DIR)/ to attach (run 'make build-release' and/or 'make sign' first)"; \
+	  echo "    No $$latest artifacts in $(RELEASE_DIR)/ to attach (run 'make build-release' and/or 'make sign' first)"; \
+	  if ls $(RELEASE_DIR)/*.zip $(RELEASE_DIR)/*.pkg >/dev/null 2>&1; then \
+	    echo "    NOTE: $(RELEASE_DIR)/ contains artifacts from other versions — they were skipped:"; \
+	    ls $(RELEASE_DIR)/*.zip $(RELEASE_DIR)/*.pkg 2>/dev/null | sed 's/^/      /'; \
+	  fi; \
 	fi; \
 	echo "==> Released: https://github.com/sausheong/felix/releases/tag/$$latest"
 
