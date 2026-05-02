@@ -243,3 +243,89 @@ func TestAdapter_Execute_AuthFailureSurfacesWhenRetryAlsoFails(t *testing.T) {
 	assert.Equal(t, "flaky", res.Metadata["auth_required"])
 	assert.GreaterOrEqual(t, calls.Load(), int32(2), "should attempt original + at least one retry")
 }
+
+// TestAdapter_CircuitBreaker_TripsAfterMaxConsecutiveFailures verifies
+// that after MaxConsecutiveAuthFailures auth-shaped failures the
+// adapter short-circuits without hitting the network — the message
+// instructs the agent to stop calling tools from this server, which
+// breaks the agent-side loop the user observed (Gemini-Pro retrying
+// nl_oauth_login forever after the gateway started returning 400s).
+func TestAdapter_CircuitBreaker_TripsAfterMaxConsecutiveFailures(t *testing.T) {
+	var calls atomic.Int32
+	srv := fakeMCPWithFlakyAuth(t, &calls, math.MaxInt32) // every call fails
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c, err := ConnectHTTP(ctx, srv.URL, http.DefaultClient)
+	require.NoError(t, err)
+	defer c.Close()
+
+	entry := &ServerEntry{
+		ID:     "tripped",
+		client: c,
+		cfg: ManagerServerConfig{
+			ID:        "tripped",
+			Transport: "http",
+			HTTP:      &HTTPServerConfig{URL: srv.URL, Auth: HTTPAuthConfig{Kind: "none"}},
+		},
+	}
+	a := newToolAdapter("tripped_echo", "echo", "", json.RawMessage(`{}`), entry, nil)
+
+	// Drive the breaker to its trip threshold.
+	for range MaxConsecutiveAuthFailures {
+		res, err := a.Execute(ctx, json.RawMessage(`{"text":"hi"}`))
+		require.NoError(t, err)
+		require.NotEmpty(t, res.Error)
+		require.NotNil(t, res.Metadata)
+		require.Equal(t, "tripped", res.Metadata["auth_required"])
+	}
+	preTripCalls := calls.Load()
+	require.Equal(t, MaxConsecutiveAuthFailures, entry.FailureCount(),
+		"every persistent auth failure should advance the breaker by exactly one")
+
+	// Next call must short-circuit: no network, strong "stop calling
+	// this server" message, circuit_breaker flag set on metadata.
+	res, err := a.Execute(ctx, json.RawMessage(`{"text":"hi"}`))
+	require.NoError(t, err)
+	require.NotNil(t, res.Metadata)
+	assert.Equal(t, "tripped", res.Metadata["auth_required"])
+	assert.Equal(t, true, res.Metadata["circuit_breaker"], "trip must flag circuit_breaker so UI can distinguish")
+	assert.Contains(t, res.Error, "Stop calling tools from this server",
+		"short-circuit message must instruct the agent to stop")
+	assert.Equal(t, preTripCalls, calls.Load(),
+		"short-circuit must NOT touch the network")
+}
+
+// TestServerEntry_RecordSuccess_ResetsBreaker verifies that a clean
+// tool call clears the consecutive-failure counter, so a transient
+// outage doesn't permanently block the server even without explicit
+// user action.
+func TestServerEntry_RecordSuccess_ResetsBreaker(t *testing.T) {
+	e := &ServerEntry{ID: "x"}
+	require.Equal(t, 0, e.FailureCount())
+
+	require.Equal(t, 1, e.RecordFailure())
+	require.Equal(t, 2, e.RecordFailure())
+	require.Equal(t, 2, e.FailureCount())
+
+	e.RecordSuccess()
+	require.Equal(t, 0, e.FailureCount(), "successful call must reset the breaker")
+}
+
+// TestServerEntry_resetFailures_PrivateMethodResetsBreaker verifies
+// the package-private reset path used by Manager.ReconnectServer (the
+// user-driven Re-authenticate button) — explicit user action gives
+// the server a fresh chance regardless of prior streak.
+func TestServerEntry_resetFailures_PrivateMethodResetsBreaker(t *testing.T) {
+	e := &ServerEntry{ID: "x"}
+	for range MaxConsecutiveAuthFailures + 5 {
+		e.RecordFailure()
+	}
+	require.GreaterOrEqual(t, e.FailureCount(), MaxConsecutiveAuthFailures)
+
+	e.resetFailures()
+	require.Equal(t, 0, e.FailureCount(),
+		"manual reconnect path must reset the breaker so Re-authenticate gives a fresh chance")
+}

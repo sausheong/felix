@@ -66,6 +66,22 @@ func (a *mcpToolAdapter) Execute(ctx context.Context, input json.RawMessage) (to
 			return tools.ToolResult{Error: fmt.Sprintf("invalid arguments JSON: %v", err)}, nil
 		}
 	}
+	// Pre-flight circuit breaker: if this server has failed
+	// MaxConsecutiveAuthFailures times in a row even after auto-Reconnect,
+	// stop hitting the network — return a strong "do not call this
+	// server again" message so the agent doesn't loop on a server that
+	// requires the user to investigate. The breaker resets on successful
+	// tool calls and on user-initiated Manager.ReconnectServer (the chat
+	// UI's "Re-authenticate" button).
+	if n := a.entry.FailureCount(); n >= MaxConsecutiveAuthFailures {
+		return tools.ToolResult{
+			Error: fmt.Sprintf(
+				"MCP server %q has failed %d consecutive auth attempts including automatic reconnection — the server appears to be in a bad state that re-authentication alone is not fixing. Stop calling tools from this server in this conversation. Tell the user to investigate the server-side issue (the gateway may be misconfigured, the user may lack the required scopes, or the upstream service may be down) and try again later. Do NOT call any %s.* tools again until the user confirms the server is fixed.",
+				a.entry.ID, n, a.entry.ID,
+			),
+			Metadata: map[string]any{"auth_required": a.entry.ID, "circuit_breaker": true},
+		}, nil
+	}
 	client := a.entry.Live()
 	if client == nil {
 		return tools.ToolResult{
@@ -101,6 +117,7 @@ func (a *mcpToolAdapter) Execute(ctx context.Context, input json.RawMessage) (to
 		if isAuthFailure(err) {
 			tr.Metadata = map[string]any{"auth_required": a.entry.ID}
 			tr.Error = fmt.Sprintf("MCP server %q rejected the call (auth expired). Re-authenticate to continue. Underlying error: %v", a.entry.ID, err)
+			a.entry.RecordFailure()
 		}
 		return tr, nil
 	}
@@ -118,7 +135,16 @@ func (a *mcpToolAdapter) Execute(ctx context.Context, input json.RawMessage) (to
 		// rather than failing at the transport.
 		if isAuthFailure(fmt.Errorf("%s", tr.Error)) {
 			tr.Metadata = map[string]any{"auth_required": a.entry.ID}
+			a.entry.RecordFailure()
+		} else {
+			// Tool ran and reported a non-auth error — the server is
+			// reachable, just unhappy with this call. Reset the breaker
+			// so an unrelated bad call doesn't accumulate toward the cap.
+			a.entry.RecordSuccess()
 		}
+	} else {
+		// Clean success — server is healthy. Reset the breaker.
+		a.entry.RecordSuccess()
 	}
 	return tr, nil
 }

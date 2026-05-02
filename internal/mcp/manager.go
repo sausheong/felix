@@ -9,6 +9,19 @@ import (
 	"sync"
 )
 
+// MaxConsecutiveAuthFailures is the per-server circuit-breaker threshold.
+// After this many consecutive tool calls fail with auth-shaped errors
+// that even an automatic Reconnect+retry couldn't fix, the adapter
+// short-circuits subsequent calls without touching the network — the
+// agent gets a strongly-worded "stop calling this server" error so it
+// doesn't burn LLM tokens looping on a server that's persistently broken.
+//
+// The breaker resets on (a) a successful tool call (RecordSuccess) and
+// (b) a user-initiated reconnect via Manager.ReconnectServer (the chat
+// UI's "Re-authenticate" button), since explicit user action is a fresh
+// signal that the operator believes the server should now be reachable.
+const MaxConsecutiveAuthFailures = 3
+
 // ServerEntry is a connected MCP server known to the Manager. The live
 // *Client is held under mu so it can be swapped atomically by Reconnect
 // without invalidating any adapter that's currently mid-call. Adapters
@@ -26,6 +39,51 @@ type ServerEntry struct {
 	mu     sync.RWMutex
 	client *Client
 	cfg    ManagerServerConfig // retained for Reconnect to re-run connectOne
+
+	failMu              sync.Mutex
+	consecutiveFailures int // guarded by failMu; see MaxConsecutiveAuthFailures
+}
+
+// RecordSuccess clears the consecutive-failure counter. Called by the
+// adapter after a successful tool call (initial OR after a successful
+// auto Reconnect+retry) — the server is responsive, so any prior streak
+// is now stale.
+func (e *ServerEntry) RecordSuccess() {
+	e.failMu.Lock()
+	e.consecutiveFailures = 0
+	e.failMu.Unlock()
+}
+
+// RecordFailure increments the consecutive-failure counter and returns
+// the new value. Called by the adapter when an auth-shaped error
+// persists even after an attempted Reconnect+retry.
+func (e *ServerEntry) RecordFailure() int {
+	e.failMu.Lock()
+	e.consecutiveFailures++
+	n := e.consecutiveFailures
+	e.failMu.Unlock()
+	return n
+}
+
+// FailureCount returns the current consecutive-failure count. Used by
+// the adapter's pre-flight check to decide whether to short-circuit.
+func (e *ServerEntry) FailureCount() int {
+	e.failMu.Lock()
+	defer e.failMu.Unlock()
+	return e.consecutiveFailures
+}
+
+// resetFailures clears the breaker. Called by Manager.ReconnectServer
+// (the user-initiated Re-authenticate path) so explicit user action
+// always gives the server a fresh chance.
+//
+// Note: not called by Reconnect itself — that path is auto-triggered
+// from Execute and shouldn't reset its own breaker (it would defeat
+// the whole point of counting auto-recovery failures).
+func (e *ServerEntry) resetFailures() {
+	e.failMu.Lock()
+	e.consecutiveFailures = 0
+	e.failMu.Unlock()
 }
 
 // Live returns the current *Client. Adapters call this on every tool
@@ -102,14 +160,20 @@ func NewManager(ctx context.Context, cfgs []ManagerServerConfig) (*Manager, erro
 // ReconnectServer finds the entry with the given ID and runs Reconnect
 // on it. Returns an error if the server isn't known. Used by the HTTP
 // re-auth endpoint after a successful interactive login refreshes the
-// token store.
+// token store. Also resets the per-server consecutive-failure breaker
+// — the user clicking Re-authenticate is an explicit signal that the
+// server should now be reachable, so any prior streak is stale.
 func (m *Manager) ReconnectServer(ctx context.Context, id string) error {
 	if m == nil {
 		return fmt.Errorf("mcp: manager not initialized")
 	}
 	for _, s := range m.servers {
 		if s.ID == id {
-			return s.Reconnect(ctx)
+			if err := s.Reconnect(ctx); err != nil {
+				return err
+			}
+			s.resetFailures()
+			return nil
 		}
 	}
 	return fmt.Errorf("mcp: server %q not found", id)
