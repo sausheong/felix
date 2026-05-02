@@ -1497,6 +1497,14 @@ html.dark .error-state { background: #450a0a; }
 				makeField(row2, 'Model', 'text', a.model || '', function(v) { cfg.agents.list[idx].model = v; });
 				makeField(row2, 'Max Turns', 'number', a.maxTurns || 0, function(v) { cfg.agents.list[idx].maxTurns = v; });
 
+				var row2b = makeRow(item);
+				makeField(row2b, 'Context Window (0 = auto-detect)', 'number', a.contextWindow || 0, function(v) {
+					cfg.agents.list[idx].contextWindow = v;
+				});
+				makeField(row2b, 'Fallback Model', 'text', a.fallbackModel || '', function(v) {
+					cfg.agents.list[idx].fallbackModel = v;
+				});
+
 				makeReadOnlyField(item, 'Sandbox', 'agent-sandbox-' + idx, 'not implemented yet');
 
 				makeField(item, 'System Prompt', 'textarea', a.system_prompt || '', function(v) {

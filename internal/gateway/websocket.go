@@ -523,7 +523,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 						"cache_creation_input_tokens": event.Usage.CacheCreationInputTokens,
 						"cache_read_input_tokens":     event.Usage.CacheReadInputTokens,
 					}
-					done["context_window"] = tokens.ContextWindow(agentCfg.Model)
+					done["context_window"] = tokens.ContextWindowFor(agentCfg.Model, agentCfg.ContextWindow)
 					done["model"] = agentCfg.Model
 				}
 				result = done

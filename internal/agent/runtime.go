@@ -91,6 +91,13 @@ type Runtime struct {
 	// as the primary, since LLM is bound to a single provider client).
 	FallbackModel string
 
+	// ContextWindow overrides the auto-detected window from
+	// tokens.ContextWindow for this Runtime's model. 0 = use
+	// auto-detection. Populated from AgentConfig.ContextWindow.
+	// Read by maybeKickoffAsyncCompaction and the preventive-compaction
+	// check inside Run via tokens.ContextWindowFor.
+	ContextWindow int
+
 	// StaticSystemPrompt is the cacheable portion of the system prompt
 	// (identity, agent metadata, configuration paths, configSummary,
 	// skillsIndex). Built once at BuildRuntimeForAgent time; reused
@@ -203,7 +210,7 @@ func (r *Runtime) maybeKickoffAsyncCompaction(msgs []llm.Message, parts []llm.Sy
 		r.calibrator = tokens.NewCalibrator()
 	}
 	estimate := r.calibrator.Adjust(tokens.Estimate(msgs, llm.JoinSystemPromptParts(parts), toolDefs))
-	window := tokens.ContextWindow(r.Model)
+	window := tokens.ContextWindowFor(r.Model, r.ContextWindow)
 	threshold := 0.6
 	if r.Compaction.Threshold > 0 {
 		threshold = r.Compaction.Threshold
@@ -499,7 +506,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					r.calibrator = tokens.NewCalibrator()
 				}
 				estimate := r.calibrator.Adjust(tokens.Estimate(msgs, llm.JoinSystemPromptParts(parts), toolDefs))
-				window := tokens.ContextWindow(r.Model)
+				window := tokens.ContextWindowFor(r.Model, r.ContextWindow)
 				threshold := 0.6
 				if r.Compaction != nil && r.Compaction.Threshold > 0 {
 					threshold = r.Compaction.Threshold

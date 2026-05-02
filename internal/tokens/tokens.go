@@ -34,7 +34,7 @@ func Estimate(msgs []llm.Message, systemPrompt string, tools []llm.ToolDef) int 
 const perMessageOverhead = 3
 
 // ContextWindow returns the maximum input tokens for the given
-// "provider/model" identifier. Unknown models get a conservative 32k fallback.
+// "provider/model" identifier.
 //
 // For "local"/"ollama" providers, the registered ollama context (probed
 // at startup via /api/show) is used. For all other providers, lookup is
@@ -42,15 +42,30 @@ const perMessageOverhead = 3
 // and relays that expose Claude/GPT/Gemini under a custom provider name
 // (e.g. "platformai/claude-sonnet-4-6-asia-southeast1", AWS Bedrock,
 // Vertex AI) still get the right window.
+//
+// When neither the registry nor the family detector matches, the
+// fallback differs by provider type:
+//   - local/ollama: defaultLocalUnknownWindow (32k) — most modern small
+//     models (qwen, gemma, phi, mistral) advertise 32k or larger; if
+//     the probe failed, 32k is a reasonable middle ground.
+//   - everything else: defaultRemoteUnknownWindow (128k) — frontier
+//     models behind unknown proxies are vastly more likely to be 128k+
+//     than 32k. Reactive compaction handles the rare overflow case.
+//
+// Use ContextWindowFor when an agent has an explicit per-agent override
+// (config.AgentConfig.ContextWindow). This raw form is for callers that
+// don't have agent context.
 func ContextWindow(model string) int {
 	if model == "" {
-		return defaultUnknownWindow
+		return defaultRemoteUnknownWindow
 	}
 	provider, modelID := splitProviderModel(model)
 
+	isLocal := provider == "local" || provider == "ollama"
+
 	// Ollama-bundled local models register their advertised window at
 	// startup; honour that before falling through to family detection.
-	if provider == "local" || provider == "ollama" {
+	if isLocal {
 		ollamaCtxMu.RLock()
 		v, ok := ollamaCtx[modelID]
 		ollamaCtxMu.RUnlock()
@@ -62,7 +77,24 @@ func ContextWindow(model string) int {
 	if w := windowByModelFamily(modelID); w > 0 {
 		return w
 	}
-	return defaultUnknownWindow
+
+	if isLocal {
+		return defaultLocalUnknownWindow
+	}
+	return defaultRemoteUnknownWindow
+}
+
+// ContextWindowFor returns the effective context window for an agent.
+// When override > 0, it wins over the auto-detected window — surfaced
+// to users as the per-agent "context window" setting for cases where
+// the auto-detection is wrong (e.g. a proxy exposing a non-standard
+// window, or a local model where you want to clamp below the advertised
+// limit to leave room for output tokens).
+func ContextWindowFor(model string, override int) int {
+	if override > 0 {
+		return override
+	}
+	return ContextWindow(model)
 }
 
 // windowByModelFamily picks the context window from the model identifier
@@ -96,7 +128,21 @@ func windowByModelFamily(modelID string) int {
 	return 0
 }
 
-const defaultUnknownWindow = 32000
+const (
+	// defaultLocalUnknownWindow is the fallback for local/ollama models
+	// when the /api/show probe didn't register a window. 32k matches the
+	// real window of most modern small models (qwen, gemma, phi-3) and
+	// is conservative enough that genuinely smaller models (4k-8k legacy
+	// llama variants) just hit reactive compaction instead of crashing.
+	defaultLocalUnknownWindow = 32000
+	// defaultRemoteUnknownWindow is the fallback for any non-local
+	// provider when neither the family detector nor an explicit override
+	// matches. 128k reflects that frontier models behind unknown proxies
+	// (custom relays, internal gateways) are overwhelmingly 128k+ —
+	// erring high here saves preventive compaction calls for the common
+	// case, and reactive compaction handles the rare overflow.
+	defaultRemoteUnknownWindow = 128000
+)
 
 func splitProviderModel(s string) (string, string) {
 	parts := strings.SplitN(s, "/", 2)

@@ -211,6 +211,14 @@ type AgentConfig struct {
 	// (Anthropic 429/529, OpenAI 429/5xx). One retry only; mid-stream
 	// errors are not recoverable here. Empty disables fallback.
 	FallbackModel string `json:"fallbackModel,omitempty"`
+	// ContextWindow overrides the auto-detected context window (in
+	// tokens) for this agent's model. Use when the auto-detection is
+	// wrong — e.g. a proxy exposes Claude under a custom provider with a
+	// non-standard window, or you want to clamp a local model below its
+	// advertised limit to leave room for output tokens. 0 = use
+	// auto-detection (tokens.ContextWindow). Drives the preventive
+	// compaction threshold and the token-usage display in the UI.
+	ContextWindow int `json:"contextWindow,omitempty"`
 }
 
 type CronConfig struct {

@@ -169,6 +169,7 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 		AgentName:          a.Name,
 		Model:              modelName,
 		FallbackModel:      fallbackModel,
+		ContextWindow:      a.ContextWindow,
 		Provider:           provider,
 		Reasoning:          reasoning,
 		Workspace:          a.Workspace,

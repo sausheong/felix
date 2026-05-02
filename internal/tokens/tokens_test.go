@@ -51,9 +51,28 @@ func TestContextWindowKnown(t *testing.T) {
 	}
 }
 
-func TestContextWindowUnknownReturnsConservativeFallback(t *testing.T) {
-	assert.Equal(t, 32000, ContextWindow("weird/unknown-model"))
-	assert.Equal(t, 32000, ContextWindow(""))
+func TestContextWindowUnknownRemoteReturnsRemoteFallback(t *testing.T) {
+	// Non-local unknown models default to 128k — frontier proxies are
+	// overwhelmingly 128k+, and reactive compaction handles overflow.
+	assert.Equal(t, 128000, ContextWindow("weird/unknown-model"))
+	assert.Equal(t, 128000, ContextWindow(""))
+}
+
+func TestContextWindowUnknownLocalReturnsLocalFallback(t *testing.T) {
+	// Local/ollama unknown models default to 32k — conservative for
+	// genuinely small models without a probed registration.
+	assert.Equal(t, 32000, ContextWindow("local/some-unprobed-model"))
+	assert.Equal(t, 32000, ContextWindow("ollama/some-unprobed-model"))
+}
+
+func TestContextWindowForOverrideWins(t *testing.T) {
+	// Per-agent override is honoured over auto-detection (e.g. when an
+	// auto-detected 200k Claude is too aggressive for a slow proxy).
+	assert.Equal(t, 64000, ContextWindowFor("anthropic/claude-3-opus", 64000))
+	// Zero override falls through to auto-detection.
+	assert.Equal(t, 200000, ContextWindowFor("anthropic/claude-3-opus", 0))
+	// Negative override is ignored (treated as "no override").
+	assert.Equal(t, 200000, ContextWindowFor("anthropic/claude-3-opus", -1))
 }
 
 // TestContextWindowProxyProviderDetectedByModelFamily covers the case
