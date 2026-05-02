@@ -324,7 +324,25 @@ func AssistantMessageEntry(text string) SessionEntry {
 }
 
 // ToolCallEntry creates a tool call entry.
+//
+// input is sanitised to "{}" when empty or not valid JSON. The
+// marshal step is fragile against malformed RawMessage: an empty-
+// but-non-nil json.RawMessage (length 0 but allocated, which is
+// what happens when the LLM emits a tool_use whose arguments
+// stream produced zero bytes) makes json.Marshal return an error.
+// The previous `data, _ := json.Marshal(...)` swallowed that error
+// and persisted Data: nil, which serialises on disk as `"data":null`.
+// On reload, assembleMessages would then build a ToolCall with an
+// empty ID, breaking the tool_use ↔ tool_result pairing in the next
+// LLM request and producing a 400 from Anthropic of the form
+// `messages.N.content.0: unexpected tool_use_id ... Each tool_result
+// block must have a corresponding tool_use block in the previous
+// message.` Substituting "{}" produces a valid empty-args tool_use,
+// which the model can interpret correctly on the next turn.
 func ToolCallEntry(toolCallID, toolName string, input json.RawMessage) SessionEntry {
+	if len(input) == 0 || !json.Valid(input) {
+		input = json.RawMessage(`{}`)
+	}
 	data, _ := json.Marshal(ToolCallData{
 		Tool:  toolName,
 		ID:    toolCallID,

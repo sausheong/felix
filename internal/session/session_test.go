@@ -78,6 +78,43 @@ func TestToolCallEntries(t *testing.T) {
 	assert.Equal(t, EntryTypeToolResult, history[2].Type)
 }
 
+// TestToolCallEntrySanitisesEmptyInput is the regression guard for
+// the "data:null" bug. When the LLM emits a tool_use whose arguments
+// stream produces zero bytes (or an empty/non-nil json.RawMessage,
+// or invalid JSON), the unsanitised version of ToolCallEntry hit
+// json.Marshal's "unexpected end of JSON input" path, swallowed the
+// error via `data, _ :=`, and persisted Data: nil. On disk: `"data":null`.
+// On reload, assembleMessages would build a tool_use with an empty
+// ID, and the next LLM call would fail with the Anthropic 400:
+// "messages.N.content.0: unexpected `tool_use_id` ... Each
+// `tool_result` block must have a corresponding `tool_use` block in
+// the previous message." The fix substitutes "{}" for invalid input;
+// this test asserts the entry's Data is non-nil and round-trips.
+func TestToolCallEntrySanitisesEmptyInput(t *testing.T) {
+	cases := []struct {
+		name  string
+		input json.RawMessage
+	}{
+		{"nil_input", nil},
+		{"empty_non_nil_input", json.RawMessage{}},
+		{"truncated_object", json.RawMessage(`{"a":`)},
+		{"plain_text", json.RawMessage(`hello`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := ToolCallEntry("toolu_x", "search", tc.input)
+			require.NotNil(t, e.Data, "Data must not be nil — that's the bug")
+			require.True(t, json.Valid(e.Data), "Data must be valid JSON")
+
+			var td ToolCallData
+			require.NoError(t, json.Unmarshal(e.Data, &td))
+			assert.Equal(t, "toolu_x", td.ID, "ID must round-trip")
+			assert.Equal(t, "search", td.Tool, "Tool must round-trip")
+			assert.True(t, json.Valid(td.Input), "Input must round-trip as valid JSON")
+		})
+	}
+}
+
 func TestSessionBranch(t *testing.T) {
 	sess := NewSession("default", "test")
 

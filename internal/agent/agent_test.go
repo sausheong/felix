@@ -106,6 +106,35 @@ func TestAssembleMessagesUserAndAssistant(t *testing.T) {
 	assert.Equal(t, "hi there", msgs[1].Content)
 }
 
+// TestAssembleMessagesSkipsCorruptToolCall covers the read-side of
+// the "data:null" bug. Older session JSONLs (written by the
+// pre-sanitisation ToolCallEntry) contain tool_call entries whose
+// Data is literally JSON null because the marshal step swallowed an
+// error on an empty json.RawMessage. On reload, json.Unmarshal of
+// nil-bytes into ToolCallData succeeds with the zero value (no error),
+// so the entry would silently produce a tool_use with an empty ID and
+// the next LLM call would 400. This test asserts both:
+//   - the corrupt tool_call entry is skipped (no orphan tool_use), and
+//   - the tool_result that referenced it is also skipped (no orphan
+//     tool_result), so the assembled messages remain valid for the API.
+func TestAssembleMessagesSkipsCorruptToolCall(t *testing.T) {
+	corrupt := session.SessionEntry{Type: session.EntryTypeToolCall, Data: nil}
+	tr := session.ToolResultEntry("toolu_vrtx_orphan", "", "Bad Request", nil)
+
+	history := []session.SessionEntry{
+		session.UserMessageEntry("hi"),
+		session.AssistantMessageEntry("Let me try the tool."),
+		corrupt,
+		tr,
+	}
+
+	msgs := assembleMessages(history)
+	require.Len(t, msgs, 2, "should drop both the corrupt call and its orphan result")
+	assert.Equal(t, "user", msgs[0].Role)
+	assert.Equal(t, "assistant", msgs[1].Role)
+	assert.Empty(t, msgs[1].ToolCalls, "no tool_use should be added from the corrupt entry")
+}
+
 func TestAssembleMessagesToolCallAndResult(t *testing.T) {
 	tc := session.ToolCallEntry("tc_1", "bash", json.RawMessage(`{"command":"echo hi"}`))
 	tr := session.ToolResultEntry("tc_1", "hi\n", "", nil)

@@ -293,6 +293,22 @@ func assembleMessages(history []session.SessionEntry) []llm.Message {
 			if err := json.Unmarshal(entry.Data, &td); err != nil {
 				continue
 			}
+			// Skip a corrupted tool_call entry that has no ID — the
+			// API requires every tool_use block to have a non-empty
+			// tool_use_id that the matching tool_result references.
+			// Reaches here when an old session file was written with
+			// the pre-fix ToolCallEntry that swallowed marshal errors
+			// on an empty json.RawMessage input and persisted
+			// "data":null on disk. Skipping leaves the tool unpaired,
+			// which assembleMessages's later injectMissingToolResults
+			// pass would otherwise paper over with a synthetic error
+			// result — but here both call AND result are absent from
+			// the assistant message, which is the only safe shape
+			// because the tool_result entry under it has no tool_use
+			// to anchor to.
+			if td.ID == "" {
+				continue
+			}
 			// Tool calls are part of the assistant turn — merge into the last assistant message
 			// or create one if needed
 			if len(msgs) == 0 || msgs[len(msgs)-1].Role != "assistant" {
@@ -307,6 +323,15 @@ func assembleMessages(history []session.SessionEntry) []llm.Message {
 		case session.EntryTypeToolResult:
 			var tr session.ToolResultData
 			if err := json.Unmarshal(entry.Data, &tr); err != nil {
+				continue
+			}
+			// Skip an orphan tool_result whose matching tool_call was
+			// dropped above (e.g. corrupted "data":null tool_call from
+			// the pre-fix ToolCallEntry). Sending the tool_result alone
+			// would trigger Anthropic's "messages.N.content.0:
+			// unexpected tool_use_id" 400 because no preceding
+			// assistant message contains a tool_use with this ID.
+			if !lastAssistantHasToolCall(msgs, tr.ToolCallID) {
 				continue
 			}
 			content := tr.Output
@@ -391,6 +416,30 @@ func injectMissingToolResults(msgs []llm.Message) []llm.Message {
 		i++ // advance past this assistant; the for-loop will copy the user tool_results next iteration
 	}
 	return out
+}
+
+// lastAssistantHasToolCall reports whether the most recent assistant
+// message in msgs contains a tool_call with the given ID. Used by
+// assembleMessages to decide whether a tool_result entry has a
+// preceding tool_use to anchor to. Walks backward through msgs and
+// stops at the first assistant message it finds — there can only be
+// one preceding assistant block before any given tool_result run.
+func lastAssistantHasToolCall(msgs []llm.Message, id string) bool {
+	if id == "" {
+		return false
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != "assistant" {
+			continue
+		}
+		for _, tc := range msgs[i].ToolCalls {
+			if tc.ID == id {
+				return true
+			}
+		}
+		return false // first assistant we hit didn't have it; no earlier one will count
+	}
+	return false
 }
 
 // truncationMarker / spillMarker uniquely identify content that
