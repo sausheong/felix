@@ -485,6 +485,12 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 				result = map[string]any{"type": "tool_call_start", "tool": event.ToolCall.Name, "id": event.ToolCall.ID, "input": event.ToolCall.Input}
 			case agent.EventToolResult:
 				r := map[string]any{"type": "tool_result", "tool": event.ToolCall.Name, "id": event.ToolCall.ID, "input": event.ToolCall.Input, "output": event.Result.Output, "error": event.Result.Error}
+				if id, ok := event.Result.Metadata["auth_required"].(string); ok && id != "" {
+					// Surface MCP re-auth signal to the chat client so it
+					// can render an inline "Re-authenticate" button bound
+					// to this server. See chat.go renderToolResult.
+					r["auth_required"] = id
+				}
 				if len(event.Result.Images) > 0 {
 					var imgs []map[string]string
 					for _, img := range event.Result.Images {

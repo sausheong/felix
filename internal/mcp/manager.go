@@ -6,23 +6,65 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 )
 
-// ServerEntry is a connected MCP server known to the Manager. Exposed so
-// callers (the Tool registration code) can iterate without reaching into
-// Manager internals.
+// ServerEntry is a connected MCP server known to the Manager. The live
+// *Client is held under mu so it can be swapped atomically by Reconnect
+// without invalidating any adapter that's currently mid-call. Adapters
+// hold *ServerEntry (not *Client) and read entry.Live() per call so the
+// next call after a successful Reconnect picks up the new client.
 type ServerEntry struct {
-	ID           string
-	Client       *Client
-	ToolPrefix   string
-	// ParallelSafe is vestigial: it mirrors ManagerServerConfig.ParallelSafe
-	// at construction time. The MCP tool adapter no longer consults it for
-	// IsConcurrencySafe — instead it reads the live config via the
-	// ParallelSafeFn closure passed to RegisterTools, so settings-UI toggles
-	// take effect on the next agent run without a restart. Kept on the
-	// struct for API stability (tests and any external introspection).
+	ID         string
+	ToolPrefix string
+	// ParallelSafe mirrors ManagerServerConfig.ParallelSafe at
+	// construction time. The MCP tool adapter no longer consults it for
+	// IsConcurrencySafe — it reads the live config via ParallelSafeFn —
+	// but it stays on the struct for API stability.
 	ParallelSafe bool
+
+	mu     sync.RWMutex
+	client *Client
+	cfg    ManagerServerConfig // retained for Reconnect to re-run connectOne
 }
+
+// Live returns the current *Client. Adapters call this on every tool
+// invocation so a Reconnect-driven swap is observed on the next call.
+func (e *ServerEntry) Live() *Client {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.client
+}
+
+// Reconnect closes the existing client and opens a new one against the
+// same config. Any in-flight tool call that already grabbed the old
+// client via Live() finishes against the old session; subsequent calls
+// observe the new one. Errors from connectOne propagate; on success the
+// old client is closed in the background so the swap is observably
+// instant to callers.
+func (e *ServerEntry) Reconnect(ctx context.Context) error {
+	newClient, err := connectOne(ctx, e.cfg)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	old := e.client
+	e.client = newClient
+	e.mu.Unlock()
+	if old != nil {
+		go func() {
+			if cerr := old.Close(); cerr != nil {
+				slog.Debug("mcp: close old client after reconnect", "id", e.ID, "error", cerr)
+			}
+		}()
+	}
+	return nil
+}
+
+// Client is the legacy accessor. Kept for external callers that still
+// expect a struct field; reads through Live() so they observe swaps.
+// Deprecated: prefer Live().
+func (e *ServerEntry) GetClient() *Client { return e.Live() }
 
 // Manager owns a Client per enabled MCP server. Servers that fail to
 // connect at startup are logged and skipped — Manager construction still
@@ -47,13 +89,30 @@ func NewManager(ctx context.Context, cfgs []ManagerServerConfig) (*Manager, erro
 		}
 		m.servers = append(m.servers, &ServerEntry{
 			ID:           cfg.ID,
-			Client:       client,
 			ToolPrefix:   cfg.ToolPrefix,
 			ParallelSafe: cfg.ParallelSafe,
+			client:       client,
+			cfg:          cfg,
 		})
 		slog.Info("mcp: connected to server", "id", cfg.ID, "transport", cfg.Transport)
 	}
 	return m, nil
+}
+
+// ReconnectServer finds the entry with the given ID and runs Reconnect
+// on it. Returns an error if the server isn't known. Used by the HTTP
+// re-auth endpoint after a successful interactive login refreshes the
+// token store.
+func (m *Manager) ReconnectServer(ctx context.Context, id string) error {
+	if m == nil {
+		return fmt.Errorf("mcp: manager not initialized")
+	}
+	for _, s := range m.servers {
+		if s.ID == id {
+			return s.Reconnect(ctx)
+		}
+	}
+	return fmt.Errorf("mcp: server %q not found", id)
 }
 
 func connectOne(ctx context.Context, cfg ManagerServerConfig) (*Client, error) {
@@ -128,7 +187,7 @@ func (m *Manager) Close() error {
 	}
 	var combined string
 	for _, s := range m.servers {
-		if err := s.Client.Close(); err != nil {
+		if err := s.Live().Close(); err != nil {
 			if combined != "" {
 				combined += "\n"
 			}

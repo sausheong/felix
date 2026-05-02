@@ -25,7 +25,7 @@ func TestRegisterTools_AddsPrefixedAdapters(t *testing.T) {
 
 	c, err := ConnectHTTP(ctx, srv.URL, http.DefaultClient)
 	require.NoError(t, err)
-	mgr := &Manager{servers: []*ServerEntry{{ID: "ltm", Client: c, ToolPrefix: "ltm_"}}}
+	mgr := &Manager{servers: []*ServerEntry{{ID: "ltm", client: c, ToolPrefix: "ltm_"}}}
 	defer mgr.Close()
 
 	reg := tools.NewRegistry()
@@ -46,7 +46,7 @@ func TestRegisterTools_NoPrefix_NoCollision(t *testing.T) {
 
 	c, err := ConnectHTTP(ctx, srv.URL, http.DefaultClient)
 	require.NoError(t, err)
-	mgr := &Manager{servers: []*ServerEntry{{ID: "x", Client: c, ToolPrefix: ""}}}
+	mgr := &Manager{servers: []*ServerEntry{{ID: "x", client: c, ToolPrefix: ""}}}
 	defer mgr.Close()
 
 	reg := tools.NewRegistry()
@@ -78,8 +78,8 @@ func TestRegisterTools_PropagatesParallelSafe(t *testing.T) {
 	require.NoError(t, err)
 
 	mgr := &Manager{servers: []*ServerEntry{
-		{ID: "safe", Client: cSafe, ToolPrefix: "s_"},
-		{ID: "unsafe", Client: cUnsafe, ToolPrefix: "u_"},
+		{ID: "safe", client: cSafe, ToolPrefix: "s_"},
+		{ID: "unsafe", client: cUnsafe, ToolPrefix: "u_"},
 	}}
 	defer mgr.Close()
 
@@ -113,7 +113,7 @@ func TestRegisterTools_LiveReadPicksUpToggle(t *testing.T) {
 
 	c, err := ConnectHTTP(ctx, srv.URL, http.DefaultClient)
 	require.NoError(t, err)
-	mgr := &Manager{servers: []*ServerEntry{{ID: "trusted", Client: c, ToolPrefix: "t_"}}}
+	mgr := &Manager{servers: []*ServerEntry{{ID: "trusted", client: c, ToolPrefix: "t_"}}}
 	defer mgr.Close()
 
 	var live atomic.Bool
@@ -145,7 +145,7 @@ func TestRegisterTools_CollisionFails(t *testing.T) {
 
 	c, err := ConnectHTTP(ctx, srv.URL, http.DefaultClient)
 	require.NoError(t, err)
-	mgr := &Manager{servers: []*ServerEntry{{ID: "x", Client: c, ToolPrefix: ""}}}
+	mgr := &Manager{servers: []*ServerEntry{{ID: "x", client: c, ToolPrefix: ""}}}
 	defer mgr.Close()
 
 	reg := tools.NewRegistry()

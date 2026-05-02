@@ -206,6 +206,32 @@ html.light #header .logo {
 }
 #token-chip.warn { border-color: var(--accent2); color: var(--accent2); }
 #token-chip.danger { border-color: var(--error); color: var(--error); }
+.mcp-reauth {
+	margin: 0.5rem 0;
+	padding: 0.5rem 0.75rem;
+	background: var(--bg-msg-asst);
+	border: 1px solid var(--accent2);
+	border-radius: 6px;
+	color: var(--accent2);
+	font-size: 0.85rem;
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	flex-wrap: wrap;
+}
+.mcp-reauth.ok { border-color: var(--accent); color: var(--accent); }
+.mcp-reauth.error { border-color: var(--error); color: var(--error); }
+.mcp-reauth button {
+	background: var(--accent2);
+	color: white;
+	border: none;
+	padding: 0.3rem 0.7rem;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 0.85rem;
+}
+.mcp-reauth button:disabled { opacity: 0.6; cursor: wait; }
+.mcp-reauth button:hover:not(:disabled) { filter: brightness(1.1); }
 #bootstrap-banner {
 	display: none;
 	background: var(--bg-msg-asst);
@@ -1255,7 +1281,7 @@ html.light #header .logo {
 					addToolCall(r.tool, r.id, r.input);
 					break;
 				case 'tool_result':
-					updateToolResult(r.tool, r.id, r.input, r.output, r.error, r.images);
+					updateToolResult(r.tool, r.id, r.input, r.output, r.error, r.images, r.auth_required);
 					break;
 				case 'done':
 					if (currentAssistant) {
@@ -1401,7 +1427,7 @@ html.light #header .logo {
 		scrollToBottom();
 	}
 
-	function updateToolResult(toolName, toolId, input, outputText, errorText, images) {
+	function updateToolResult(toolName, toolId, input, outputText, errorText, images, authRequired) {
 		var el = toolEls[toolId] || toolEls[toolName];
 		if (!el) return;
 
@@ -1448,6 +1474,59 @@ html.light #header .logo {
 			output.classList.add('show');
 			var arrow = el.querySelector('.arrow');
 			if (arrow) arrow.classList.add('open');
+		}
+
+		// Inline "Re-authenticate" button when the MCP adapter flagged
+		// this result as auth-failure. POSTs to /api/mcp/reauth/{id};
+		// the user's browser opens the IdP, the gateway loopback
+		// listener catches the callback, the manager reconnects, and
+		// the button is replaced with a status line. No restart needed.
+		if (authRequired) {
+			var existing = el.querySelector('.mcp-reauth');
+			if (existing) existing.remove();
+			var box = document.createElement('div');
+			box.className = 'mcp-reauth';
+			var msg = document.createElement('span');
+			msg.textContent = 'MCP server "' + authRequired + '" needs re-authentication.';
+			var btn = document.createElement('button');
+			btn.type = 'button';
+			btn.textContent = 'Re-authenticate';
+			btn.onclick = function() {
+				btn.disabled = true;
+				btn.textContent = 'Opening browser…';
+				fetch('/api/mcp/reauth/' + encodeURIComponent(authRequired), { method: 'POST' })
+					.then(function(r) { return r.json().catch(function() { return {ok: false, error: 'invalid response'}; }); })
+					.then(function(j) {
+						if (j && j.ok) {
+							msg.textContent = 'Re-authenticated. Retry your last message.';
+							if (j.warning) {
+								msg.textContent += ' Note: ' + j.warning;
+							}
+							btn.remove();
+							box.classList.add('ok');
+						} else {
+							btn.disabled = false;
+							btn.textContent = 'Re-authenticate';
+							msg.textContent = 'Re-auth failed: ' + (j && j.error ? j.error : 'unknown error');
+							box.classList.add('error');
+						}
+					})
+					.catch(function(e) {
+						btn.disabled = false;
+						btn.textContent = 'Re-authenticate';
+						msg.textContent = 'Re-auth request failed: ' + e;
+						box.classList.add('error');
+					});
+			};
+			box.appendChild(msg);
+			box.appendChild(btn);
+			// Append after the output area, inside the tool element so
+			// it appears right under the failed call.
+			el.appendChild(box);
+			// Auto-expand the output so the user sees the button.
+			output.classList.add('show');
+			var arrow2 = el.querySelector('.arrow');
+			if (arrow2) arrow2.classList.add('open');
 		}
 	}
 

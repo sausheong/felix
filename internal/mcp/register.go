@@ -35,7 +35,7 @@ func RegisterTools(reg *tools.Registry, mgr *Manager, parallelSafe ParallelSafeF
 	ctx := context.Background()
 	var registered []string
 	for _, s := range mgr.Servers() {
-		toolList, err := s.Client.ListTools(ctx)
+		toolList, err := s.Live().ListTools(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("mcp[%s]: list tools: %w", s.ID, err)
 		}
@@ -45,7 +45,7 @@ func RegisterTools(reg *tools.Registry, mgr *Manager, parallelSafe ParallelSafeF
 				return nil, fmt.Errorf("mcp[%s]: tool name collision on %q — set tool_prefix in mcp_servers config", s.ID, fullName)
 			}
 			reg.Register(newToolAdapter(fullName, t.Name, t.Description, t.InputSchema,
-				s.Client, s.ID, parallelSafe))
+				s, parallelSafe))
 			registered = append(registered, fullName)
 		}
 	}

@@ -815,6 +815,11 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		}),
 		Skills:    skillHandlers,
 		Memory:    gateway.NewMemoryHandlers(memMgr),
+		MCP: gateway.NewMCPHandlers(mcpMgr, func() *config.Config {
+			// Closure rather than a snapshot so config hot-reload (which
+			// rewrites cfg in place) is observed by the re-auth handler.
+			return cfg
+		}),
 		LogBuffer: logBuf,
 	})
 

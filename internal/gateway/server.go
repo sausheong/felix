@@ -23,6 +23,7 @@ type ServerOptions struct {
 	Settings       *SettingsHandlers // optional /settings handlers
 	Skills         *SkillHandlers    // optional /settings/api/skills* handlers
 	Memory         *MemoryHandlers   // optional /settings/api/memory* handlers
+	MCP            *MCPHandlers      // optional /api/mcp* handlers (re-auth)
 	LogBuffer      *LogBuffer        // optional log buffer for /logs
 }
 
@@ -115,6 +116,10 @@ func (s *Server) routes() {
 		s.router.Get("/settings/api/memory/{id}", s.opts.Memory.Get)
 		s.router.Post("/settings/api/memory", s.opts.Memory.Save)
 		s.router.Delete("/settings/api/memory/{id}", s.opts.Memory.Delete)
+	}
+
+	if s.opts.MCP != nil {
+		s.router.Post("/api/mcp/reauth/{id}", s.opts.MCP.Reauth)
 	}
 
 	if s.opts.LogBuffer != nil {
