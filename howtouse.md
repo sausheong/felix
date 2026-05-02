@@ -20,7 +20,7 @@ Felix is a self-hosted AI agent gateway. It runs as a single binary on your mach
 - [Browser Tool](#browser-tool)
 - [Send Message Tool](#send-message-tool)
 - [Dynamic Cron Tool](#dynamic-cron-tool)
-- [Task Tool (subagent delegation)](#task-tool-subagent-delegation)
+- [Subagents and the `task` tool](#subagents-and-the-task-tool)
 - [Tool Policies](#tool-policies)
 - [WebSocket API](#websocket-api)
 - [Security](#security)
@@ -750,7 +750,7 @@ felix chat local
 
 ### Inter-agent delegation
 
-Agents can delegate subtasks to other agents using the `task` tool. This enables supervisor/worker patterns where a powerful model orchestrates cheaper or specialized models. See [Task Tool (subagent delegation)](#task-tool-subagent-delegation) for details.
+Agents can delegate subtasks to other agents using the `task` tool. This enables supervisor/worker patterns where a powerful model orchestrates cheaper or specialized models. See [Subagents and the `task` tool](#subagents-and-the-task-tool) for details.
 
 ### Agent identity
 
@@ -1213,75 +1213,64 @@ Both use the same underlying scheduler. Static jobs are ideal for always-on task
 
 ---
 
-## Task Tool (subagent delegation)
+## Subagents and the `task` tool
 
-The `task` tool lets an agent delegate a task to another configured agent and get back the result. This enables multi-agent workflows where a supervisor agent can orchestrate specialized worker agents — for example, a powerful model delegating subtasks to cheaper or faster models.
+A **subagent** is an agent another agent can delegate work to via the built-in `task` tool. The supervisor's LLM sees `task` like any other tool, picks a subagent by ID, and gets back the subagent's final text. The subagent runs with its own model, system prompt, tool policy, and workspace — so you can mix Sonnet for reasoning, Haiku for cheap research, Gemma for fully-local lookups, all in one chat.
 
-### Enable for an agent
+### The two flags
 
-Add `task` to the supervisor agent's tool allow list:
+- **`subagent: true`** on the *target* agent — the opt-in. Without this, the agent is invisible to `task`.
+- **`task` in the *supervisor's* `tools.allow`** — without this, the supervisor's LLM never sees the tool and never delegates.
 
-```json5
-{
-  "tools": {
-    "allow": ["read_file", "bash", "task"]
-  }
-}
-```
+(If you use `tools.allow: []` for allow-all on the supervisor, `task` is included automatically when at least one subagent is configured.)
 
-### Parameters
+### Worked example: Coder + Researcher + Reviewer
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `agent_id` | string | The ID of the agent to delegate to (must match an agent in config) |
-| `prompt` | string | The instruction or task for the target agent to perform |
-
-The tool's description dynamically lists all available agents so the LLM knows which agents it can delegate to.
-
-### Example conversation
-
-```
-You: Research the top 3 trending Go libraries this week, then have the coder agent
-     write a summary file.
-
-Supervisor: [uses task: agent_id="researcher", prompt="Find the top 3 trending
-             Go libraries this week with brief descriptions"]
-            [researcher agent uses web_search, returns results]
-            [uses task: agent_id="coder", prompt="Write a file at /tmp/trending-go.md
-             summarizing these libraries: 1. ..."]
-            [coder agent uses write_file, returns confirmation]
-            Done! I delegated the research to the researcher agent and had the coder
-            agent write the summary to /tmp/trending-go.md.
-```
-
-### Example config
+Edit `~/.felix/felix.json5` (or use Settings → Agents). Hot-reload picks the changes up on the next chat send — no restart needed.
 
 ```json5
 {
+  "providers": {
+    "anthropic": { "kind": "anthropic", "api_key": "sk-ant-..." },
+    "local":     { "kind": "local" }
+  },
   "agents": {
     "list": [
-      {
-        "id": "supervisor",
-        "name": "Supervisor",
-        "model": "anthropic/claude-sonnet-4-5-20250514",
-        "tools": {
-          "allow": ["read_file", "task"]
-        }
-      },
-      {
-        "id": "researcher",
-        "name": "Researcher",
-        "model": "openai/gpt-4o",
-        "tools": {
-          "allow": ["read_file", "web_fetch", "web_search"]
-        }
-      },
+      // SUPERVISOR — this is the agent you chat with.
       {
         "id": "coder",
         "name": "Coder",
-        "model": "anthropic/claude-haiku-3-5-20241022",
+        "model": "anthropic/claude-sonnet-4-5-20250514",
+        "workspace": "~/code/myproject",
         "tools": {
-          "allow": ["read_file", "write_file", "edit_file", "bash"]
+          "allow": ["read_file", "write_file", "edit_file", "bash", "task"]
+        }
+      },
+
+      // SUBAGENT 1 — cheap web research, runs locally.
+      {
+        "id": "researcher",
+        "name": "Researcher",
+        "model": "local/gemma4",
+        "workspace": "~/.felix/workspace-researcher",
+        "subagent": true,
+        "description": "Searches the web and summarises sources. Returns a short bulleted brief with citations. Use for any 'find me...' or 'what's the latest on...' question.",
+        "tools": {
+          "allow": ["web_search", "web_fetch", "read_file"]
+        }
+      },
+
+      // SUBAGENT 2 — careful code review on Opus.
+      {
+        "id": "reviewer",
+        "name": "Reviewer",
+        "model": "anthropic/claude-opus-4-1-20250805",
+        "workspace": "~/code/myproject",   // same workspace as coder so it can read the diff
+        "subagent": true,
+        "description": "Reviews code changes for correctness, security, and clarity. Pass it the file path or the diff text. Returns a verdict + actionable findings.",
+        "inheritContext": true,            // reviewer sees the supervisor's conversation
+        "tools": {
+          "allow": ["read_file", "bash"]   // read-only; can't edit or write
         }
       }
     ]
@@ -1289,22 +1278,75 @@ Supervisor: [uses task: agent_id="researcher", prompt="Find the top 3 trending
 }
 ```
 
-### How it works
+### Verify the wiring
 
-- The delegated agent runs with its own **independent session** (keyed as `delegate_{agentID}`) so it doesn't pollute any channel session history
-- The delegated agent uses its own **tool policy** — it only gets the tools allowed by its own config
-- The delegated agent uses its own **model** — so you can have a powerful supervisor delegating to cheaper/faster workers
+Restart `felix start` (or just open a new chat — the per-chat tool overlay rebuilds), pick the **Coder** agent in the chat header, and click the **Tools** button. You should see `task` listed. Hovering it reveals the description block:
 
-### Recursion prevention
+```
+Available subagents:
+  - researcher: Searches the web and summarises sources...
+  - reviewer:   Reviews code changes for correctness, security, and clarity...
+```
 
-To prevent infinite delegation loops, the delegated agent does **not** get the `task` tool registered in its tool set. Delegation is limited to one level deep: a supervisor can ask a worker, but the worker cannot further delegate.
+### Try it
 
-### Use cases
+> **You:** Look up best practices for Go context cancellation in long-running goroutines, then refactor `internal/agent/runtime.go` to apply them. Have the reviewer check your work.
 
-- **Supervisor/worker** — A powerful model (Claude Opus) orchestrates cheaper models (Haiku) for subtasks like file I/O or simple lookups
-- **Specialized agents** — A general-purpose agent delegates coding tasks to a coder agent and research tasks to a researcher agent
-- **Cost optimization** — Use an expensive model only for orchestration while delegating the bulk of work to cheaper models
-- **Model mixing** — Combine strengths of different providers (e.g., Claude for reasoning, GPT for web search, Ollama for local-only tasks)
+What you'll see in the chat:
+
+1. **Coder** calls `task({"agent_id": "researcher", "prompt": "Find current best practices..."})`. The chat shows a `task` tool-call expanding inline; the **researcher**'s own `web_search` and `web_fetch` calls stream as nested tool entries.
+2. Researcher returns a brief; coder reads files, edits `runtime.go`.
+3. Coder calls `task({"agent_id": "reviewer", "prompt": "Review the changes I just made to internal/agent/runtime.go"})`. Because `reviewer` has `inheritContext: true`, it starts with the coder's conversation history loaded — it knows what changes were made without you having to repeat.
+4. Reviewer reads the file, returns a verdict.
+5. Coder writes back a final answer summarising both delegations.
+
+### Parameters reference
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `agent_id` | string | The ID of the subagent. Must match a `subagent: true` agent in your config. |
+| `prompt` | string | What to ask the subagent. The subagent has no access to your conversation unless you set `inheritContext: true` on it, so the prompt must be self-contained. |
+
+### `inheritContext` — when to use it
+
+Default is `false` (cold start). Set `inheritContext: true` on the subagent's config when:
+
+- The subagent's job is to **review or comment on** what the supervisor just did (a reviewer doesn't need a fresh prompt explaining everything; it just needs the history).
+- You're using the subagent as a **second opinion** on a long conversation.
+- The subagent is an **explorer/searcher** that benefits from knowing the project context the supervisor built up.
+
+Leave it `false` (default) when:
+
+- The subagent does an isolated, well-scoped task (web research, a one-off file generation).
+- You want to **reduce token usage** — inheriting context means the subagent pays for the full history on its first turn.
+- The subagent uses a smaller model that would be confused by a long, off-topic history.
+
+### How it works under the hood
+
+- **Per-chat overlay registration** — every time you start a chat with a supervisor agent, Felix checks `cfg.EligibleSubagents()` and, if non-empty, wires the `task` tool into that supervisor's tool registry. Adding/removing subagents in config is hot-reloaded; the next `chat.send` picks up the change.
+- **Subagent session is ephemeral** — a fresh in-memory session keyed `subagent`, never persisted to disk. The supervisor's session is the durable record of the conversation; the subagent's transcript lives only in memory and is lost when its `Run` returns.
+- **Event forwarding** — the subagent's tool calls and tool results are forwarded to the supervisor's event channel so the chat UI shows them inline. The subagent's *final assistant text* becomes the `task` tool's `Output` that the supervisor's LLM sees as the result.
+- **Workspace separation** — file tools the subagent runs are scoped to *its* workspace, not the supervisor's. If the subagent needs to read files in the supervisor's project, point both `workspace` paths at the same directory (as the `reviewer` does above).
+- **No Cortex ingest from subagents** — the conversation isn't ingested into the knowledge graph; only the supervisor's main loop ingests on completion.
+
+### Recursion and depth cap
+
+Subagents do **not** themselves get the `task` tool registered, so a subagent cannot delegate further out of the box. The runtime additionally enforces a depth cap (`agentLoop.maxAgentDepth`, default 3) as defense-in-depth — if you ever flip the registration rule to allow recursive delegation, the cap stops runaway loops.
+
+### Common gotchas
+
+- **`task` not in supervisor's `tools.allow`** → the supervisor's LLM never sees the tool. Either add `task` explicitly or use `allow: []` (allow-all).
+- **`subagent: true` missing on the target** → `task` returns `"agent X is not registered as a subagent"`.
+- **Wrong `workspace` on the subagent** → `bash`/file tools the subagent runs hit *its* workspace. To share files with the supervisor, set both `workspace` paths the same.
+- **Subagent uses the same expensive model** → defeats one of the main reasons to delegate. Pick a cheaper subagent model when the task allows it.
+- **Multiple parallel `task` calls** → not supported (the tool reports `IsConcurrencySafe = false`). The supervisor will dispatch them sequentially.
+
+### Use cases at a glance
+
+- **Cost / latency optimisation** — expensive supervisor (Sonnet/Opus) orchestrates; cheap subagents (Haiku/Gemma/local) do bulk work.
+- **Capability mixing** — different providers' strengths in one chat (e.g., Claude for reasoning + Gemini Flash for long-context summarisation + local model for offline lookups).
+- **Specialisation by tool policy** — a `web` subagent that only has `web_*` tools, a `coder` subagent with file I/O, a read-only `reviewer` with no write capability — security boundary by config, not code.
+- **Second-opinion patterns** — supervisor proposes; reviewer (with `inheritContext: true`) critiques; supervisor revises.
 
 ---
 
@@ -1553,25 +1595,35 @@ happens during a heartbeat or cron tick.
         "id": "lead",
         "name": "Tech Lead",
         "model": "anthropic/claude-sonnet-4-5-20250514",
-        // The lead can delegate to the coder or reviewer
+        // The lead can delegate to any subagent via the `task` tool.
         "tools": { "allow": ["read_file", "bash", "task", "todo_write"] }
       },
       {
         "id": "coder",
         "name": "Senior Developer",
         "model": "anthropic/claude-sonnet-4-5-20250514",
+        // subagent: true is the opt-in. Without it, `task` won't see this agent.
+        "subagent": true,
+        "description": "Writes and edits code. Use for any 'implement X' or 'refactor Y' subtask.",
         "tools": { "allow": ["read_file", "write_file", "edit_file", "bash"] }
       },
       {
         "id": "reviewer",
         "name": "Code Reviewer",
         "model": "openai/gpt-4o",
+        "subagent": true,
+        "description": "Reviews code changes for correctness and style. Read-only.",
+        // inheritContext: true so the reviewer sees what the lead just discussed
+        // without needing to re-explain the work in the prompt.
+        "inheritContext": true,
         "tools": { "allow": ["read_file"] }
       },
       {
         "id": "quick",
         "name": "Quick Helper",
         "model": "ollama/llama3",
+        "subagent": true,
+        "description": "Fast local lookups: man pages, syntax checks, single-file reads. Use for trivial tasks where Claude/GPT would be overkill.",
         "tools": { "allow": ["read_file", "web_search"] }
       }
     ]
