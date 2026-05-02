@@ -669,10 +669,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			agentCfg := agentCfg
 			agentFn := func(ctx context.Context, prompt string) (string, error) {
 				sess := session.NewSession(agentCfg.ID, "heartbeat")
-				// Drain compactionMgr's per-Session.ID lock entry on
-				// return — Session.ID is freshly generated per call,
-				// so without this the locks map grows by one per tick.
-				defer startupCompactionMgr.ForgetSession(sess.ID)
+				defer startupCompactionMgr.ForgetSession(sess)
 				hbToolReg := tools.NewRegistry()
 				tools.RegisterCoreToolsWithSearch(hbToolReg, agentCfg.Workspace, execPolicy, searchBackend)
 				if _, err := mcp.RegisterTools(hbToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
@@ -716,9 +713,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			cronJob := cronJob
 			agentFn := func(ctx context.Context, prompt string) (string, error) {
 				sess := session.NewSession(agentCfg.ID, "cron_"+cronJob.Name)
-				// Drain compactionMgr's per-Session.ID lock entry on
-				// return — Session.ID is freshly generated per call.
-				defer startupCompactionMgr.ForgetSession(sess.ID)
+				defer startupCompactionMgr.ForgetSession(sess)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreToolsWithSearch(cronToolReg, agentCfg.Workspace, execPolicy, searchBackend)
 				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
@@ -764,9 +759,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 					return "", fmt.Errorf("provider %q not available", pName)
 				}
 				cronSess := session.NewSession(defaultCfg.ID, "cron_"+jobName)
-				// Drain compactionMgr's per-Session.ID lock entry on
-				// return — Session.ID is freshly generated per call.
-				defer startupCompactionMgr.ForgetSession(cronSess.ID)
+				defer startupCompactionMgr.ForgetSession(cronSess)
 				cronToolReg := tools.NewRegistry()
 				tools.RegisterCoreToolsWithSearch(cronToolReg, defaultCfg.Workspace, execPolicy, searchBackend)
 				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {

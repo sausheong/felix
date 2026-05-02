@@ -384,7 +384,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	// ID, not a persistent identifier). compactionMgr keys per-session
 	// locks/failures by that ID, so without ForgetSession at end of
 	// turn the locks map grows by one entry per chat.send forever.
-	defer compactionMgr.ForgetSession(sess.ID)
+	defer compactionMgr.ForgetSession(sess)
 
 	runtimeDeps := agent.RuntimeDeps{
 		Skills:     sk,

@@ -193,26 +193,26 @@ func TestManagerForgetsSession(t *testing.T) {
 	sess := longSession()
 	_, _ = mgr.MaybeCompact(context.Background(), sess, ReasonManual, "")
 	// Manager should now have a lock entry for this session.
+	key := sess.AgentID + "/" + sess.Key
 	mgr.mu.Lock()
-	_, ok := mgr.locks[sess.ID]
+	_, ok := mgr.locks[key]
 	mgr.mu.Unlock()
 	require.True(t, ok)
 
-	mgr.ForgetSession(sess.ID)
+	mgr.ForgetSession(sess)
 
 	mgr.mu.Lock()
-	_, ok = mgr.locks[sess.ID]
+	_, ok = mgr.locks[key]
 	mgr.mu.Unlock()
 	assert.False(t, ok)
 }
 
-// TestDeferredForgetSessionDrainsLocksMap protects the documented usage
-// pattern from gateway/websocket.go and startup.go: every per-call
-// agent runner does `defer mgr.ForgetSession(sess.ID)` immediately
-// after creating/loading the *session.Session. This keeps the
-// locks map size bounded by concurrent in-flight calls instead of
-// growing forever with traffic. If a future refactor drops one of
-// those defers, this test catches the regression at the unit level.
+// TestDeferredForgetSessionDrainsLocksMap verifies that ForgetSession
+// drains all per-session map entries. The maps are keyed by
+// AgentID/Key (stable across loads), so 50 turns reusing the same
+// persistent identifier only ever populate one entry — but
+// ForgetSession must still clear it for callers that delete a
+// persistent session (e.g. session.clear).
 func TestDeferredForgetSessionDrainsLocksMap(t *testing.T) {
 	mgr := &Manager{
 		Summarizer: &Summarizer{
@@ -222,13 +222,10 @@ func TestDeferredForgetSessionDrainsLocksMap(t *testing.T) {
 		},
 		PreserveTurns: 4,
 	}
-	// Simulate N agent turns. Each turn loads a fresh session
-	// (per-load Session.ID — same as Store.Load behavior in prod),
-	// runs MaybeCompact, then defers ForgetSession on return.
 	const turns = 50
 	turn := func() {
 		sess := longSession()
-		defer mgr.ForgetSession(sess.ID)
+		defer mgr.ForgetSession(sess)
 		_, _ = mgr.MaybeCompact(context.Background(), sess, ReasonManual, "")
 	}
 	for range turns {
@@ -403,8 +400,8 @@ func TestCircuitBreakerIsPerSession(t *testing.T) {
 		},
 		PreserveTurns: 4,
 	}
-	sessA := longSession()
-	sessB := longSession()
+	sessA := longSessionWith("default", "a")
+	sessB := longSessionWith("default", "b")
 
 	for range MaxConsecutiveFailures {
 		_, _ = mgr.MaybeCompact(context.Background(), sessA, ReasonPreventive, "")
@@ -417,4 +414,18 @@ func TestCircuitBreakerIsPerSession(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, "circuit_breaker", res.Skipped,
 		"Session B must not be tripped by Session A's failures")
+}
+
+// longSessionWith builds a session with the same shape as longSession()
+// but with caller-provided AgentID/Key — used by tests that need
+// distinct stable identifiers (the Manager's per-session maps are
+// keyed by AgentID/Key, so two sessions sharing those would share the
+// same lock/failure-counter/in-flight entry).
+func longSessionWith(agentID, key string) *session.Session {
+	sess := session.NewSession(agentID, key)
+	for range 6 {
+		sess.Append(session.UserMessageEntry("user msg"))
+		sess.Append(session.AssistantMessageEntry("assistant reply"))
+	}
+	return sess
 }

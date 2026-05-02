@@ -194,7 +194,7 @@ func (r *Runtime) maybeKickoffAsyncCompaction(msgs []llm.Message, parts []llm.Sy
 	if r.Compaction == nil || r.Model == "" {
 		return
 	}
-	if r.Compaction.HasInFlight(r.Session.ID) {
+	if r.Compaction.HasInFlight(r.Session) {
 		return
 	}
 	// Use the same calibrated estimate the sync path uses so the
@@ -484,7 +484,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// within budget on a healthy network, and a stuck
 			// summarizer doesn't block more than once per turn.
 			if turn == 0 && r.Compaction != nil {
-				if res, ok := r.Compaction.WaitForInFlight(r.Session.ID, 8*time.Second); ok && res.Compacted {
+				if res, ok := r.Compaction.WaitForInFlight(r.Session, 8*time.Second); ok && res.Compacted {
 					r.emit(AgentEvent{Type: EventCompactionDone, Compaction: &res})
 					history = r.Session.View()
 					msgs = assembleMessages(history)

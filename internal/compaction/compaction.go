@@ -98,7 +98,8 @@ func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reaso
 		return Result{Reason: reason, Skipped: "no_summarizer"}, nil
 	}
 
-	if fc := m.failureCount(sess.ID); fc >= MaxConsecutiveFailures {
+	key := stableKey(sess)
+	if fc := m.failureCount(key); fc >= MaxConsecutiveFailures {
 		slog.Info("compaction skipped",
 			"session_id", sess.ID,
 			"reason", string(reason),
@@ -112,7 +113,7 @@ func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reaso
 		K = 4
 	}
 
-	mu := m.lockFor(sess.ID)
+	mu := m.lockFor(key)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -132,7 +133,7 @@ func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reaso
 		slog.Warn("compaction skipped", "session_id", sess.ID, "reason", string(reason), "skipped", skipReason, "detail", err.Error())
 		// A hard error from Summarize means even stage 3 didn't run.
 		// Count it as a failure for breaker accounting.
-		m.incrementFailure(sess.ID)
+		m.incrementFailure(key)
 		return Result{Reason: reason, Skipped: skipReason}, nil
 	}
 
@@ -143,9 +144,9 @@ func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reaso
 	// summaries reset the counter.
 	isPlaceholder := strings.Contains(summary, "compaction failed and the summary could not be generated")
 	if isPlaceholder {
-		m.incrementFailure(sess.ID)
+		m.incrementFailure(key)
 	} else {
-		m.resetFailures(sess.ID)
+		m.resetFailures(key)
 	}
 
 	first := toCompact[0]
@@ -204,8 +205,9 @@ func (m *Manager) MaybeCompactAsync(sess *session.Session, reason Reason) <-chan
 		close(ch)
 		return ch
 	}
+	key := stableKey(sess)
 	m.inFlightMu.Lock()
-	if existing, ok := m.inFlight[sess.ID]; ok {
+	if existing, ok := m.inFlight[key]; ok {
 		m.inFlightMu.Unlock()
 		return existing.done
 	}
@@ -213,7 +215,7 @@ func (m *Manager) MaybeCompactAsync(sess *session.Session, reason Reason) <-chan
 		m.inFlight = make(map[string]*inFlightCompaction)
 	}
 	fl := &inFlightCompaction{done: make(chan struct{})}
-	m.inFlight[sess.ID] = fl
+	m.inFlight[key] = fl
 	m.inFlightMu.Unlock()
 
 	timeout := m.Summarizer.Timeout
@@ -231,14 +233,14 @@ func (m *Manager) MaybeCompactAsync(sess *session.Session, reason Reason) <-chan
 		// fresh compaction (the next turn's WaitForInFlight will see no
 		// entry and proceed straight to its own threshold check).
 		m.inFlightMu.Lock()
-		delete(m.inFlight, sess.ID)
+		delete(m.inFlight, key)
 		m.inFlightMu.Unlock()
 	}()
 	return fl.done
 }
 
 // WaitForInFlight blocks until any in-flight async compaction for the
-// given session ID completes, or until the timeout elapses. Returns
+// given session completes, or until the timeout elapses. Returns
 // (result, true) on completion within the budget, (zero, false)
 // otherwise. No-op (returns false immediately) when no compaction is
 // in flight for the session.
@@ -246,12 +248,17 @@ func (m *Manager) MaybeCompactAsync(sess *session.Session, reason Reason) <-chan
 // Wire this at the top of the chat loop, before assembling messages,
 // so the next turn picks up the freshly-compacted view when the prior
 // turn kicked off async compaction.
-func (m *Manager) WaitForInFlight(sessionID string, timeout time.Duration) (Result, bool) {
-	if m == nil {
+//
+// Takes *session.Session (not Session.ID) because Session.ID is a
+// per-load instance ID; the in-flight map is keyed by AgentID/Key so
+// the handoff survives the Runtime rebuild between chat.send calls.
+func (m *Manager) WaitForInFlight(sess *session.Session, timeout time.Duration) (Result, bool) {
+	if m == nil || sess == nil {
 		return Result{}, false
 	}
+	key := stableKey(sess)
 	m.inFlightMu.Lock()
-	fl, ok := m.inFlight[sessionID]
+	fl, ok := m.inFlight[key]
 	m.inFlightMu.Unlock()
 	if !ok {
 		return Result{}, false
@@ -268,50 +275,65 @@ func (m *Manager) WaitForInFlight(sessionID string, timeout time.Duration) (Resu
 }
 
 // HasInFlight reports whether an async compaction is currently running
-// for the given session ID. Used by the runtime to decide whether to
+// for the given session. Used by the runtime to decide whether to
 // spawn another async compaction at end-of-turn.
-func (m *Manager) HasInFlight(sessionID string) bool {
-	if m == nil {
+func (m *Manager) HasInFlight(sess *session.Session) bool {
+	if m == nil || sess == nil {
 		return false
 	}
+	key := stableKey(sess)
 	m.inFlightMu.Lock()
 	defer m.inFlightMu.Unlock()
-	_, ok := m.inFlight[sessionID]
+	_, ok := m.inFlight[key]
 	return ok
 }
 
-// ForgetSession removes the per-session lock and per-session failure
-// counter for the given session ID. Safe to call on a nil Manager and
-// on unknown sessions.
+// ForgetSession removes the per-session lock, failure counter, and
+// any in-flight tracking entry for the given session. Safe to call on
+// a nil Manager and on unknown sessions.
 //
-// Wire it via `defer mgr.ForgetSession(sess.ID)` immediately after
-// constructing or loading the *session.Session at the top of any
-// per-call handler that runs the agent loop (chat.send, heartbeat
-// agentFn, cron agentFn). Session.ID is freshly generated by every
-// session.NewSession / Store.Load — it's an in-memory instance ID,
-// not a persistent identifier — so without per-call cleanup the
-// locks/failures maps grow by one entry per agent turn forever.
-//
-// (Keying these maps by a persistent agentID+sessionKey instead of
-// the per-load Session.ID would be a cleaner long-term fix, but
-// would change the lock-scope semantics across reloads of the same
-// persistent session — out of scope for this iteration.)
-func (m *Manager) ForgetSession(sessionID string) {
-	if m == nil {
+// The internal maps are keyed by AgentID+Key (the persistent
+// identifier), so calling ForgetSession is only strictly required when
+// a persistent session is being deleted (e.g. session.clear). The old
+// "defer ForgetSession on every chat.send" pattern is no longer
+// necessary for unbounded-growth protection — the maps are now bounded
+// by the number of distinct persistent sessions, not by agent turns.
+// Calling it on every turn is still harmless.
+func (m *Manager) ForgetSession(sess *session.Session) {
+	if m == nil || sess == nil {
 		return
 	}
+	key := stableKey(sess)
 	m.mu.Lock()
-	delete(m.locks, sessionID)
+	delete(m.locks, key)
 	m.mu.Unlock()
 	m.failMu.Lock()
-	delete(m.failures, sessionID)
+	delete(m.failures, key)
 	m.failMu.Unlock()
 	// Drop any in-flight tracking entry too. The goroutine itself
 	// already deletes its entry on completion; this covers the rare
 	// case of a session being forgotten mid-compaction.
 	m.inFlightMu.Lock()
-	delete(m.inFlight, sessionID)
+	delete(m.inFlight, key)
 	m.inFlightMu.Unlock()
+}
+
+// stableKey returns the per-session identifier used as the map key for
+// locks, failure counters, and in-flight async compactions. We use
+// AgentID + Key (both persistent across loads) rather than Session.ID
+// (a per-load instance ID), so async compaction kicked off at the end
+// of one chat.send is observable by the next chat.send's
+// WaitForInFlight call — the Runtime is rebuilt each chat.send and
+// the freshly-loaded Session has a different Session.ID even though
+// the persistent file on disk is the same.
+//
+// Falls back to Session.ID when AgentID and Key are both empty (some
+// tests use NewSession("","") and rely on per-instance scoping).
+func stableKey(sess *session.Session) string {
+	if sess.AgentID == "" && sess.Key == "" {
+		return sess.ID
+	}
+	return sess.AgentID + "/" + sess.Key
 }
 
 // incrementFailure bumps the per-session consecutive-failure count and
