@@ -4,7 +4,8 @@ Felix is a self-hosted AI agent gateway. It runs as a single binary on your mach
 
 ## Table of Contents
 
-- [Quick Start](#quick-start)
+- [Install (macOS .pkg)](#install-macos-pkg)
+- [Quick Start (build from source)](#quick-start-build-from-source)
 - [CLI Commands](#cli-commands)
 - [System Tray App (macOS & Windows)](#system-tray-app-macos--windows)
 - [Configuration](#configuration)
@@ -27,7 +28,72 @@ Felix is a self-hosted AI agent gateway. It runs as a single binary on your mach
 
 ---
 
-## Quick Start
+## Install (macOS .pkg)
+
+If you just want to **use** Felix on a Mac, the signed and notarized
+installer is the path. You don't need Go, you don't need to clone the
+repo, and you don't need to run `felix onboard` — the installer ships
+Felix with sensible defaults already in place.
+
+### 1. Download the installer
+
+Grab the latest `Felix-<version>-signed.pkg` from the
+[GitHub Releases page](https://github.com/sausheong/felix/releases).
+The installer is signed with a Developer ID Application certificate and
+notarized by Apple, so Gatekeeper won't bounce it.
+
+### 2. Double-click to install
+
+The installer drops `Felix.app` into `/Applications` and bundles
+everything Felix needs to run:
+
+- The `felix` gateway binary
+- The `felix-app` menubar launcher
+- A bundled `ollama` binary (so you can run agents with no API key)
+- The full embedded skill set (cortex, ffmpeg, imagemagick, pandoc, pdftotext)
+
+### 3. Launch Felix.app
+
+Open `Felix.app` from `/Applications` (or Spotlight). On first launch:
+
+1. The menubar tray icon appears.
+2. The bundled Ollama supervisor starts on a free port in `:18790–:18799`.
+3. Felix opens your browser to `http://localhost:18789/settings#models`
+   showing a progress bar for the first-run model pulls
+   (`gemma4:latest` for chat ~9.6 GB, `nomic-embed-text` for memory
+   ~270 MB). The download runs in the background.
+4. Once the chat model finishes downloading, you can click **Chat**
+   in the menubar (or open `http://localhost:18789/chat`) and start
+   talking to Felix immediately. Zero configuration, no API keys.
+
+### 4. (Optional) Add a cloud provider
+
+If you want to use Claude / GPT / Gemini / Qwen instead of (or alongside)
+the local model, open **Settings → Providers** in the web UI, add your
+API key, and create or edit an agent in **Settings → Agents** to use it.
+No restart required — the config hot-reloads on save.
+
+### Where Felix puts things
+
+The installer drops `Felix.app` in `/Applications` and creates `~/.felix/`
+on first launch. All state — sessions, memory, skills, downloaded
+Ollama models, OAuth tokens — lives under `~/.felix/`. Uninstalling is
+`rm -rf /Applications/Felix.app ~/.felix/`.
+
+### Updates
+
+Future versions: download the new `.pkg` and run it. Your `~/.felix/`
+data directory is preserved across upgrades — only the application
+bundle is replaced.
+
+---
+
+## Quick Start (build from source)
+
+This path is for developers who want to compile Felix from the repo —
+typically because they're contributing patches, testing on Linux /
+Windows, or running the Windows menubar app (which is not yet shipped
+as an installer). End-users on macOS should use the installer above.
 
 ### 1. Build
 
@@ -43,7 +109,15 @@ make build-app-windows  # Windows system tray app (felix-app.exe)
 ./felix onboard
 ```
 
-The wizard walks you through choosing an LLM provider and entering your API key (or picking a bundled local model if you want to run fully offline).
+The wizard walks you through choosing an LLM provider and entering your
+API key (or picking a bundled local model if you want to run fully
+offline). This is the from-source equivalent of the installer's
+zero-config first launch — it writes a starter `~/.felix/felix.json5`
+with sensible defaults.
+
+If you skip every cloud-provider question, the wizard configures the
+bundled Ollama with `local/gemma4:latest` so you have a working agent
+with zero credentials, just like the installer.
 
 ### 3. Start chatting
 
