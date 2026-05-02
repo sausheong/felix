@@ -632,7 +632,26 @@ html.light #header .logo {
 		if (names.length === 0) return false;
 		names.sort();
 
-		var anyActive = false;
+		// The banner is shown only when a bootstrap is actually in flight
+		// (snap.active === true). The tracker can carry stale per-model
+		// state from before EnsureFirstRunModels' early-return path was
+		// fixed, so we don't infer "active" from individual model statuses
+		// alone — that produced false-positives where the chat input was
+		// disabled long after downloads completed.
+		if (!snap.active) {
+			if (bootstrapWasActive) {
+				// Just transitioned active→inactive. Fade after a short
+				// victory display so the user sees "ready" briefly.
+				setTimeout(function() {
+					bootstrapBanner.style.display = 'none';
+					inputArea.classList.remove('bootstrapping');
+					inputEl.placeholder = 'Type a message...';
+				}, 2500);
+				bootstrapWasActive = false;
+			}
+			return false;
+		}
+
 		var doneCount = 0;
 		bbModels.innerHTML = '';
 		names.forEach(function(name) {
@@ -663,10 +682,8 @@ html.light #header .logo {
 				doneCount++;
 			} else if (m.completed && m.total) {
 				st.textContent = fmtBytes(m.completed) + '/' + fmtBytes(m.total);
-				anyActive = true;
 			} else if (m.status) {
 				st.textContent = m.status;
-				anyActive = true;
 			}
 
 			row.appendChild(nm);
@@ -676,21 +693,11 @@ html.light #header .logo {
 		});
 
 		bbSummary.textContent = doneCount + '/' + names.length + ' ready';
-		var stillActive = anyActive || snap.active;
-		if (stillActive) {
-			bootstrapBanner.style.display = 'block';
-			inputArea.classList.add('bootstrapping');
-			inputEl.placeholder = 'Local AI is downloading… please wait';
-			bootstrapWasActive = true;
-		} else if (bootstrapWasActive) {
-			// Models finished — fade banner after a short victory display.
-			setTimeout(function() {
-				bootstrapBanner.style.display = 'none';
-				inputArea.classList.remove('bootstrapping');
-				inputEl.placeholder = 'Type a message...';
-			}, 2500);
-		}
-		return stillActive;
+		bootstrapBanner.style.display = 'block';
+		inputArea.classList.add('bootstrapping');
+		inputEl.placeholder = 'Local AI is downloading… please wait';
+		bootstrapWasActive = true;
+		return true;
 	}
 
 	// Token chip: rendered in the header on every EventDone with usage.

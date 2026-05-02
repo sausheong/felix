@@ -89,19 +89,33 @@ func TestEnsureFirstRunModelsSkipsWhenSentinelExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	puller := &fakePuller{}
-	called := false
+	var events []BootstrapEvent
+	var mu sync.Mutex
 	EnsureFirstRunModels(context.Background(), tmp, puller, func(ev BootstrapEvent) {
-		called = true
+		mu.Lock()
+		events = append(events, ev)
+		mu.Unlock()
 	})
 	// Give the goroutine a chance to fire if it were going to.
 	time.Sleep(50 * time.Millisecond)
 	puller.mu.Lock()
-	defer puller.mu.Unlock()
 	if len(puller.pulled) != 0 {
 		t.Errorf("expected 0 pulls when sentinel present, got %d", len(puller.pulled))
 	}
-	if called {
-		t.Errorf("expected no events when sentinel present")
+	puller.mu.Unlock()
+	// New contract: a synthetic BootstrapDone fires so trackers reflect
+	// "everything is done" instead of staying stuck on the seeded
+	// "queued" state. The chat banner and Settings UI rely on this.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 synthetic Done event, got %d", len(events))
+	}
+	if events[0].Type != BootstrapDone {
+		t.Errorf("expected BootstrapDone, got %v", events[0].Type)
+	}
+	if len(events[0].Models) == 0 {
+		t.Errorf("expected synthetic Done to carry the first-run model list")
 	}
 }
 

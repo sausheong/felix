@@ -151,7 +151,16 @@ func (t *Tracker) Snapshot() BootstrapSnapshot {
 func EnsureFirstRunModels(ctx context.Context, dataDir string, puller Puller, onEvent func(BootstrapEvent)) {
 	sentinel := filepath.Join(dataDir, ".first-run-done")
 	if _, err := os.Stat(sentinel); err == nil {
-		return // already bootstrapped
+		// Already bootstrapped — fire a synthetic Done so any tracker
+		// listening to onEvent reflects the true state ("done" for every
+		// first-run model) instead of staying stuck on the seeded "queued"
+		// state. Without this, the chat banner and Settings → Models tab
+		// see models with status="queued" + active=false on every restart
+		// after first run and incorrectly conclude a download is pending.
+		if onEvent != nil {
+			onEvent(BootstrapEvent{Type: BootstrapDone, Models: firstRunModels})
+		}
+		return
 	}
 
 	emit := func(ev BootstrapEvent) {
