@@ -22,6 +22,19 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<!-- macOS aggressively reaps LSUIElement (menubar accessory) apps when
+	     it judges them idle, when the user's workspace connection blips
+	     (display sleep, fast-user-switch, screen lock), or under memory
+	     pressure. Felix hosts the gateway server in-process, so a reap
+	     kills active chat sessions. These two keys ask macOS to leave us
+	     alone — equivalent to:
+	         [[NSProcessInfo processInfo] disableAutomaticTermination:@"running gateway"];
+	         [[NSProcessInfo processInfo] disableSuddenTermination];
+	     done declaratively at launch instead of in code. -->
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 </dict>
