@@ -209,6 +209,12 @@ func onReady() {
 				shutdownAndExit(result, "menu Quit clicked")
 				return
 			case sig := <-quitCh:
+				// Log the signal as a top-level WARN before cleanup so it's
+				// the first thing visible in felix-app.log if macOS reaps
+				// us. ppid points back at launchd / ControlCenter / shell.
+				slog.Warn("received termination signal",
+					"signal", sig.String(),
+					"ppid", os.Getppid())
 				shutdownAndExit(result, fmt.Sprintf("signal %s", sig))
 				return
 			}
