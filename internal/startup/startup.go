@@ -28,6 +28,7 @@ import (
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
+	"github.com/sausheong/felix/internal/tokens"
 	"github.com/sausheong/felix/internal/tools"
 )
 
@@ -392,12 +393,43 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// Init components
 	providers := InitProviders(cfg)
 	sessionStore := session.NewStore(filepath.Join(dataDir, "sessions"))
+
+	// Reap orphan spill directories from previous crashed runs / deleted
+	// sessions. Best-effort: errors are logged but do not block startup.
+	// Runs once per agent workspace; cheap unless a workspace has accumulated
+	// hundreds of orphans.
+	for _, a := range cfg.Agents.List {
+		ws := a.Workspace
+		agentID := a.ID
+		if _, err := agent.CleanupOrphanedSpills(ws, func() (map[string]bool, error) {
+			infos, lerr := sessionStore.List(agentID)
+			if lerr != nil {
+				return nil, lerr
+			}
+			out := make(map[string]bool, len(infos))
+			for _, s := range infos {
+				out[s.Key] = true
+			}
+			return out, nil
+		}); err != nil {
+			slog.Warn("orphan spill cleanup failed", "agent", agentID, "workspace", ws, "error", err)
+		}
+	}
+
 	toolReg := tools.NewRegistry()
 	execPolicy := &tools.ExecPolicy{
 		Level:     cfg.Security.ExecApprovals.Level,
 		Allowlist: cfg.Security.ExecApprovals.Allowlist,
 	}
-	tools.RegisterCoreTools(toolReg, "", execPolicy)
+	// Resolve the configured web-search backend so first-call performance
+	// uses the user's chosen backend instead of falling back to DDG until
+	// hot-reload swaps the registry.
+	searchBackend := tools.NewWebSearchBackend(tools.WebSearchConfig{
+		Backend: cfg.WebSearch.Backend,
+		APIKey:  cfg.WebSearch.APIKey,
+		BaseURL: cfg.WebSearch.BaseURL,
+	})
+	tools.RegisterCoreToolsWithSearch(toolReg, "", execPolicy, searchBackend)
 	// send_message is registered unconditionally so it shows in the Settings →
 	// Agents tool picker even before any messaging channel is configured. The
 	// closure reads from cfg on every call, so config edits in Settings take
@@ -516,12 +548,18 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		return cx
 	}
 
+	// Per-(agentID, sessionKey) calibrator persistence. Constructed before
+	// the WebSocket handler so it can be injected immediately and used by
+	// session-clear cleanup in handleSessionClear.
+	calibratorStore := tokens.NewCalibratorStore(filepath.Join(dataDir, "calibrators"))
+
 	// Init WebSocket handler
 	wsHandler := gateway.NewWebSocketHandler(providers, toolReg, sessionStore, cfg)
 	wsHandler.SetSkills(skillLoader)
 	wsHandler.SetMemory(memMgr)
 	wsHandler.SetCortexProvider(cxProvider)
 	wsHandler.SetPermission(permission)
+	wsHandler.SetCalibratorStore(calibratorStore)
 
 	// Config hot-reload — rebuild LLM provider clients from the new config
 	// and push them into the WebSocket handler. Without the provider rebuild,
@@ -539,6 +577,18 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			wsHandler.SetPermission(newCfg.BuildPermissionChecker())
 			wsHandler.UpdateConfig(newCfg)
 			wsHandler.UpdateProviders(newProviders)
+			// Swap the web_search backend on the live shared registry so
+			// settings-page edits to web_search.backend / api_key take
+			// effect on the next chat turn without a restart.
+			if t, ok := toolReg.Get("web_search"); ok {
+				if ws, ok := t.(*tools.WebSearchTool); ok {
+					ws.SetBackend(tools.NewWebSearchBackend(tools.WebSearchConfig{
+						Backend: newCfg.WebSearch.Backend,
+						APIKey:  newCfg.WebSearch.APIKey,
+						BaseURL: newCfg.WebSearch.BaseURL,
+					}))
+				}
+			}
 			slog.Info("config hot-reloaded", "providers", len(newProviders))
 		})
 		if err == nil {
@@ -561,12 +611,13 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// Per-call inputs (provider, tools, session, ingest-source) are passed via
 	// agent.RuntimeInputs at each call site below.
 	runtimeDeps := agent.RuntimeDeps{
-		Skills:     skillLoader,
-		Memory:     memMgr,
-		Permission: permission,
-		CortexFn:   resolveCortex,
-		AgentLoop:  cfg.AgentLoop,
-		Config:     cfg,
+		Skills:          skillLoader,
+		Memory:          memMgr,
+		Permission:      permission,
+		CortexFn:        resolveCortex,
+		AgentLoop:       cfg.AgentLoop,
+		Config:          cfg,
+		CalibratorStore: calibratorStore,
 	}
 
 	// Subagent input builder shared by all three call sites in this file
@@ -581,7 +632,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			return agent.RuntimeInputs{}, fmt.Errorf("provider %q not configured for subagent %q", pName, a.ID)
 		}
 		reg := tools.NewRegistry()
-		tools.RegisterCoreTools(reg, a.Workspace, execPolicy)
+		tools.RegisterCoreToolsWithSearch(reg, a.Workspace, execPolicy, searchBackend)
 		if _, err := mcp.RegisterTools(reg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
 		}
@@ -623,7 +674,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				// so without this the locks map grows by one per tick.
 				defer startupCompactionMgr.ForgetSession(sess.ID)
 				hbToolReg := tools.NewRegistry()
-				tools.RegisterCoreTools(hbToolReg, agentCfg.Workspace, execPolicy)
+				tools.RegisterCoreToolsWithSearch(hbToolReg, agentCfg.Workspace, execPolicy, searchBackend)
 				if _, err := mcp.RegisterTools(hbToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
@@ -669,7 +720,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				// return — Session.ID is freshly generated per call.
 				defer startupCompactionMgr.ForgetSession(sess.ID)
 				cronToolReg := tools.NewRegistry()
-				tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace, execPolicy)
+				tools.RegisterCoreToolsWithSearch(cronToolReg, agentCfg.Workspace, execPolicy, searchBackend)
 				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
@@ -717,7 +768,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				// return — Session.ID is freshly generated per call.
 				defer startupCompactionMgr.ForgetSession(cronSess.ID)
 				cronToolReg := tools.NewRegistry()
-				tools.RegisterCoreTools(cronToolReg, defaultCfg.Workspace, execPolicy)
+				tools.RegisterCoreToolsWithSearch(cronToolReg, defaultCfg.Workspace, execPolicy, searchBackend)
 				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 				}
@@ -770,6 +821,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			slog.Info("config updated via settings page")
 		}),
 		Skills:    skillHandlers,
+		Memory:    gateway.NewMemoryHandlers(memMgr),
 		LogBuffer: logBuf,
 	})
 

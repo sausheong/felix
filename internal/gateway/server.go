@@ -22,6 +22,7 @@ type ServerOptions struct {
 	JobsHandler    http.HandlerFunc  // optional /jobs handler
 	Settings       *SettingsHandlers // optional /settings handlers
 	Skills         *SkillHandlers    // optional /settings/api/skills* handlers
+	Memory         *MemoryHandlers   // optional /settings/api/memory* handlers
 	LogBuffer      *LogBuffer        // optional log buffer for /logs
 }
 
@@ -107,6 +108,13 @@ func (s *Server) routes() {
 		s.router.Get("/settings/api/skills/{name}", s.opts.Skills.Get)
 		s.router.Post("/settings/api/skills", s.opts.Skills.Upload)
 		s.router.Delete("/settings/api/skills/{name}", s.opts.Skills.Delete)
+	}
+
+	if s.opts.Memory != nil {
+		s.router.Get("/settings/api/memory", s.opts.Memory.List)
+		s.router.Get("/settings/api/memory/{id}", s.opts.Memory.Get)
+		s.router.Post("/settings/api/memory", s.opts.Memory.Save)
+		s.router.Delete("/settings/api/memory/{id}", s.opts.Memory.Delete)
 	}
 
 	if s.opts.LogBuffer != nil {

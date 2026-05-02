@@ -26,13 +26,15 @@ type Entry struct {
 // Manager handles persistent memory stored as Markdown files with BM25 search
 // and optional vector search via chromem-go when an Embedder is configured.
 type Manager struct {
-	baseDir  string
-	entries  map[string]Entry
-	index    *BM25Index
-	embedder Embedder         // nil → BM25 only
-	vecDB    *chromem.DB      // nil → BM25 only
-	vecColl  *chromem.Collection
-	mu       sync.RWMutex
+	baseDir       string
+	entries       map[string]Entry
+	index         *BM25Index
+	embedder      Embedder // nil → BM25 only
+	embedderModel string   // for cache fingerprint; "" before SetEmbedder
+	vecDB         *chromem.DB
+	vecColl       *chromem.Collection
+	cache         *embedCache
+	mu            sync.RWMutex
 }
 
 // NewManager creates a new memory manager rooted at the given directory.
@@ -41,6 +43,7 @@ func NewManager(baseDir string) *Manager {
 		baseDir: baseDir,
 		entries: make(map[string]Entry),
 		index:   NewBM25Index(),
+		cache:   newEmbedCache(filepath.Join(baseDir, "entries")),
 	}
 }
 
@@ -48,6 +51,18 @@ func NewManager(baseDir string) *Manager {
 // Must be called before Load() so that existing entries are indexed.
 func (m *Manager) SetEmbedder(e Embedder) {
 	m.embedder = e
+}
+
+// SetEmbedderModel records the configured embedding model name. Used as
+// part of the on-disk cache fingerprint so a model swap silently
+// invalidates the persisted embeddings (different models produce
+// vectors in different spaces; mixing them poisons search results).
+//
+// Optional: AttachWithProbe is the canonical caller, but tests that
+// construct an embedder directly can leave this unset and the cache
+// will use a "default" fingerprint.
+func (m *Manager) SetEmbedderModel(model string) {
+	m.embedderModel = model
 }
 
 // Load scans the memory directory and indexes all Markdown files.
@@ -115,8 +130,19 @@ func (m *Manager) Load() error {
 	return nil
 }
 
-// initVectorCollection creates the chromem collection and embeds all entries.
-// Must be called with m.mu held.
+// initVectorCollection creates the chromem collection and embeds all
+// entries. Must be called with m.mu held.
+//
+// Persistence: a side-cache at <baseDir>/entries/.embeddings-cache.json
+// stores per-entry (mtime, embedding) pairs. Entries whose ModTime
+// matches the cache are loaded with their persisted vector — no
+// embedder call. Stale entries (ModTime mismatch or absent from cache)
+// are embedded fresh and the cache is updated. The cache is invalidated
+// wholesale when the embedder model fingerprint changes (different
+// models produce incompatible vector spaces).
+//
+// Result: cold start with N entries goes from N embedder calls to 0
+// when nothing changed since last run.
 func (m *Manager) initVectorCollection(ctx context.Context) error {
 	embedder := m.embedder
 	embFn := func(ctx context.Context, text string) ([]float32, error) {
@@ -133,21 +159,76 @@ func (m *Manager) initVectorCollection(ctx context.Context) error {
 		return fmt.Errorf("create vector collection: %w", err)
 	}
 
-	docs := make([]chromem.Document, 0, len(m.entries))
-	for _, e := range m.entries {
-		docs = append(docs, chromem.Document{
-			ID:      e.ID,
-			Content: e.Content,
-		})
+	// Load the on-disk cache. A model-fingerprint mismatch invalidates
+	// the entire cache — embedding spaces don't transfer across models.
+	wantFingerprint := embedderFingerprint(m.embedderModel)
+	cached, gotFingerprint := map[string]embedCacheItem{}, ""
+	if m.cache != nil {
+		cached, gotFingerprint = m.cache.load()
+		if gotFingerprint != wantFingerprint {
+			cached = map[string]embedCacheItem{}
+		}
 	}
 
-	if err := coll.AddDocuments(ctx, docs, 1); err != nil {
-		return fmt.Errorf("embed existing entries: %w", err)
+	docs := make([]chromem.Document, 0, len(m.entries))
+	hits, misses := 0, 0
+	freshCache := make(map[string]embedCacheItem, len(m.entries))
+	missDocs := make([]chromem.Document, 0)
+	for _, e := range m.entries {
+		// Cache hit only when the entry's mtime matches what we cached.
+		if c, ok := cached[e.ID]; ok && c.ModTime.Equal(e.ModTime) && len(c.Vector) > 0 {
+			docs = append(docs, chromem.Document{
+				ID:        e.ID,
+				Content:   e.Content,
+				Embedding: c.Vector, // skips embFn
+			})
+			freshCache[e.ID] = c
+			hits++
+		} else {
+			missDocs = append(missDocs, chromem.Document{
+				ID:      e.ID,
+				Content: e.Content,
+			})
+			misses++
+		}
+	}
+
+	// Add cache hits first (no network).
+	if len(docs) > 0 {
+		if err := coll.AddDocuments(ctx, docs, 1); err != nil {
+			return fmt.Errorf("seed cached embeddings: %w", err)
+		}
+	}
+	// Embed cache misses (network — slow path).
+	if len(missDocs) > 0 {
+		if err := coll.AddDocuments(ctx, missDocs, 1); err != nil {
+			return fmt.Errorf("embed missing entries: %w", err)
+		}
+		// Pull the freshly-computed vectors back out of the collection
+		// and persist them so the next start is a cache hit.
+		for _, d := range missDocs {
+			doc, gerr := coll.GetByID(ctx, d.ID)
+			if gerr != nil || len(doc.Embedding) == 0 {
+				continue
+			}
+			freshCache[d.ID] = embedCacheItem{
+				ModTime: m.entries[d.ID].ModTime,
+				Vector:  doc.Embedding,
+			}
+		}
+	}
+
+	// Persist whatever we have (cache hits + freshly-embedded misses).
+	if m.cache != nil && len(freshCache) > 0 {
+		m.cache.save(freshCache, wantFingerprint)
 	}
 
 	m.vecDB = db
 	m.vecColl = coll
-	slog.Info("vector memory index built", "entries", len(docs))
+	slog.Info("vector memory index built",
+		"entries", len(m.entries),
+		"cache_hits", hits,
+		"cache_misses", misses)
 	return nil
 }
 

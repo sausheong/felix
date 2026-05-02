@@ -120,6 +120,139 @@ html.light #header .logo {
 	border-color: var(--accent);
 	color: var(--accent);
 }
+#toggle-trace-btn {
+	background: none;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.3rem 0.5rem;
+	cursor: pointer;
+	font-size: 0.8rem;
+	line-height: 1;
+	color: var(--text);
+	transition: border-color 0.3s;
+}
+#toggle-trace-btn:hover { border-color: var(--accent); }
+#toggle-trace-btn.active {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+#trace-panel {
+	border-top: 1px solid var(--border);
+	background: var(--bg-msg-asst);
+	max-height: 32vh;
+	overflow-y: auto;
+	font-family: "SF Mono", "Fira Code", monospace;
+	font-size: 0.75rem;
+	flex-shrink: 0;
+}
+#trace-header {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.4rem 1.5rem;
+	border-bottom: 1px solid var(--border);
+	color: var(--text-muted);
+	background: var(--bg-header);
+	position: sticky;
+	top: 0;
+}
+#trace-title { font-weight: 600; color: var(--text); }
+#trace-clear-btn {
+	margin-left: auto;
+	background: none;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0.15rem 0.5rem;
+	cursor: pointer;
+	font-size: 0.7rem;
+	color: var(--text-muted);
+}
+#trace-clear-btn:hover { border-color: var(--accent); color: var(--accent); }
+#trace-list {
+	padding: 0.4rem 1.5rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+}
+.trace-row {
+	display: grid;
+	grid-template-columns: 5em 5em 1fr;
+	gap: 0.6rem;
+	color: var(--text-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.trace-row .t-at { color: var(--text); text-align: right; }
+.trace-row .t-dur { color: var(--accent2); text-align: right; }
+.trace-row .t-phase { color: var(--text); }
+.trace-row .t-attrs { color: var(--text-muted); }
+.trace-row.slow .t-dur { color: var(--error); }
+.trace-row.run-divider {
+	color: var(--accent);
+	border-top: 1px dashed var(--border);
+	padding-top: 0.25rem;
+	margin-top: 0.25rem;
+}
+#token-chip {
+	font-size: 0.75rem;
+	color: var(--text-muted);
+	font-family: "SF Mono","Fira Code",monospace;
+	padding: 0.2rem 0.5rem;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	white-space: nowrap;
+	cursor: help;
+}
+#token-chip.warn { border-color: var(--accent2); color: var(--accent2); }
+#token-chip.danger { border-color: var(--error); color: var(--error); }
+#bootstrap-banner {
+	display: none;
+	background: var(--bg-msg-asst);
+	border-bottom: 1px solid var(--border);
+	padding: 0.85rem 1.5rem;
+	flex-shrink: 0;
+}
+#bootstrap-banner .bb-header {
+	font-size: 0.85rem;
+	color: var(--text);
+	margin-bottom: 0.45rem;
+	display: flex;
+	gap: 0.5rem;
+	align-items: baseline;
+}
+#bootstrap-banner .bb-title { font-weight: 600; color: var(--accent); }
+#bootstrap-banner .bb-summary { color: var(--text-muted); }
+#bootstrap-banner .bb-models {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+}
+#bootstrap-banner .bb-row {
+	display: grid;
+	grid-template-columns: 12em 1fr 6em;
+	gap: 0.6rem;
+	font-size: 0.78rem;
+	align-items: center;
+}
+#bootstrap-banner .bb-name { color: var(--text); font-family: "SF Mono","Fira Code",monospace; }
+#bootstrap-banner .bb-status { color: var(--text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+#bootstrap-banner .bb-bar {
+	height: 6px;
+	background: var(--border);
+	border-radius: 3px;
+	overflow: hidden;
+}
+#bootstrap-banner .bb-fill {
+	height: 100%%;
+	background: var(--accent);
+	width: 0%%;
+	transition: width 0.4s ease;
+}
+#bootstrap-banner .bb-row.done .bb-fill { background: var(--accent2); }
+#bootstrap-banner .bb-row.error .bb-fill { background: var(--error); }
+#input-area.bootstrapping textarea { opacity: 0.5; pointer-events: none; }
+#input-area.bootstrapping textarea::placeholder { color: var(--accent); }
 #agent-select {
 	background: var(--bg-input);
 	border: 1px solid var(--border);
@@ -386,12 +519,25 @@ html.light #header .logo {
 	<select id="session-select" title="Select session"></select>
 	<button id="new-session-btn" title="New session">+ New</button>
 	<span class="spacer"></span>
+	<span id="token-chip" title="Tokens used in last turn / context window" style="display:none;"></span>
 	<button id="toggle-tools-btn" title="Hide/show tool calls">Tools</button>
+	<button id="toggle-trace-btn" title="Hide/show live trace panel">Trace</button>
 	<button id="clear-btn" title="Clear session">Clear</button>
 	<button id="theme-btn" title="Toggle light/dark mode">&#9790;</button>
 	<span class="status" id="conn-status">connecting...</span>
 </div>
+<div id="bootstrap-banner">
+	<div class="bb-header">
+		<span class="bb-title">Setting up your local AI</span>
+		<span class="bb-summary" id="bb-summary"></span>
+	</div>
+	<div class="bb-models" id="bb-models"></div>
+</div>
 <div id="messages"></div>
+<div id="trace-panel" style="display:none;">
+	<div id="trace-header"><span id="trace-title">Live trace</span><button id="trace-clear-btn" title="Clear trace">clear</button></div>
+	<div id="trace-list"></div>
+</div>
 <div id="input-area">
 	<textarea id="input" rows="1" placeholder="Type a message..." autofocus></textarea>
 	<button id="send-btn" disabled>Send</button>
@@ -432,6 +578,218 @@ html.light #header .logo {
 		localStorage.setItem('felix-hide-tools', toolsHidden);
 		applyToolVisibility();
 	});
+
+	// Live trace panel
+	var toggleTraceBtn = document.getElementById('toggle-trace-btn');
+	var tracePanel = document.getElementById('trace-panel');
+	var traceList = document.getElementById('trace-list');
+	var traceClearBtn = document.getElementById('trace-clear-btn');
+	var traceVisible = localStorage.getItem('felix-show-trace') === 'true';
+	var traceFirstOfRun = true;
+	function applyTraceVisibility() {
+		tracePanel.style.display = traceVisible ? 'block' : 'none';
+		toggleTraceBtn.classList.toggle('active', traceVisible);
+	}
+	applyTraceVisibility();
+	toggleTraceBtn.addEventListener('click', function() {
+		traceVisible = !traceVisible;
+		localStorage.setItem('felix-show-trace', traceVisible);
+		applyTraceVisibility();
+	});
+	traceClearBtn.addEventListener('click', function() {
+		traceList.innerHTML = '';
+	});
+
+	function fmtMs(n) {
+		if (n == null) return '';
+		if (n < 1000) return n + 'ms';
+		return (n / 1000).toFixed(1) + 's';
+	}
+
+	// Bootstrap banner — surfaces first-run model pulls from
+	// /settings/api/bootstrap so a user landing on /chat sees real
+	// progress instead of a chat box that ignores their messages while
+	// 10 GB of gemma4 downloads in the background.
+	var bootstrapBanner = document.getElementById('bootstrap-banner');
+	var bbSummary = document.getElementById('bb-summary');
+	var bbModels = document.getElementById('bb-models');
+	var inputArea = document.getElementById('input-area');
+	var bootstrapPollTimer = null;
+	var bootstrapWasActive = false;
+
+	function fmtBytes(n) {
+		if (!n || n < 0) return '';
+		if (n < 1024) return n + ' B';
+		var u = ['KB','MB','GB','TB'];
+		var i = -1;
+		do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+		return n.toFixed(1) + ' ' + u[i];
+	}
+
+	function renderBootstrap(snap) {
+		if (!snap || !snap.models) return false;
+		var names = Object.keys(snap.models);
+		if (names.length === 0) return false;
+		names.sort();
+
+		var anyActive = false;
+		var doneCount = 0;
+		bbModels.innerHTML = '';
+		names.forEach(function(name) {
+			var m = snap.models[name];
+			var row = document.createElement('div');
+			row.className = 'bb-row';
+			if (m.status === 'done') row.classList.add('done');
+			if (m.error) row.classList.add('error');
+
+			var nm = document.createElement('div');
+			nm.className = 'bb-name';
+			nm.textContent = name;
+
+			var bar = document.createElement('div');
+			bar.className = 'bb-bar';
+			var fill = document.createElement('div');
+			fill.className = 'bb-fill';
+			fill.style.width = (m.pct || (m.status === 'done' ? 100 : 0)) + '%%';
+			bar.appendChild(fill);
+
+			var st = document.createElement('div');
+			st.className = 'bb-status';
+			if (m.error) {
+				st.textContent = 'error';
+				st.title = m.error;
+			} else if (m.status === 'done') {
+				st.textContent = 'ready';
+				doneCount++;
+			} else if (m.completed && m.total) {
+				st.textContent = fmtBytes(m.completed) + '/' + fmtBytes(m.total);
+				anyActive = true;
+			} else if (m.status) {
+				st.textContent = m.status;
+				anyActive = true;
+			}
+
+			row.appendChild(nm);
+			row.appendChild(bar);
+			row.appendChild(st);
+			bbModels.appendChild(row);
+		});
+
+		bbSummary.textContent = doneCount + '/' + names.length + ' ready';
+		var stillActive = anyActive || snap.active;
+		if (stillActive) {
+			bootstrapBanner.style.display = 'block';
+			inputArea.classList.add('bootstrapping');
+			inputEl.placeholder = 'Local AI is downloading… please wait';
+			bootstrapWasActive = true;
+		} else if (bootstrapWasActive) {
+			// Models finished — fade banner after a short victory display.
+			setTimeout(function() {
+				bootstrapBanner.style.display = 'none';
+				inputArea.classList.remove('bootstrapping');
+				inputEl.placeholder = 'Type a message...';
+			}, 2500);
+		}
+		return stillActive;
+	}
+
+	// Token chip: rendered in the header on every EventDone with usage.
+	// Format: "INPUT/CTX_WINDOW (PCT%%) +OUT" — gives the user a feel for
+	// how close they are to compaction and how much they spent this turn.
+	var tokenChip = document.getElementById('token-chip');
+	function fmtTokens(n) {
+		if (n == null) return '?';
+		if (n < 1000) return String(n);
+		if (n < 1000000) return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'K';
+		return (n / 1000000).toFixed(2) + 'M';
+	}
+	function updateTokenChip(usage, ctxWindow, model) {
+		if (!usage || !tokenChip) return;
+		var inTok = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+		var outTok = usage.output_tokens || 0;
+		var pct = ctxWindow > 0 ? (inTok / ctxWindow) * 100 : 0;
+		tokenChip.textContent = fmtTokens(inTok) + (ctxWindow > 0 ? '/' + fmtTokens(ctxWindow) : '') +
+			(ctxWindow > 0 ? ' (' + pct.toFixed(0) + '%%)' : '') +
+			'  +' + fmtTokens(outTok);
+		tokenChip.title = 'Last turn: input=' + inTok + ', output=' + outTok +
+			(ctxWindow > 0 ? ', context window=' + ctxWindow : '') +
+			(model ? ', model=' + model : '');
+		tokenChip.classList.remove('warn', 'danger');
+		if (pct >= 80) tokenChip.classList.add('danger');
+		else if (pct >= 60) tokenChip.classList.add('warn');
+		tokenChip.style.display = '';
+	}
+
+	function pollBootstrap() {
+		fetch('/settings/api/bootstrap', { cache: 'no-store' })
+			.then(function(r) { return r.ok ? r.json() : null; })
+			.then(function(snap) {
+				var stillActive = renderBootstrap(snap);
+				if (bootstrapPollTimer) { clearTimeout(bootstrapPollTimer); bootstrapPollTimer = null; }
+				if (stillActive) {
+					bootstrapPollTimer = setTimeout(pollBootstrap, 1500);
+				}
+			})
+			.catch(function() { /* endpoint absent / transient — ignore */ });
+	}
+	pollBootstrap();
+
+	function summarizeAttrs(attrs) {
+		if (!attrs) return '';
+		var keys = Object.keys(attrs);
+		if (keys.length === 0) return '';
+		var parts = [];
+		for (var i = 0; i < keys.length && parts.length < 3; i++) {
+			var k = keys[i];
+			var v = attrs[k];
+			if (typeof v === 'string' && v.length > 40) v = v.slice(0, 40) + '…';
+			parts.push(k + '=' + v);
+		}
+		return parts.join(' ');
+	}
+
+	function addTraceRow(r) {
+		// Insert a divider when a new run starts (ws.received is the first
+		// mark of every chat.send).
+		if (r.phase === 'ws.received') {
+			traceFirstOfRun = true;
+		}
+		var row = document.createElement('div');
+		row.className = 'trace-row';
+		if (traceFirstOfRun && r.phase === 'ws.received' && traceList.children.length > 0) {
+			row.classList.add('run-divider');
+		}
+		traceFirstOfRun = false;
+		if (r.dur_ms != null && r.dur_ms >= 1500) {
+			row.classList.add('slow');
+		}
+		var at = document.createElement('span');
+		at.className = 't-at';
+		at.textContent = fmtMs(r.at_ms);
+		var dur = document.createElement('span');
+		dur.className = 't-dur';
+		dur.textContent = '+' + fmtMs(r.dur_ms);
+		var rest = document.createElement('span');
+		rest.className = 't-phase';
+		rest.textContent = r.phase;
+		var attrText = summarizeAttrs(r.attrs);
+		if (attrText) {
+			rest.textContent += '  ';
+			var a = document.createElement('span');
+			a.className = 't-attrs';
+			a.textContent = attrText;
+			rest.appendChild(a);
+		}
+		row.appendChild(at);
+		row.appendChild(dur);
+		row.appendChild(rest);
+		traceList.appendChild(row);
+		// Keep at most ~500 rows so the panel doesn't grow unbounded.
+		while (traceList.children.length > 500) {
+			traceList.removeChild(traceList.firstChild);
+		}
+		tracePanel.scrollTop = tracePanel.scrollHeight;
+	}
 
 	// Theme toggle
 	function setTheme(mode) {
@@ -853,6 +1211,7 @@ html.light #header .logo {
 					currentAssistant = null;
 					sending = false;
 					updateSendBtn();
+					updateTokenChip(r.usage, r.context_window, r.model);
 					break;
 				case 'aborted':
 					if (currentAssistant) {
@@ -867,6 +1226,9 @@ html.light #header .logo {
 					currentAssistant = null;
 					sending = false;
 					updateSendBtn();
+					break;
+				case 'trace':
+					addTraceRow(r);
 					break;
 				}
 			} catch(err) {
@@ -1029,11 +1391,107 @@ html.light #header .logo {
 		}
 	}
 
+	// friendlyError maps a raw error string from the agent runtime / LLM
+	// provider into a non-technical title + suggestion + (optional) link
+	// to a settings tab. Falls back to the raw error so we never lose info.
+	function friendlyError(raw) {
+		var s = String(raw || '').toLowerCase();
+		// Anthropic / OpenAI rate limits.
+		if (s.indexOf('rate_limit') >= 0 || s.indexOf('429') >= 0) {
+			return {
+				title: 'Hit the provider rate limit',
+				suggest: 'Wait a minute and try again. To switch models automatically next time, set a fallback model in Settings → Agents.',
+				settings: 'agents'
+			};
+		}
+		// Anthropic 529 / OpenAI 5xx — provider overloaded.
+		if (s.indexOf('overloaded') >= 0 || s.indexOf('529') >= 0 || /\b5\d\d\b/.test(s)) {
+			return {
+				title: 'The model provider is overloaded',
+				suggest: 'Try again in a minute. If this is persistent, switch to a different provider in Settings → Providers.',
+				settings: 'providers'
+			};
+		}
+		// Context overflow.
+		if (s.indexOf('context length') >= 0 || s.indexOf('context_length') >= 0 || s.indexOf('too long') >= 0) {
+			return {
+				title: 'Conversation is too long for the model',
+				suggest: 'Start a new session, or enable / lower the compaction threshold in Settings → Intelligence → Compaction.',
+				settings: 'intelligence'
+			};
+		}
+		// Missing API key / auth.
+		if (s.indexOf('api key') >= 0 || s.indexOf('api_key') >= 0 || s.indexOf('unauthorized') >= 0 || s.indexOf('401') >= 0 || s.indexOf('403') >= 0) {
+			return {
+				title: 'Missing or invalid API key',
+				suggest: 'Add your API key in Settings → Providers, then save and try again.',
+				settings: 'providers'
+			};
+		}
+		// LLM provider not configured at all.
+		if (s.indexOf('llm provider not configured') >= 0 || s.indexOf('no api key') >= 0) {
+			return {
+				title: 'No LLM provider is configured',
+				suggest: 'Add a provider in Settings → Providers, then point your agent at it in Settings → Agents.',
+				settings: 'providers'
+			};
+		}
+		// Model not found.
+		if (s.indexOf('model not found') >= 0 || s.indexOf('does not exist') >= 0 || s.indexOf('unknown model') >= 0) {
+			return {
+				title: 'Model not available',
+				suggest: 'Check the model name in Settings → Agents. For local models, install it under Settings → Models.',
+				settings: 'agents'
+			};
+		}
+		// Local Ollama not reachable.
+		if (s.indexOf('connection refused') >= 0 || s.indexOf('ollama') >= 0 || s.indexOf('eof') >= 0) {
+			return {
+				title: 'Local model is unavailable',
+				suggest: 'The bundled local model service may not be running. Check Settings → Models.',
+				settings: 'models'
+			};
+		}
+		// Tool denied by policy.
+		if (s.indexOf('not allowed for agent') >= 0 || s.indexOf('not allowed') >= 0) {
+			return {
+				title: 'A tool the agent tried to use is denied',
+				suggest: 'Adjust this agent\'s allowed tools in Settings → Agents.',
+				settings: 'agents'
+			};
+		}
+		// Aborted / cancelled (cosmetic only).
+		if (s.indexOf('aborted by user') >= 0 || s.indexOf('canceled') >= 0 || s.indexOf('cancelled') >= 0) {
+			return { title: 'Run was cancelled', suggest: '' };
+		}
+		// Default — show the raw text but tag it.
+		return { title: 'Something went wrong', suggest: raw };
+	}
+
 	function addError(msg) {
+		var f = friendlyError(msg);
 		var div = document.createElement('div');
 		div.className = 'msg assistant';
 		div.style.borderColor = 'var(--error)';
-		div.innerHTML = '<div class="content" style="color:var(--error)">' + escHtml(msg) + '</div>';
+		var html = '<div class="content" style="color:var(--error)">' +
+			'<strong>' + escHtml(f.title) + '</strong>';
+		if (f.suggest) {
+			html += '<div style="margin-top:0.4rem; color:var(--text); font-size:0.85em;">' +
+				escHtml(f.suggest) + '</div>';
+		}
+		if (f.settings) {
+			html += '<div style="margin-top:0.4rem;">' +
+				'<a href="/settings#' + escHtml(f.settings) + '" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:none; font-size:0.8em;">' +
+				'Open Settings &rarr;</a></div>';
+		}
+		// Always include the raw message in a folded details so power users
+		// can still see what actually broke.
+		html += '<details style="margin-top:0.5rem; color:var(--text-muted); font-size:0.75em;">' +
+			'<summary style="cursor:pointer;">technical detail</summary>' +
+			'<div style="margin-top:0.25rem; font-family:monospace; white-space:pre-wrap; word-break:break-all;">' +
+			escHtml(msg) + '</div></details>';
+		html += '</div>';
+		div.innerHTML = html;
 		messagesEl.appendChild(div);
 		scrollToBottom();
 	}

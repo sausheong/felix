@@ -1,16 +1,59 @@
 package llm
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strings"
+	"sync"
 )
+
+// normalizedEntry is one cached normalization result.
+type normalizedEntry struct {
+	Tools []ToolDef
+	Diags []Diagnostic
+}
+
+// stripCache memoizes applyStripList by a hash of (fields, tools). The
+// agent runtime calls NormalizeToolSchema once per turn with a
+// deterministic tool list (alphabetically sorted by Registry.ToolDefs),
+// which means turn 1 computes the strip and turns 2..N hit the cache.
+//
+// Cache size is bounded by the cardinality of distinct tool sets across
+// the process. In practice this is small: one entry per (provider strip
+// list, agent tool allowlist). A 256-entry hard cap with random
+// eviction protects against pathological churn.
+var (
+	stripCacheMu sync.RWMutex
+	stripCache   = map[string]normalizedEntry{}
+)
+
+const stripCacheMax = 256
 
 // applyStripList runs StripFields over each tool's Parameters with the
 // given field-strip list, preserving input order and accumulating
 // diagnostics across all tools. The per-provider NormalizeToolSchema
 // methods (OpenAI, Qwen, Gemini) are thin wrappers over this helper —
 // only the strip list differs. Anthropic doesn't use this (identity).
+//
+// Memoized: identical inputs return cached output without re-walking
+// the JSON Schema. Cache key is a SHA-256 over (sorted fields, tool
+// names+parameters). Returned slices are copies so callers can safely
+// mutate them.
 func applyStripList(tools []ToolDef, fields []string) ([]ToolDef, []Diagnostic) {
+	if len(tools) == 0 {
+		return tools, nil
+	}
+	key := stripCacheKey(tools, fields)
+
+	stripCacheMu.RLock()
+	if hit, ok := stripCache[key]; ok {
+		stripCacheMu.RUnlock()
+		return cloneToolDefs(hit.Tools), cloneDiags(hit.Diags)
+	}
+	stripCacheMu.RUnlock()
+
 	out := make([]ToolDef, len(tools))
 	var allDiags []Diagnostic
 	for i, t := range tools {
@@ -20,7 +63,67 @@ func applyStripList(tools []ToolDef, fields []string) ([]ToolDef, []Diagnostic) 
 		out[i] = td
 		allDiags = append(allDiags, diags...)
 	}
+
+	stripCacheMu.Lock()
+	if len(stripCache) >= stripCacheMax {
+		// Drop one arbitrary entry to keep the map bounded. Map iteration
+		// order is randomized, so this is effectively random eviction.
+		for k := range stripCache {
+			delete(stripCache, k)
+			break
+		}
+	}
+	stripCache[key] = normalizedEntry{Tools: cloneToolDefs(out), Diags: cloneDiags(allDiags)}
+	stripCacheMu.Unlock()
+
 	return out, allDiags
+}
+
+// stripCacheKey hashes the inputs into a stable string. Sorts the fields
+// list because the per-provider strip lists are stable but defensively
+// supports unsorted input.
+func stripCacheKey(tools []ToolDef, fields []string) string {
+	sortedFields := make([]string, len(fields))
+	copy(sortedFields, fields)
+	sort.Strings(sortedFields)
+	h := sha256.New()
+	h.Write([]byte(strings.Join(sortedFields, "\x00")))
+	h.Write([]byte("\x01"))
+	for _, t := range tools {
+		h.Write([]byte(t.Name))
+		h.Write([]byte("\x02"))
+		h.Write(t.Parameters)
+		h.Write([]byte("\x03"))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func cloneToolDefs(in []ToolDef) []ToolDef {
+	if in == nil {
+		return nil
+	}
+	out := make([]ToolDef, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneDiags(in []Diagnostic) []Diagnostic {
+	if in == nil {
+		return nil
+	}
+	out := make([]Diagnostic, len(in))
+	copy(out, in)
+	return out
+}
+
+// ResetStripCache is exported for tests so they can verify cache
+// behavior without process restart. Production code should not call
+// this — the cache is bounded by stripCacheMax and otherwise lives for
+// the process lifetime.
+func ResetStripCache() {
+	stripCacheMu.Lock()
+	stripCache = map[string]normalizedEntry{}
+	stripCacheMu.Unlock()
 }
 
 // StripFields removes the given field names from a JSON Schema document

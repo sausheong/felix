@@ -10,6 +10,7 @@ import (
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
+	"github.com/sausheong/felix/internal/tokens"
 	"github.com/sausheong/felix/internal/tools"
 )
 
@@ -33,6 +34,13 @@ type RuntimeDeps struct {
 	// system prompt — replaces the per-turn config.Load("") that the old
 	// configSummary() did.
 	Config *config.Config
+	// CalibratorStore is the per-(agentID, sessionKey) persistence layer
+	// for the token Calibrator. nil disables persistence; in-memory
+	// learning still happens. When non-nil, BuildRuntimeForAgent loads
+	// the prior (ratio, count) and seeds the new Runtime's calibrator
+	// so the first turn after a chat.send rebuild already has accurate
+	// token estimates instead of starting at ratio=1.0.
+	CalibratorStore *tokens.CalibratorStore
 }
 
 // RuntimeInputs holds the per-Runtime-instance inputs that genuinely vary
@@ -153,7 +161,7 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 		}
 	}
 
-	return &Runtime{
+	rt := &Runtime{
 		LLM:                inputs.Provider,
 		Tools:              inputs.Tools,
 		Session:            inputs.Session,
@@ -174,5 +182,20 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 		IngestSource:       inputs.IngestSource,
 		AgentLoop:          deps.AgentLoop,
 		StaticSystemPrompt: staticPrompt,
-	}, nil
+		CalibratorStore:    deps.CalibratorStore,
+	}
+
+	// Seed the calibrator from prior (ratio, count) for this session so a
+	// long session that's been split across many chat.send calls retains
+	// its learned chars→tokens ratio. Skipped for subagent sessions
+	// (Session.Key == "subagent") and when no store is configured.
+	if deps.CalibratorStore != nil && inputs.Session != nil && inputs.Session.Key != "" && inputs.Session.Key != "subagent" {
+		ratio, count := deps.CalibratorStore.Load(a.ID, inputs.Session.Key)
+		if count > 0 {
+			rt.calibrator = tokens.NewCalibrator()
+			rt.calibrator.Restore(ratio, count)
+		}
+	}
+
+	return rt, nil
 }

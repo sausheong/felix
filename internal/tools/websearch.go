@@ -13,9 +13,17 @@ import (
 
 const searchTimeout = 15 * time.Second
 
-// WebSearchTool searches the web and returns results.
-// Uses DuckDuckGo's HTML search (no API key required).
-type WebSearchTool struct{}
+// WebSearchTool searches the web and returns results via a configurable
+// backend. The default backend (when Backend is nil) scrapes DuckDuckGo's
+// HTML interface — no API key required, but fragile to upstream HTML
+// changes. Production users who care about reliability should configure a
+// stable backend (Brave, Tavily) or self-host SearXNG.
+type WebSearchTool struct {
+	// Backend is the active search strategy. Constructed at registration
+	// time from config; nil means "use the default DDG scraper" so a
+	// no-config install still works.
+	Backend WebSearchBackend
+}
 
 type webSearchInput struct {
 	Query      string `json:"query"`
@@ -48,6 +56,15 @@ func (t *WebSearchTool) Parameters() json.RawMessage {
 // IsConcurrencySafe returns true — web_search is a pure read.
 func (t *WebSearchTool) IsConcurrencySafe(_ json.RawMessage) bool { return true }
 
+// SetBackend swaps the active backend. Called from the config hot-reload
+// path so settings-page edits take effect on the next agent turn without
+// a restart. Concurrency-safe with Execute calls because only the
+// pointer is replaced — the old backend remains usable until any
+// in-flight Execute returns.
+func (t *WebSearchTool) SetBackend(b WebSearchBackend) {
+	t.Backend = b
+}
+
 func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
 	var in webSearchInput
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -69,9 +86,13 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (Too
 	ctx, cancel := context.WithTimeout(ctx, searchTimeout)
 	defer cancel()
 
-	results, err := duckDuckGoSearch(ctx, in.Query, maxResults)
+	backend := t.Backend
+	if backend == nil {
+		backend = newDDGBackend()
+	}
+	results, err := backend.Search(ctx, in.Query, maxResults)
 	if err != nil {
-		return ToolResult{Error: fmt.Sprintf("search failed: %v", err)}, nil
+		return ToolResult{Error: fmt.Sprintf("search failed (%s): %v", backend.Name(), err)}, nil
 	}
 
 	if len(results) == 0 {

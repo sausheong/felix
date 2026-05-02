@@ -20,6 +20,7 @@ import (
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
+	"github.com/sausheong/felix/internal/tokens"
 	"github.com/sausheong/felix/internal/tools"
 )
 
@@ -52,6 +53,7 @@ type WebSocketHandler struct {
 	cortexProvider    *cortexadapter.Provider // per-agent cortex client factory
 	permission        tools.PermissionChecker // dispatch-time tool gate; nil → allow-all
 	subagentBuild     agent.SubagentBuildFn   // builds RuntimeInputs for subagent dispatch via task tool
+	calibratorStore   *tokens.CalibratorStore // per-session token-estimate calibration; cleared on session.clear
 	activeRuns        map[*websocket.Conn]context.CancelFunc
 	activeSessionKeys map[*websocket.Conn]map[string]string // conn → agentID → sessionKey
 	upgrader          websocket.Upgrader
@@ -144,6 +146,15 @@ func (h *WebSocketHandler) SetMemory(m *memory.Manager) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.memory = m
+}
+
+// SetCalibratorStore wires the per-session token-estimate persistence layer.
+// Called from startup wiring; nil disables the cleanup performed in
+// handleSessionClear (the calibrator file would simply remain on disk).
+func (h *WebSocketHandler) SetCalibratorStore(s *tokens.CalibratorStore) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calibratorStore = s
 }
 
 // SetSubagentBuilder installs the per-call SubagentBuildFn used by handleChatSend
@@ -257,6 +268,8 @@ func (h *WebSocketHandler) dispatch(conn *websocket.Conn, req JSONRPCRequest) {
 		h.handleJobsRemove(conn, req)
 	case "jobs.update":
 		h.handleJobsUpdate(conn, req)
+	case "jobs.add":
+		h.handleJobsAdd(conn, req)
 	default:
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -414,7 +427,23 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 
 	// Performance trace — emits one slog.Info "perf" line per phase boundary
 	// (skills.match, llm.first_token, tool.exec, …) plus a final "perf summary".
+	// Live-forward each phase mark to the WebSocket as a JSON-RPC notification
+	// so the chat UI's trace panel can show phase timings as they happen.
 	trace := agent.NewTrace(agentCfg.ID, agentCfg.Model)
+	rpcID := req.ID
+	trace.SetOnMark(func(phase string, durMs, atMs int64, attrs []any) {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Result: map[string]any{
+				"type":   "trace",
+				"phase":  phase,
+				"dur_ms": durMs,
+				"at_ms":  atMs,
+				"attrs":  flattenAttrs(attrs),
+			},
+			ID: rpcID,
+		})
+	})
 	trace.Mark("ws.received", "msg_chars", len(params.Text))
 	runCtx = agent.WithTrace(runCtx, trace)
 
@@ -486,7 +515,18 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 					}
 				}
 			case agent.EventDone:
-				result = map[string]any{"type": "done"}
+				done := map[string]any{"type": "done"}
+				if event.Usage != nil {
+					done["usage"] = map[string]any{
+						"input_tokens":                event.Usage.InputTokens,
+						"output_tokens":               event.Usage.OutputTokens,
+						"cache_creation_input_tokens": event.Usage.CacheCreationInputTokens,
+						"cache_read_input_tokens":     event.Usage.CacheReadInputTokens,
+					}
+					done["context_window"] = tokens.ContextWindow(agentCfg.Model)
+					done["model"] = agentCfg.Model
+				}
+				result = done
 			case agent.EventError:
 				result = map[string]any{"type": "error", "message": event.Error.Error()}
 			case agent.EventAborted:
@@ -898,6 +938,21 @@ func (h *WebSocketHandler) handleSessionClear(conn *websocket.Conn, req JSONRPCR
 		return
 	}
 
+	// Cascade-remove the per-session spill directory if the agent has a
+	// workspace. Best-effort — RemoveSessionSpill never returns an error.
+	h.mu.RLock()
+	cfg := h.config
+	calStore := h.calibratorStore
+	h.mu.RUnlock()
+	if cfg != nil {
+		if a, ok := cfg.GetAgent(params.AgentID); ok {
+			agent.RemoveSessionSpill(a.Workspace, sessionKey)
+		}
+	}
+	// Forget the calibrator record for this session — without this the
+	// calibrator JSON file leaks into ~/.felix/calibrators/ forever.
+	calStore.Forget(params.AgentID, sessionKey)
+
 	writeJSON(conn, JSONRPCResponse{
 		JSONRPC: "2.0",
 		Result:  map[string]any{"ok": true},
@@ -1058,6 +1113,60 @@ func (h *WebSocketHandler) handleJobsRemove(conn *websocket.Conn, req JSONRPCReq
 	})
 }
 
+type jobAddParams struct {
+	Name     string `json:"name"`
+	Schedule string `json:"schedule"`
+	Prompt   string `json:"prompt"`
+}
+
+func (h *WebSocketHandler) handleJobsAdd(conn *websocket.Conn, req JSONRPCRequest) {
+	h.mu.RLock()
+	js := h.jobScheduler
+	h.mu.RUnlock()
+
+	if js == nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32603, "message": "Job scheduler not available"},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	var params jobAddParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "Invalid params: " + err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
+	if params.Name == "" || params.Schedule == "" || params.Prompt == "" {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "name, schedule, and prompt are all required"},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	if err := js.AddJob(params.Name, params.Schedule, params.Prompt); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32603, "message": err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result:  map[string]any{"ok": true, "name": params.Name},
+		ID:      req.ID,
+	})
+}
+
 func (h *WebSocketHandler) handleJobsUpdate(conn *websocket.Conn, req JSONRPCRequest) {
 	h.mu.RLock()
 	js := h.jobScheduler
@@ -1096,6 +1205,26 @@ func (h *WebSocketHandler) handleJobsUpdate(conn *websocket.Conn, req JSONRPCReq
 		Result:  map[string]any{"ok": true},
 		ID:      req.ID,
 	})
+}
+
+// flattenAttrs converts the variadic key,value,key,value slice that
+// agent.Trace.Mark emits into a string-keyed map suitable for JSON
+// serialization. Non-string keys are stringified via fmt.Sprintf("%v")
+// for safety; trailing odd-length tail is ignored. Returns nil for an
+// empty input so the JSON shape stays compact.
+func flattenAttrs(attrs []any) map[string]any {
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(attrs)/2)
+	for i := 0; i+1 < len(attrs); i += 2 {
+		k, ok := attrs[i].(string)
+		if !ok {
+			continue
+		}
+		out[k] = attrs[i+1]
+	}
+	return out
 }
 
 func writeJSON(conn *websocket.Conn, v any) {

@@ -267,6 +267,9 @@ func (r *Registry) Names() []string {
 
 // RegisterCoreTools registers the core tools.
 // execPolicy is optional — pass nil for unrestricted bash execution.
+// The web_search tool is registered with the default DDG backend; call
+// SetWebSearchBackend on the registry afterward (or use
+// RegisterCoreToolsWithSearch) to swap in a configured backend.
 func RegisterCoreTools(reg *Registry, workDir string, execPolicy *ExecPolicy) {
 	reg.Register(&ReadFileTool{WorkDir: workDir})
 	reg.Register(&WriteFileTool{WorkDir: workDir})
@@ -274,6 +277,23 @@ func RegisterCoreTools(reg *Registry, workDir string, execPolicy *ExecPolicy) {
 	reg.Register(&BashTool{WorkDir: workDir, ExecPolicy: execPolicy})
 	reg.Register(&WebFetchTool{})
 	reg.Register(&WebSearchTool{})
+	reg.Register(newBrowserTool())
+	reg.Register(&TodoWriteTool{WorkDir: workDir})
+}
+
+// RegisterCoreToolsWithSearch is a variant of RegisterCoreTools that
+// pre-configures the web_search tool with a specific backend. Call sites
+// that have access to the user's WebSearchConfig (currently startup.go
+// and the standalone CLI chat in cmd/felix) should prefer this so the
+// configured backend (Brave, Tavily, SearXNG) takes effect on the first
+// agent turn rather than only after a hot-reload.
+func RegisterCoreToolsWithSearch(reg *Registry, workDir string, execPolicy *ExecPolicy, search WebSearchBackend) {
+	reg.Register(&ReadFileTool{WorkDir: workDir})
+	reg.Register(&WriteFileTool{WorkDir: workDir})
+	reg.Register(&EditFileTool{WorkDir: workDir})
+	reg.Register(&BashTool{WorkDir: workDir, ExecPolicy: execPolicy})
+	reg.Register(&WebFetchTool{})
+	reg.Register(&WebSearchTool{Backend: search})
 	reg.Register(newBrowserTool())
 	reg.Register(&TodoWriteTool{WorkDir: workDir})
 }

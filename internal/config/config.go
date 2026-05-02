@@ -29,6 +29,7 @@ type Config struct {
 	Security   SecurityConfig            `json:"security"`
 	Local      LocalConfig               `json:"local"`
 	Telegram   TelegramConfig            `json:"telegram"`
+	WebSearch  WebSearchConfig           `json:"web_search"`
 	MCPServers []MCPServerConfig         `json:"mcp_servers"`
 
 	mu   sync.RWMutex
@@ -312,6 +313,15 @@ type ExecApprovalsConfig struct {
 
 type GroupPolicyConfig struct {
 	RequireMention bool `json:"requireMention"`
+}
+
+// WebSearchConfig selects the backend used by the web_search tool.
+// Defaults (empty Backend) keep the historical DDG-scraper behavior.
+// "brave" / "tavily" need APIKey; "searxng" needs BaseURL.
+type WebSearchConfig struct {
+	Backend string `json:"backend,omitempty"` // "" | "duckduckgo" | "brave" | "tavily" | "searxng"
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
 }
 
 // DefaultDataDir returns the default Felix data directory.
@@ -654,6 +664,7 @@ func (c *Config) UpdateFrom(src *Config) {
 	c.Security = src.Security
 	c.Local = src.Local
 	c.Telegram = src.Telegram
+	c.WebSearch = src.WebSearch
 	// MCPServers must be copied so the live-read parallelSafe closure
 	// (Config.IsServerParallelSafe) sees toggles made via the settings UI
 	// without a restart. Was previously omitted, silently breaking hot-reload

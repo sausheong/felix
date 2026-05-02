@@ -51,6 +51,7 @@ type AgentEvent struct {
 	Result     *tools.ToolResult
 	Error      error
 	Compaction *compaction.Result // populated for EventCompaction* events
+	Usage      *llm.Usage         // populated for EventDone when the provider reported it
 }
 
 // Runtime is the agent think-act loop.
@@ -138,6 +139,14 @@ type Runtime struct {
 	// graph with the agent's own tool-use chatter and queue embed calls that
 	// block the next user-initiated chat.
 	IngestSource string
+
+	// CalibratorStore persists the per-session token Calibrator so its
+	// learned actual/estimated ratio survives chat.send rebuilds of the
+	// Runtime. nil means in-memory only — the calibrator still learns
+	// across this Run, but the next Run starts fresh at ratio=1.0.
+	// Loaded once at construction (BuildRuntimeForAgent) and saved
+	// after every llm.EventDone with non-zero usage.
+	CalibratorStore *tokens.CalibratorStore
 
 	calibrator *tokens.Calibrator
 }
@@ -510,8 +519,11 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				}
 			}
 
-			// Collect the response
+			// Collect the response. lastUsage holds the most recent
+			// llm.EventDone usage report so the agent's outgoing
+			// EventDone can carry it for the chat UI's token widget.
 			var textContent strings.Builder
+			var lastUsage *llm.Usage
 			var toolCalls []llm.ToolCall
 			gotFirstToken := false
 
@@ -583,8 +595,20 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 						}()
 
 					case llm.EventDone:
+						if event.Usage != nil {
+							lastUsage = event.Usage
+						}
 						if event.Usage != nil && r.calibrator != nil {
 							r.calibrator.Update(event.Usage.InputTokens, tokens.Estimate(msgs, llm.JoinSystemPromptParts(parts), toolDefs))
+							// Persist the updated ratio so the next chat.send
+							// (which rebuilds Runtime from scratch) inherits
+							// the calibration. Best-effort; nil store means
+							// persistence is disabled and the in-memory
+							// learning still works for this Run only.
+							if r.CalibratorStore != nil && r.Session != nil {
+								ratio, count := r.calibrator.Snapshot()
+								r.CalibratorStore.Save(r.AgentID, r.Session.Key, ratio, count)
+							}
 						}
 
 					case llm.EventError:
@@ -657,7 +681,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 					drainKickoffs(kickoffs)
 				}
 				tr.Mark("agent.done", "turn", turn, "reason", "no_tool_calls")
-				r.emit(AgentEvent{Type: EventDone})
+				r.emit(AgentEvent{Type: EventDone, Usage: lastUsage})
 				return
 			}
 

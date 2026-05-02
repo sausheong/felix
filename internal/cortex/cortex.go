@@ -32,7 +32,16 @@ var ingestWG sync.WaitGroup
 // IngestThreadAsync queues a conversation thread for background ingestion into
 // the Cortex knowledge graph. Call Drain() before closing the database to
 // ensure all queued writes complete.
+//
+// Filters trivial threads BEFORE spawning the goroutine. Without this,
+// every chat turn that doesn't pass ShouldIngest still allocates a
+// goroutine, takes the WaitGroup hop, and re-runs the same check inside
+// IngestThread before bailing. Skipping early saves the allocation +
+// scheduling cost on every "ok"/"thanks"/short reply turn.
 func IngestThreadAsync(ctx context.Context, cx *cortex.Cortex, thread []conversation.Message) {
+	if !ShouldIngest(thread) {
+		return
+	}
 	ingestWG.Go(func() {
 		IngestThread(ctx, cx, thread)
 	})

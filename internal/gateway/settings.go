@@ -495,6 +495,7 @@ html.dark .error-state { background: #450a0a; }
 				<button class="finger-tab" data-tab="mcp">MCP</button>
 				<button class="finger-tab" data-tab="gateway">Gateway</button>
 				<button class="finger-tab" data-tab="skills">Skills</button>
+				<button class="finger-tab" data-tab="memory">Memory</button>
 			</div>
 			<div class="finger-panel active" id="panel-agents"></div>
 			<div class="finger-panel" id="panel-providers"></div>
@@ -505,6 +506,7 @@ html.dark .error-state { background: #450a0a; }
 			<div class="finger-panel" id="panel-mcp"></div>
 			<div class="finger-panel" id="panel-gateway"></div>
 			<div class="finger-panel" id="panel-skills"></div>
+			<div class="finger-panel" id="panel-memory"></div>
 		</div>
 	</div>
 </div>
@@ -619,6 +621,7 @@ html.dark .error-state { background: #450a0a; }
 		renderMCP();
 		renderGateway();
 		renderSkills();
+		renderMemory();
 	}
 
 	// === Models tab — talks directly to bundled Ollama via providers.local.base_url ===
@@ -1771,6 +1774,133 @@ html.dark .error-state { background: #450a0a; }
 		});
 	}
 	function escapeAttr(s) { return escapeHtml(s); }
+
+	// === Memory tab ===
+	var memoryEditing = null; // currently-editing id, or null when in list mode
+
+	function renderMemory() {
+		var panel = document.getElementById('panel-memory');
+		panel.innerHTML =
+			'<div style="margin-bottom:1rem; display:flex; gap:0.75rem; align-items:center;">' +
+				'<button class="btn btn-primary" id="memory-new-btn">New entry</button>' +
+				'<span style="color: var(--color-text-muted); font-size: 0.85rem;">' +
+					'Stored as Markdown in ~/.felix/memory/entries/. Searchable via the agent\'s load_memory tool.' +
+				'</span>' +
+			'</div>' +
+			'<div id="memory-list">Loading&#8230;</div>' +
+			'<div id="memory-edit-panel" style="display:none; margin-top:1rem;">' +
+				'<div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:0.5rem;">' +
+					'<input type="text" id="memory-edit-id" placeholder="entry-id (letters, digits, dot, dash, underscore)" style="flex:1; padding:0.5rem 0.75rem; border:1px solid var(--color-border); border-radius:var(--radius); background:var(--color-surface); color:var(--color-text); font-family:inherit;">' +
+					'<button class="btn btn-primary" id="memory-save-btn">Save</button>' +
+					'<button class="btn-icon" id="memory-cancel-btn">Cancel</button>' +
+				'</div>' +
+				'<textarea id="memory-edit-content" placeholder="# Title\n\nMarkdown content..." style="width:100%; min-height:300px; padding:0.75rem; border:1px solid var(--color-border); border-radius:var(--radius); background:var(--color-surface); color:var(--color-text); font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:0.85rem; resize:vertical;"></textarea>' +
+			'</div>';
+
+		document.getElementById('memory-new-btn').addEventListener('click', function() {
+			openMemoryEditor('', '');
+		});
+		document.getElementById('memory-cancel-btn').addEventListener('click', closeMemoryEditor);
+		document.getElementById('memory-save-btn').addEventListener('click', saveMemoryEntry);
+
+		refreshMemoryList();
+	}
+
+	function refreshMemoryList() {
+		fetch('/settings/api/memory')
+			.then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+			.then(function(data) {
+				var listDiv = document.getElementById('memory-list');
+				if (!data.entries || data.entries.length === 0) {
+					listDiv.innerHTML = '<p style="color: var(--color-text-muted);">No memory entries yet. Click "New entry" to create one.</p>';
+					return;
+				}
+				var html = '<table style="width:100%; border-collapse: collapse;">' +
+					'<thead><tr>' +
+					'<th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--color-border);">ID</th>' +
+					'<th style="text-align:left; padding:0.5rem; border-bottom:1px solid var(--color-border);">Title</th>' +
+					'<th style="text-align:right; padding:0.5rem; border-bottom:1px solid var(--color-border);">Size</th>' +
+					'<th style="text-align:right; padding:0.5rem; border-bottom:1px solid var(--color-border);">Actions</th>' +
+					'</tr></thead><tbody>';
+				data.entries.forEach(function(e) {
+					html += '<tr>' +
+						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border);"><code>' + escapeHtml(e.id) + '</code></td>' +
+						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border);">' + escapeHtml(e.title || '') + '</td>' +
+						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border); text-align:right; font-variant-numeric:tabular-nums;">' + fmtBytes(e.bytes) + '</td>' +
+						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border); text-align:right;">' +
+							'<button class="btn-link" data-mem-edit="' + escapeAttr(e.id) + '">Edit</button> ' +
+							'<button class="btn-link" data-mem-delete="' + escapeAttr(e.id) + '" style="color:var(--color-error);">Delete</button>' +
+						'</td>' +
+					'</tr>';
+				});
+				html += '</tbody></table>';
+				listDiv.innerHTML = html;
+				listDiv.querySelectorAll('[data-mem-edit]').forEach(function(b) {
+					b.addEventListener('click', function() { editMemoryEntry(b.dataset.memEdit); });
+				});
+				listDiv.querySelectorAll('[data-mem-delete]').forEach(function(b) {
+					b.addEventListener('click', function() { deleteMemoryEntry(b.dataset.memDelete); });
+				});
+			})
+			.catch(function(err) {
+				var msg = (err && err.toString) ? err.toString() : err;
+				document.getElementById('memory-list').innerHTML =
+					'<p style="color: var(--color-text-muted);">Memory is unavailable (' + escapeHtml(msg) + '). Enable it under Intelligence → Memory.</p>';
+			});
+	}
+
+	function openMemoryEditor(id, content) {
+		memoryEditing = id;
+		document.getElementById('memory-edit-id').value = id;
+		document.getElementById('memory-edit-id').readOnly = !!id; // editing existing → id is fixed
+		document.getElementById('memory-edit-content').value = content;
+		document.getElementById('memory-edit-panel').style.display = 'block';
+	}
+
+	function closeMemoryEditor() {
+		memoryEditing = null;
+		document.getElementById('memory-edit-panel').style.display = 'none';
+	}
+
+	function editMemoryEntry(id) {
+		fetch('/settings/api/memory/' + encodeURIComponent(id))
+			.then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+			.then(function(text) { openMemoryEditor(id, text); })
+			.catch(function(err) { showStatus('Load failed: ' + err.message, true); });
+	}
+
+	function saveMemoryEntry() {
+		var id = document.getElementById('memory-edit-id').value.trim();
+		var content = document.getElementById('memory-edit-content').value;
+		if (!id) { showStatus('id is required', true); return; }
+		if (!content.trim()) { showStatus('content is empty', true); return; }
+		fetch('/settings/api/memory', {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify({id: id, content: content})
+		})
+			.then(function(r) { return r.json().then(function(j) { return {ok: r.ok, body: j}; }); })
+			.then(function(res) {
+				if (!res.ok) { showStatus('Save failed: ' + (res.body.error || ''), true); return; }
+				showStatus('Saved ' + id, false);
+				closeMemoryEditor();
+				refreshMemoryList();
+			})
+			.catch(function(err) { showStatus('Save failed: ' + err.message, true); });
+	}
+
+	function deleteMemoryEntry(id) {
+		if (!confirm('Delete memory entry "' + id + '"? This cannot be undone.')) return;
+		fetch('/settings/api/memory/' + encodeURIComponent(id), {method: 'DELETE'})
+			.then(function(r) { return r.json().then(function(j) { return {ok: r.ok, body: j}; }); })
+			.then(function(res) {
+				if (!res.ok) { showStatus('Delete failed: ' + (res.body.error || ''), true); return; }
+				showStatus('Deleted ' + id, false);
+				if (memoryEditing === id) closeMemoryEditor();
+				refreshMemoryList();
+			})
+			.catch(function(err) { showStatus('Delete failed: ' + err.message, true); });
+	}
 })();
 </script>
 </body>

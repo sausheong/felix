@@ -30,6 +30,24 @@ type Trace struct {
 	mu     sync.Mutex
 	last   time.Time
 	phases []phaseRecord
+
+	// onMark, when set, is invoked synchronously on every Mark call so
+	// the gateway WebSocket can forward live phase events to subscribed
+	// clients (the chat-UI trace panel). Nil means no live forwarding,
+	// which preserves the original "slog only" behavior for tests and
+	// non-gateway call paths.
+	onMark func(phase string, durMs, atMs int64, attrs []any)
+}
+
+// SetOnMark registers a callback fired on every Mark. Safe to call once
+// before the trace is shared with a goroutine; later calls overwrite the
+// previous callback. The callback is invoked under the trace's lock so
+// receivers must be quick (e.g., non-blocking channel send).
+func (t *Trace) SetOnMark(fn func(phase string, durMs, atMs int64, attrs []any)) {
+	if t == nil {
+		return
+	}
+	t.onMark = fn
 }
 
 type phaseRecord struct {
@@ -63,6 +81,7 @@ func (t *Trace) Mark(phase string, extraAttrs ...any) {
 	at := now.Sub(t.Started).Milliseconds()
 	t.phases = append(t.phases, phaseRecord{Name: phase, DurMs: dur, AtMs: at})
 	t.last = now
+	cb := t.onMark
 	t.mu.Unlock()
 
 	attrs := []any{
@@ -74,6 +93,10 @@ func (t *Trace) Mark(phase string, extraAttrs ...any) {
 	}
 	attrs = append(attrs, extraAttrs...)
 	slog.Info("perf", attrs...)
+
+	if cb != nil {
+		cb(phase, dur, at, extraAttrs)
+	}
 }
 
 // Summary emits one final slog.Info "perf summary" line with the total

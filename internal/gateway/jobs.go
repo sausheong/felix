@@ -202,6 +202,84 @@ body {
 .edit-schedule button:hover { border-color: var(--accent); }
 .edit-schedule button.save-btn { color: var(--success); border-color: var(--success); }
 .edit-schedule button.cancel-btn { color: var(--text-muted); }
+#new-job-card {
+	background: var(--bg-card);
+	border: 1px dashed var(--border);
+	border-radius: 10px;
+	padding: 1rem 1.25rem;
+	margin-bottom: 1rem;
+}
+#new-job-card h2 {
+	font-size: 0.95rem;
+	color: var(--text-strong);
+	margin-bottom: 0.75rem;
+}
+#new-job-card .field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	margin-bottom: 0.6rem;
+}
+#new-job-card label {
+	font-size: 0.75rem;
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+#new-job-card input,
+#new-job-card textarea {
+	background: var(--bg-input);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.4rem 0.6rem;
+	color: var(--text);
+	font-size: 0.85rem;
+	font-family: inherit;
+	outline: none;
+	transition: border-color 0.2s;
+}
+#new-job-card input:focus,
+#new-job-card textarea:focus { border-color: var(--accent); }
+#new-job-card textarea {
+	min-height: 60px;
+	resize: vertical;
+}
+#new-job-card .actions {
+	display: flex;
+	gap: 0.5rem;
+	margin-top: 0.5rem;
+}
+#new-job-card button {
+	background: none;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.35rem 0.85rem;
+	cursor: pointer;
+	font-size: 0.85rem;
+	color: var(--text);
+	transition: border-color 0.2s, color 0.2s;
+}
+#new-job-card button.primary {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+#new-job-card button:hover { border-color: var(--accent); color: var(--accent); }
+#add-job-toggle {
+	background: none;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.4rem 0.9rem;
+	cursor: pointer;
+	font-size: 0.85rem;
+	color: var(--text);
+	margin-bottom: 1rem;
+}
+#add-job-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.field-hint {
+	font-size: 0.7rem;
+	color: var(--text-muted);
+	margin-top: 0.15rem;
+}
 </style>
 </head>
 <body>
@@ -212,6 +290,29 @@ body {
 	<span class="status" id="conn-status">connecting...</span>
 </div>
 <div id="content">
+	<button id="add-job-toggle">+ Add new job</button>
+	<div id="new-job-card" style="display:none;">
+		<h2>Schedule a new job</h2>
+		<div class="field">
+			<label for="new-job-name">Name</label>
+			<input id="new-job-name" type="text" placeholder="daily-summary">
+			<div class="field-hint">Unique identifier — letters, digits, dashes, underscores.</div>
+		</div>
+		<div class="field">
+			<label for="new-job-schedule">Schedule</label>
+			<input id="new-job-schedule" type="text" placeholder="30m, 1h, 24h" autocomplete="off">
+			<div class="field-hint" id="new-job-schedule-hint">Go duration string. Min 1 minute (1m); typical: 30m, 1h, 6h, 24h.</div>
+		</div>
+		<div class="field">
+			<label for="new-job-prompt">Prompt</label>
+			<textarea id="new-job-prompt" placeholder="The instruction the agent will receive on each run..."></textarea>
+		</div>
+		<div class="actions">
+			<button class="primary" id="new-job-create">Create</button>
+			<button id="new-job-cancel">Cancel</button>
+			<span id="new-job-error" style="color:var(--error); font-size:0.8rem; margin-left:auto; align-self:center;"></span>
+		</div>
+	</div>
 	<div id="jobs-list"></div>
 </div>
 
@@ -280,6 +381,128 @@ body {
 			renderJobs(result.jobs || []);
 		});
 	}
+
+	// New-job form
+	var addJobToggle = document.getElementById('add-job-toggle');
+	var newJobCard = document.getElementById('new-job-card');
+	var newJobName = document.getElementById('new-job-name');
+	var newJobSchedule = document.getElementById('new-job-schedule');
+	var newJobPrompt = document.getElementById('new-job-prompt');
+	var newJobCreate = document.getElementById('new-job-create');
+	var newJobCancel = document.getElementById('new-job-cancel');
+	var newJobError = document.getElementById('new-job-error');
+
+	function resetNewJobForm() {
+		newJobName.value = '';
+		newJobSchedule.value = '';
+		newJobPrompt.value = '';
+		newJobError.textContent = '';
+	}
+
+	addJobToggle.addEventListener('click', function() {
+		var open = newJobCard.style.display === 'none';
+		newJobCard.style.display = open ? 'block' : 'none';
+		addJobToggle.textContent = open ? '× Cancel new job' : '+ Add new job';
+		if (open) {
+			newJobName.focus();
+			updateScheduleHint();
+		} else {
+			resetNewJobForm();
+		}
+	});
+
+	// Live schedule validator + next-run preview. Mirrors what
+	// time.ParseDuration accepts on the server. Allows compound forms
+	// like "1h30m" and the standard units (ns, us/µs, ms, s, m, h).
+	// Rejects bare numbers (Go requires a unit) and units not in the
+	// stdlib set. Renders either an error or "Next run at HH:MM:SS".
+	var hintEl = document.getElementById('new-job-schedule-hint');
+	var defaultHint = hintEl ? hintEl.textContent : '';
+
+	function parseGoDuration(s) {
+		s = (s || '').trim();
+		if (!s) return null;
+		// Accept one or more <number><unit> segments. Numbers may have a
+		// fractional part. Units: ns, us/µs, ms, s, m, h.
+		var re = /^(\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$/;
+		if (!re.test(s)) return null;
+		var seg = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g;
+		var totalSec = 0;
+		var match;
+		while ((match = seg.exec(s)) !== null) {
+			var n = parseFloat(match[1]);
+			switch (match[2]) {
+			case 'ns': totalSec += n / 1e9; break;
+			case 'us': case 'µs': totalSec += n / 1e6; break;
+			case 'ms': totalSec += n / 1e3; break;
+			case 's': totalSec += n; break;
+			case 'm': totalSec += n * 60; break;
+			case 'h': totalSec += n * 3600; break;
+			}
+		}
+		return totalSec;
+	}
+
+	function fmtClock(d) {
+		var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+		return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+	}
+
+	function updateScheduleHint() {
+		if (!hintEl) return;
+		var raw = newJobSchedule.value;
+		if (!raw.trim()) {
+			hintEl.textContent = defaultHint;
+			hintEl.style.color = '';
+			return;
+		}
+		var sec = parseGoDuration(raw);
+		if (sec === null) {
+			hintEl.textContent = 'Not a valid Go duration. Examples: 30m, 1h, 6h30m, 24h.';
+			hintEl.style.color = 'var(--error)';
+			return;
+		}
+		if (sec < 60) {
+			hintEl.textContent = 'Schedules under 1 minute are very chatty — consider 1m or longer.';
+			hintEl.style.color = 'var(--warning)';
+			return;
+		}
+		var next = new Date(Date.now() + sec * 1000);
+		hintEl.textContent = 'Next run at ' + fmtClock(next) +
+			(sec >= 24 * 3600 ? ' (' + (sec / 86400).toFixed(1) + ' days from now)' :
+			 sec >= 3600 ? ' (' + (sec / 3600).toFixed(1) + ' hours from now)' :
+			 ' (' + Math.round(sec / 60) + ' minutes from now)');
+		hintEl.style.color = 'var(--success)';
+	}
+	newJobSchedule.addEventListener('input', updateScheduleHint);
+
+	newJobCancel.addEventListener('click', function() {
+		newJobCard.style.display = 'none';
+		addJobToggle.textContent = '+ Add new job';
+		resetNewJobForm();
+	});
+
+	newJobCreate.addEventListener('click', function() {
+		var name = newJobName.value.trim();
+		var schedule = newJobSchedule.value.trim();
+		var prompt = newJobPrompt.value.trim();
+		newJobError.textContent = '';
+		if (!name || !schedule || !prompt) {
+			newJobError.textContent = 'name, schedule, and prompt are required';
+			return;
+		}
+		newJobCreate.disabled = true;
+		sendRPC('jobs.add', { name: name, schedule: schedule, prompt: prompt }, function() {
+			newJobCreate.disabled = false;
+			newJobCard.style.display = 'none';
+			addJobToggle.textContent = '+ Add new job';
+			resetNewJobForm();
+			refreshJobs();
+		});
+		// sendRPC's error path alerts via the existing handler; re-enable
+		// the button after a short delay if no callback fires.
+		setTimeout(function() { newJobCreate.disabled = false; }, 3000);
+	});
 
 	function renderJobs(jobs) {
 		jobsList.innerHTML = '';

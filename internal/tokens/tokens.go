@@ -144,3 +144,31 @@ func (c *Calibrator) Adjust(estimated int) int {
 	defer c.mu.Unlock()
 	return int(float64(estimated) * c.ratio)
 }
+
+// Snapshot returns the current (ratio, count) so the value can be persisted
+// across Runtime reconstructions. Both fields are read under the same lock
+// so a concurrent Update() can't tear them.
+func (c *Calibrator) Snapshot() (ratio float64, count int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ratio, c.count
+}
+
+// Restore overwrites the calibrator's ratio + count from previously
+// snapshotted values. Used at Runtime construction to seed the calibrator
+// with whatever was learned in earlier turns of the same session — without
+// this, every chat.send rebuild loses the calibration and starts at 1.0
+// again, defeating the point of preventive compaction during the first few
+// turns of a long session.
+//
+// Bad inputs (non-positive ratio, negative count) are silently ignored so
+// a corrupt persistence file can't poison the in-memory state.
+func (c *Calibrator) Restore(ratio float64, count int) {
+	if ratio <= 0 || count < 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ratio = ratio
+	c.count = count
+}
