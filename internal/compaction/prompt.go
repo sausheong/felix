@@ -192,6 +192,11 @@ func BuildTranscript(entries []session.SessionEntry) string {
 
 // BuildPrompt assembles the full compaction prompt from a transcript and
 // optional user-provided focus instructions.
+//
+// Deprecated for the streaming call path: BuildPromptParts is preferred
+// because it splits the static instruction header (cacheable) from the
+// per-call transcript (not cacheable). BuildPrompt is retained for
+// callers / tests that want the single-string view.
 func BuildPrompt(transcript, additionalInstructions string) string {
 	var sb strings.Builder
 	sb.WriteString(summarizationPromptHeader)
@@ -202,6 +207,29 @@ func BuildPrompt(transcript, additionalInstructions string) string {
 	sb.WriteString("\n\nCONVERSATION TO SUMMARIZE:\n")
 	sb.WriteString(transcript)
 	return sb.String()
+}
+
+// BuildPromptParts returns the (systemPrompt, userMessage) pair that
+// compaction should send to the LLM. Splitting the static instruction
+// header out of the user message lets providers that support prompt
+// caching (Anthropic) cache the long instruction prefix once and reuse
+// it on every compaction call. Without this split, every compaction
+// sends ~2 KB of instructions uncached, which dominated TTFT on the
+// first compaction and was pure waste on subsequent ones.
+//
+// The system prompt is the static instruction header verbatim, no
+// per-call data. The user message is "[focus]\nCONVERSATION TO
+// SUMMARIZE:\n[transcript]".
+func BuildPromptParts(transcript, additionalInstructions string) (systemPrompt, userMessage string) {
+	var sb strings.Builder
+	if strings.TrimSpace(additionalInstructions) != "" {
+		sb.WriteString("Additional focus: ")
+		sb.WriteString(additionalInstructions)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("CONVERSATION TO SUMMARIZE:\n")
+	sb.WriteString(transcript)
+	return summarizationPromptHeader, sb.String()
 }
 
 // analysisBlockRE matches a complete <analysis>...</analysis> block.

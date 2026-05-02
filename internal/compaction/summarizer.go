@@ -86,8 +86,15 @@ func (s *Summarizer) summarizeWithFallback(ctx context.Context, entries []sessio
 
 // callOnce performs a single summarizer invocation against a pre-built
 // transcript. Returns the formatted summary text or an error.
+//
+// Prompt-cache strategy: the static instruction header goes into a
+// cache-marked SystemPromptPart so Anthropic caches the ~2 KB prefix.
+// The transcript + per-call focus go into the user message. The first
+// compaction pays cache_creation; every subsequent compaction in the
+// 5-minute TTL window hits cache_read for the prefix, dropping a few
+// seconds off TTFT.
 func (s *Summarizer) callOnce(ctx context.Context, transcript, additionalInstructions string) (string, error) {
-	prompt := BuildPrompt(transcript, additionalInstructions)
+	systemPrompt, userMessage := BuildPromptParts(transcript, additionalInstructions)
 	timeout := s.Timeout
 	if timeout == 0 {
 		timeout = 60 * time.Second
@@ -96,8 +103,14 @@ func (s *Summarizer) callOnce(ctx context.Context, transcript, additionalInstruc
 	defer cancel()
 
 	req := llm.ChatRequest{
-		Model:     s.Model,
-		Messages:  []llm.Message{{Role: "user", Content: prompt}},
+		Model:    s.Model,
+		Messages: []llm.Message{{Role: "user", Content: userMessage}},
+		// One cache-marked system part: providers that support caching
+		// (Anthropic) emit a cache marker on it; the OpenAI/Gemini/Qwen
+		// path concatenates the Text fields and ignores Cache.
+		SystemPromptParts: []llm.SystemPromptPart{
+			{Text: systemPrompt, Cache: true},
+		},
 		MaxTokens: 4096,
 	}
 	stream, err := s.Provider.ChatStream(callCtx, req)

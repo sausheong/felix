@@ -174,6 +174,49 @@ func (r *Runtime) emit(ev AgentEvent) {
 	r.events <- ev
 }
 
+// maybeKickoffAsyncCompaction conditionally fires Compaction.MaybeCompactAsync
+// when the just-finished turn left the session close enough to the trigger
+// threshold that the NEXT turn would compact synchronously. The async path
+// runs the summarizer in a background goroutine so the next chat.send finds
+// the work already done (or briefly waits for it via WaitForInFlight at the
+// top of the loop) instead of blocking 10–20s on the user.
+//
+// Trigger: 80% of the configured threshold OR 80% of the message cap. Both
+// are computed against the messages we JUST sent — the next turn will only
+// add a couple of entries on top, so this is a close approximation of
+// "would the next turn trigger sync compaction."
+//
+// No-op when:
+//   - the manager is nil or already has an in-flight compaction for this session
+//   - the model is empty (subagent / test paths)
+//   - both trigger conditions are below the preemption threshold
+func (r *Runtime) maybeKickoffAsyncCompaction(msgs []llm.Message, parts []llm.SystemPromptPart, toolDefs []llm.ToolDef) {
+	if r.Compaction == nil || r.Model == "" {
+		return
+	}
+	if r.Compaction.HasInFlight(r.Session.ID) {
+		return
+	}
+	// Use the same calibrated estimate the sync path uses so the
+	// preemption fires consistently with the threshold the user sees.
+	if r.calibrator == nil {
+		r.calibrator = tokens.NewCalibrator()
+	}
+	estimate := r.calibrator.Adjust(tokens.Estimate(msgs, llm.JoinSystemPromptParts(parts), toolDefs))
+	window := tokens.ContextWindow(r.Model)
+	threshold := 0.6
+	if r.Compaction.Threshold > 0 {
+		threshold = r.Compaction.Threshold
+	}
+	preemptThresholdHit := window > 0 && float64(estimate) > 0.8*threshold*float64(window)
+	msgCap := r.Compaction.MessageCap
+	preemptCountHit := msgCap > 0 && len(msgs) > int(0.8*float64(msgCap))
+	if !preemptThresholdHit && !preemptCountHit {
+		return
+	}
+	r.Compaction.MaybeCompactAsync(r.Session, compaction.ReasonPreventive)
+}
+
 // providerSupportsCaching returns true when the runtime's provider implements
 // Anthropic-style explicit prompt caching. Used to decide whether to set
 // CacheLastMessage on outgoing ChatRequests.
@@ -430,6 +473,26 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			// The reactive overflow handler below still covers all turns
 			// regardless. See CompactionConfig.MessageCap for incident
 			// rationale.
+			// Wait briefly on any in-flight async compaction kicked off
+			// by the previous turn (see end-of-Run). If it completed, the
+			// session view already reflects the splice and the threshold
+			// check below will likely be a no-op. If it didn't complete
+			// in 8s, fall through to synchronous compaction so we don't
+			// stall this turn indefinitely.
+			//
+			// 8s is chosen so a typical haiku-class summarizer finishes
+			// within budget on a healthy network, and a stuck
+			// summarizer doesn't block more than once per turn.
+			if turn == 0 && r.Compaction != nil {
+				if res, ok := r.Compaction.WaitForInFlight(r.Session.ID, 8*time.Second); ok && res.Compacted {
+					r.emit(AgentEvent{Type: EventCompactionDone, Compaction: &res})
+					history = r.Session.View()
+					msgs = assembleMessages(history)
+					pruneToolResults(msgs, maxToolResultLen, spillCfg)
+					msgs = prependPostCompactRestore(msgs, r.snapshotTouchedFiles())
+				}
+			}
+
 			compactionAllowed := turn == 0 || r.providerSupportsMidLoopCompaction()
 			if compactionAllowed && r.Compaction != nil && r.Model != "" {
 				if r.calibrator == nil {
@@ -682,6 +745,13 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 				}
 				tr.Mark("agent.done", "turn", turn, "reason", "no_tool_calls")
 				r.emit(AgentEvent{Type: EventDone, Usage: lastUsage})
+				// Fire async compaction between turns when the session
+				// is approaching the threshold. Runs in a background
+				// goroutine; the next chat.send awaits any in-flight
+				// compaction at the top of its loop. Without this, a
+				// session that crosses the threshold pays compaction
+				// latency (often 10–20s) on the user's next turn.
+				r.maybeKickoffAsyncCompaction(msgs, parts, toolDefs)
 				return
 			}
 

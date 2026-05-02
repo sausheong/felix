@@ -63,6 +63,21 @@ type Manager struct {
 
 	failMu   sync.Mutex     // guards failures map; separate from mu so the breaker check (called before lockFor) doesn't serialize on the per-session lock-map allocator
 	failures map[string]int // session.ID → consecutive-failure count
+
+	// inFlightMu guards the inFlight map. Separate from the other
+	// mutexes so awaiting an in-flight compaction (WaitForInFlight)
+	// never serializes on the per-session lock-map or failure-counter.
+	inFlightMu sync.Mutex
+	inFlight   map[string]*inFlightCompaction // session.ID → in-flight handle
+}
+
+// inFlightCompaction tracks a background compaction goroutine spawned
+// via MaybeCompactAsync. The done channel is closed when the goroutine
+// returns; result holds the outcome for any waiter that wants it.
+type inFlightCompaction struct {
+	done   chan struct{}
+	result Result
+	err    error
 }
 
 // MaybeCompact runs a compaction pass on sess if the session has more than
@@ -165,6 +180,106 @@ func (m *Manager) MaybeCompact(ctx context.Context, sess *session.Session, reaso
 	}, nil
 }
 
+// MaybeCompactAsync starts a compaction goroutine for sess if one is
+// not already in flight for that session ID, then returns immediately.
+// The returned channel closes when the goroutine completes — most
+// callers ignore it; the existence is what matters (WaitForInFlight
+// looks it up via session ID).
+//
+// Designed for the "between turns" pattern: at the end of a chat turn
+// the runtime checks if the session is approaching the compaction
+// threshold; if so, it calls MaybeCompactAsync and returns. The next
+// chat turn calls WaitForInFlight at the top of its loop and either
+// finds the work already done (zero added latency) or briefly waits
+// for the in-flight goroutine to finish.
+//
+// No-op when m is nil, the session already has an in-flight
+// compaction, or the manager has no Summarizer. The goroutine uses a
+// fresh background context bounded by 2× the summarizer timeout (long
+// enough for the three-stage fallback path) so that a returning
+// caller's cancellation can't kill the in-flight summary.
+func (m *Manager) MaybeCompactAsync(sess *session.Session, reason Reason) <-chan struct{} {
+	if m == nil || m.Summarizer == nil || sess == nil {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	m.inFlightMu.Lock()
+	if existing, ok := m.inFlight[sess.ID]; ok {
+		m.inFlightMu.Unlock()
+		return existing.done
+	}
+	if m.inFlight == nil {
+		m.inFlight = make(map[string]*inFlightCompaction)
+	}
+	fl := &inFlightCompaction{done: make(chan struct{})}
+	m.inFlight[sess.ID] = fl
+	m.inFlightMu.Unlock()
+
+	timeout := m.Summarizer.Timeout
+	if timeout == 0 {
+		timeout = 60 * time.Second
+	}
+	go func() {
+		defer close(fl.done)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*timeout)
+		defer cancel()
+		res, err := m.MaybeCompact(ctx, sess, reason, "")
+		fl.result = res
+		fl.err = err
+		// Drop our entry from the map so a subsequent burst can fire a
+		// fresh compaction (the next turn's WaitForInFlight will see no
+		// entry and proceed straight to its own threshold check).
+		m.inFlightMu.Lock()
+		delete(m.inFlight, sess.ID)
+		m.inFlightMu.Unlock()
+	}()
+	return fl.done
+}
+
+// WaitForInFlight blocks until any in-flight async compaction for the
+// given session ID completes, or until the timeout elapses. Returns
+// (result, true) on completion within the budget, (zero, false)
+// otherwise. No-op (returns false immediately) when no compaction is
+// in flight for the session.
+//
+// Wire this at the top of the chat loop, before assembling messages,
+// so the next turn picks up the freshly-compacted view when the prior
+// turn kicked off async compaction.
+func (m *Manager) WaitForInFlight(sessionID string, timeout time.Duration) (Result, bool) {
+	if m == nil {
+		return Result{}, false
+	}
+	m.inFlightMu.Lock()
+	fl, ok := m.inFlight[sessionID]
+	m.inFlightMu.Unlock()
+	if !ok {
+		return Result{}, false
+	}
+	select {
+	case <-fl.done:
+		return fl.result, true
+	case <-time.After(timeout):
+		// Timed out waiting; the goroutine keeps running. The next
+		// preventive check on this turn will likely fall through to
+		// synchronous compaction since nothing's been spliced in yet.
+		return Result{}, false
+	}
+}
+
+// HasInFlight reports whether an async compaction is currently running
+// for the given session ID. Used by the runtime to decide whether to
+// spawn another async compaction at end-of-turn.
+func (m *Manager) HasInFlight(sessionID string) bool {
+	if m == nil {
+		return false
+	}
+	m.inFlightMu.Lock()
+	defer m.inFlightMu.Unlock()
+	_, ok := m.inFlight[sessionID]
+	return ok
+}
+
 // ForgetSession removes the per-session lock and per-session failure
 // counter for the given session ID. Safe to call on a nil Manager and
 // on unknown sessions.
@@ -191,6 +306,12 @@ func (m *Manager) ForgetSession(sessionID string) {
 	m.failMu.Lock()
 	delete(m.failures, sessionID)
 	m.failMu.Unlock()
+	// Drop any in-flight tracking entry too. The goroutine itself
+	// already deletes its entry on completion; this covers the rare
+	// case of a session being forgotten mid-compaction.
+	m.inFlightMu.Lock()
+	delete(m.inFlight, sessionID)
+	m.inFlightMu.Unlock()
 }
 
 // incrementFailure bumps the per-session consecutive-failure count and
