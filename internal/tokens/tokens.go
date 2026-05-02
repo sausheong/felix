@@ -35,46 +35,65 @@ const perMessageOverhead = 3
 
 // ContextWindow returns the maximum input tokens for the given
 // "provider/model" identifier. Unknown models get a conservative 32k fallback.
+//
+// For "local"/"ollama" providers, the registered ollama context (probed
+// at startup via /api/show) is used. For all other providers, lookup is
+// driven by the modelID family — not the provider prefix — so proxies
+// and relays that expose Claude/GPT/Gemini under a custom provider name
+// (e.g. "platformai/claude-sonnet-4-6-asia-southeast1", AWS Bedrock,
+// Vertex AI) still get the right window.
 func ContextWindow(model string) int {
 	if model == "" {
 		return defaultUnknownWindow
 	}
 	provider, modelID := splitProviderModel(model)
 
-	switch provider {
-	case "anthropic":
-		// All current Anthropic chat models share a 200k window.
-		if strings.Contains(modelID, "claude") {
-			return 200000
-		}
-	case "openai":
-		switch {
-		case strings.HasPrefix(modelID, "gpt-4o"):
-			return 128000
-		case strings.HasPrefix(modelID, "gpt-4-turbo"):
-			return 128000
-		case strings.HasPrefix(modelID, "gpt-4"):
-			return 8192
-		case strings.HasPrefix(modelID, "gpt-3.5"):
-			return 16385
-		}
-	case "google", "gemini":
-		switch {
-		case strings.Contains(modelID, "gemini-1.5-pro"):
-			return 2000000
-		case strings.Contains(modelID, "gemini-1.5-flash"):
-			return 1000000
-		case strings.Contains(modelID, "gemini-2"):
-			return 1000000
-		}
-	case "local", "ollama":
+	// Ollama-bundled local models register their advertised window at
+	// startup; honour that before falling through to family detection.
+	if provider == "local" || provider == "ollama" {
 		ollamaCtxMu.RLock()
-		defer ollamaCtxMu.RUnlock()
-		if v, ok := ollamaCtx[modelID]; ok {
+		v, ok := ollamaCtx[modelID]
+		ollamaCtxMu.RUnlock()
+		if ok {
 			return v
 		}
 	}
+
+	if w := windowByModelFamily(modelID); w > 0 {
+		return w
+	}
 	return defaultUnknownWindow
+}
+
+// windowByModelFamily picks the context window from the model identifier
+// alone, ignoring provider prefix. This is the path that handles
+// proxies (platformai, openrouter, bedrock, vertex) where the provider
+// label doesn't match the underlying model family. modelID may itself
+// be nested (e.g. "openai/gpt-4o-2024-08-06" passed by openrouter); we
+// match on both the full id and its leaf segment.
+func windowByModelFamily(modelID string) int {
+	id := strings.ToLower(modelID)
+	leaf := id
+	if i := strings.LastIndex(leaf, "/"); i >= 0 {
+		leaf = leaf[i+1:]
+	}
+	switch {
+	case strings.Contains(id, "claude"):
+		// All current Claude chat models share a 200k window.
+		return 200000
+	case strings.HasPrefix(leaf, "gpt-4o"), strings.HasPrefix(leaf, "gpt-4-turbo"):
+		return 128000
+	case strings.HasPrefix(leaf, "gpt-4"):
+		return 8192
+	case strings.HasPrefix(leaf, "gpt-3.5"):
+		return 16385
+	case strings.Contains(id, "gemini-1.5-pro"):
+		return 2000000
+	case strings.Contains(id, "gemini-1.5-flash"),
+		strings.Contains(id, "gemini-2"):
+		return 1000000
+	}
+	return 0
 }
 
 const defaultUnknownWindow = 32000

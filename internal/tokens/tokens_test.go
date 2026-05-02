@@ -56,6 +56,28 @@ func TestContextWindowUnknownReturnsConservativeFallback(t *testing.T) {
 	assert.Equal(t, 32000, ContextWindow(""))
 }
 
+// TestContextWindowProxyProviderDetectedByModelFamily covers the case
+// where the provider prefix is a relay/proxy (platformai, openrouter,
+// bedrock, vertex) — the model family in the suffix should still drive
+// the window, not the provider label.
+func TestContextWindowProxyProviderDetectedByModelFamily(t *testing.T) {
+	tests := []struct {
+		model string
+		want  int
+	}{
+		{"platformai/claude-sonnet-4-6-asia-southeast1", 200000},
+		{"openrouter/anthropic/claude-3-opus", 200000},
+		{"bedrock/anthropic.claude-3-haiku", 200000},
+		{"vertex/gemini-1.5-pro-001", 2000000},
+		{"openrouter/openai/gpt-4o-2024-08-06", 128000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.model, func(t *testing.T) {
+			assert.Equal(t, tc.want, ContextWindow(tc.model))
+		})
+	}
+}
+
 func TestContextWindowOllamaDefault(t *testing.T) {
 	// Without RegisterOllamaContext call, ollama models fall back to a sane default
 	assert.Equal(t, 32000, ContextWindow("local/qwen2.5:3b-instruct"))
