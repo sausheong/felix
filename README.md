@@ -43,6 +43,7 @@ Every design decision in Felix flows from three commitments:
 - **Stream-failure resilience** — when a streaming response dies mid-flight (TCP reset, idle timeout, partial SSE) the runtime discards the partial output and retries via the provider's non-streaming endpoint, preserving the byte-identical prompt prefix.
 - **Config hot-reload** — edit `felix.json5` while running, changes apply immediately.
 - **WebSocket API** — JSON-RPC 2.0 control plane for programmatic access.
+- **OpenTelemetry export (optional)** — opt-in OTLP/HTTP exporter for traces, metrics, and logs. Each chat turn becomes an `agent.run` span with phase events for cortex recall, context assembly, LLM TTFT, and tool execution. The existing `/metrics` endpoint and `/logs` view stay unchanged. Configure via `felix.json5` or standard `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_SERVICE_NAME` env vars.
 - **Local-first** — all data lives on your filesystem, no external database required.
 
 ---

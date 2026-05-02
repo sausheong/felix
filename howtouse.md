@@ -23,6 +23,7 @@ Felix is a self-hosted AI agent gateway. It runs as a single binary on your mach
 - [Subagents and the `task` tool](#subagents-and-the-task-tool)
 - [Tool Policies](#tool-policies)
 - [WebSocket API](#websocket-api)
+- [OpenTelemetry Export](#opentelemetry-export)
 - [Security](#security)
 - [Example Configurations](#example-configurations)
 
@@ -1541,6 +1542,107 @@ ws.send(JSON.stringify({
 ```bash
 curl http://127.0.0.1:18789/health
 ```
+
+---
+
+## OpenTelemetry Export
+
+Felix can export traces, metrics, and logs to any OTLP/HTTP-compatible
+collector (Tempo, Jaeger, Loki, Grafana Cloud, Honeycomb, your own
+OpenTelemetry Collector, etc.). This is in addition to the local
+`/metrics` and `/logs` views — Felix never replaces them with the
+remote pipeline. Default: **disabled**.
+
+When enabled, every chat turn becomes one OTel span named `agent.run`
+with span events for every phase the agent loop emits today
+(`cortex.recall`, `context.assemble`, `llm.request_sent`,
+`llm.first_token`, `llm.stream_end`, `tool.exec`, `agent.done`, etc.).
+Each event carries the same key/value attributes the perf-log lines
+already include — turn number, model, error flag, output size, etc.
+You see the per-turn timeline in any OTel-compatible UI without
+parsing logs.
+
+Metrics emitted:
+
+| Metric | Type | Notes |
+|---|---|---|
+| `felix.uptime.seconds` | gauge | seconds since gateway start |
+| `felix.http.requests` | counter | HTTP requests handled |
+| `felix.ws.connections.active` | up-down counter | live WebSocket connections |
+| `felix.ws.messages` | counter | WebSocket messages received |
+| `felix.tool.calls` | counter | tagged with `tool.name=<tool>` |
+| `felix.llm.calls` | counter | LLM API requests |
+| `felix.errors` | counter | error events |
+
+Logs are forwarded via the standard `slog`-to-OTLP bridge (every
+`slog` record becomes one OTLP log record with the level, message,
+and structured attributes intact).
+
+### Enable via felix.json5
+
+```json5
+{
+  "otel": {
+    "enabled": true,
+    "endpoint": "http://collector.example.com:4318/",
+    "serviceName": "felix",
+    "sampleRatio": 1.0,           // 0.0..1.0; 1.0 = export every span
+    "signals": {
+      "traces": true,
+      "metrics": true,
+      "logs": true
+    }
+    // Optional: extra HTTP headers for tenant routing, auth, etc.
+    // "headers": { "X-Scope-OrgID": "tenant-1" }
+  }
+}
+```
+
+The endpoint is a full URL (scheme + host + optional port). Felix
+appends `/v1/{traces,metrics,logs}` per signal — don't include those
+paths in the URL. The scheme decides http vs https.
+
+OTel changes require a **restart** to take effect. The OTel SDK does
+not support swapping providers in flight, so the Settings UI surfaces
+this with a "Restart required" note.
+
+### Enable via env vars (no config edit needed)
+
+Standard OTel SDK environment variables override the file values and
+**implicitly enable** OTel when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+This is the easiest way to point Felix at a collector for an ad-hoc
+debugging session:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT="http://collector.example.com:4318/" \
+OTEL_SERVICE_NAME="felix-prod" \
+./felix start
+```
+
+Recognised variables (precedence over file values):
+
+| Var | Effect |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | sets `endpoint` and **implicitly enables OTel** |
+| `OTEL_SERVICE_NAME` | sets `serviceName` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | parsed as `key1=v1,key2=v2`, merged into `headers` |
+| `OTEL_TRACES_SAMPLER_ARG` | sets `sampleRatio` (float 0..1) |
+| `OTEL_SDK_DISABLED=true` | forces OTel off, even if config or env enabled it |
+
+### Settings UI
+
+Settings → **Gateway** tab → **OpenTelemetry** section. The same
+fields as the JSON config plus a Headers free-text box (key=value pairs,
+comma-separated). Changes require a restart.
+
+### Failure mode
+
+Telemetry is auxiliary; if the collector is unreachable, exporter
+init still succeeds (the OTel SDK retries in the background) and
+Felix serves chat normally. You'll see periodic warnings in
+`~/.felix/felix-app.log` along the lines of "context deadline
+exceeded" — those are the failed batch posts. Felix never crashes
+because the collector is down.
 
 ---
 

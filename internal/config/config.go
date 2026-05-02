@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -30,6 +31,7 @@ type Config struct {
 	Telegram   TelegramConfig            `json:"telegram"`
 	WebSearch  WebSearchConfig           `json:"web_search"`
 	MCPServers []MCPServerConfig         `json:"mcp_servers"`
+	OTel       OTelConfig                `json:"otel"`
 
 	mu   sync.RWMutex
 	path string
@@ -264,6 +266,39 @@ type MemoryConfig struct {
 	MaxEntries        int    `json:"maxEntries"`
 }
 
+// OTelConfig configures Felix's OpenTelemetry exporter. When Enabled is
+// false (the default), Felix emits no OTLP traffic and the existing
+// local-only instrumentation (slog logs, /metrics, /logs view) is the
+// only telemetry surface.
+//
+// Endpoint is a full URL, e.g. "http://collector.example.com/" or
+// "https://otel.example.com:4318". The scheme decides http-vs-tls and
+// the SDK appends /v1/{traces,metrics,logs} per signal.
+//
+// Standard OTel env vars override the file values when set:
+//   - OTEL_EXPORTER_OTLP_ENDPOINT → Endpoint
+//   - OTEL_SERVICE_NAME           → ServiceName
+//   - OTEL_EXPORTER_OTLP_HEADERS  → Headers (parsed as key1=v1,key2=v2)
+//   - OTEL_TRACES_SAMPLER_ARG     → SampleRatio (parsed as float64)
+//   - OTEL_SDK_DISABLED=true      → forces Enabled=false
+type OTelConfig struct {
+	Enabled     bool              `json:"enabled"`
+	Endpoint    string            `json:"endpoint"`
+	ServiceName string            `json:"serviceName"`
+	SampleRatio float64           `json:"sampleRatio"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Signals     OTelSignals       `json:"signals"`
+}
+
+// OTelSignals toggles the three signal pipelines independently. All three
+// default to true when OTel.Enabled flips on, since the typical "connect
+// me to a collector" intent wants everything.
+type OTelSignals struct {
+	Traces  bool `json:"traces"`
+	Metrics bool `json:"metrics"`
+	Logs    bool `json:"logs"`
+}
+
 // LocalConfig configures the bundled Ollama supervisor.
 type LocalConfig struct {
 	Enabled   bool   `json:"enabled"`    // master switch
@@ -392,6 +427,11 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.path = path
 
+	// Apply standard OTel env-var overrides BEFORE the validate/backfill
+	// pass below so the defaults code sees the final intended values.
+	// Env wins over file: ops convention, also matches the OTel SDK spec.
+	applyOTelEnvOverrides(&cfg.OTel)
+
 	// Backfill compaction defaults if the user's config is silent.
 	// "All numeric fields zero" is our proxy for "no compaction block at
 	// all" — in that case copy the full default. Otherwise only backfill
@@ -502,6 +542,12 @@ func DefaultConfig() *Config {
 			// Provider/LLMModel intentionally empty — cortex mirrors the
 			// chatting agent's model. Set these in felix.json5 only to pin
 			// cortex to a specific provider regardless of the chat agent.
+		},
+		OTel: OTelConfig{
+			Enabled:     false,
+			ServiceName: "felix",
+			SampleRatio: 1.0,
+			Signals:     OTelSignals{Traces: true, Metrics: true, Logs: true},
 		},
 		Security: SecurityConfig{
 			ExecApprovals: ExecApprovalsConfig{
@@ -667,6 +713,69 @@ func (c *Config) UpdateFrom(src *Config) {
 	// without a restart. Was previously omitted, silently breaking hot-reload
 	// of every mcp_servers field.
 	c.MCPServers = src.MCPServers
+	c.OTel = src.OTel
+}
+
+// applyOTelEnvOverrides folds standard OTel SDK environment variables
+// into the parsed config. Env wins over file. Empty env vars are
+// ignored (so unsetting an override doesn't accidentally blank the
+// configured value).
+//
+// Recognised:
+//   - OTEL_EXPORTER_OTLP_ENDPOINT  → cfg.Endpoint
+//   - OTEL_SERVICE_NAME            → cfg.ServiceName
+//   - OTEL_EXPORTER_OTLP_HEADERS   → cfg.Headers (parsed as key1=v1,key2=v2)
+//   - OTEL_TRACES_SAMPLER_ARG      → cfg.SampleRatio (parsed as float)
+//   - OTEL_SDK_DISABLED=true       → forces cfg.Enabled=false
+//
+// Setting OTEL_EXPORTER_OTLP_ENDPOINT alone is enough to "turn on" OTel
+// from the command line without editing felix.json5 — that's the most
+// common ops use case.
+func applyOTelEnvOverrides(cfg *OTelConfig) {
+	if v := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")); v != "" {
+		cfg.Endpoint = v
+		cfg.Enabled = true // setting endpoint via env is an implicit enable
+	}
+	if v := strings.TrimSpace(os.Getenv("OTEL_SERVICE_NAME")); v != "" {
+		cfg.ServiceName = v
+	}
+	if v := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_HEADERS")); v != "" {
+		if cfg.Headers == nil {
+			cfg.Headers = map[string]string{}
+		}
+		for _, pair := range strings.Split(v, ",") {
+			k, val, ok := strings.Cut(strings.TrimSpace(pair), "=")
+			if !ok {
+				continue
+			}
+			cfg.Headers[strings.TrimSpace(k)] = strings.TrimSpace(val)
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("OTEL_TRACES_SAMPLER_ARG")); v != "" {
+		if r, err := strconv.ParseFloat(v, 64); err == nil && r >= 0 {
+			cfg.SampleRatio = r
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("OTEL_SDK_DISABLED")); strings.EqualFold(v, "true") {
+		cfg.Enabled = false
+	}
+	// If OTel is enabled but the signals block is empty (every value
+	// false), default to all three on. This catches two cases: (1) the
+	// user enabled OTel via env var but never wrote `otel.signals` to
+	// felix.json5; (2) DefaultConfig() applied to a config file that
+	// has an explicit `otel` block but no `signals` sub-block (the
+	// unmarshal leaves them zero, overriding our defaults). Without
+	// this, "set OTEL_EXPORTER_OTLP_ENDPOINT" silently produces a
+	// useless setup with all three signals off.
+	if cfg.Enabled && cfg.Signals == (OTelSignals{}) {
+		cfg.Signals = OTelSignals{Traces: true, Metrics: true, Logs: true}
+	}
+	if cfg.Enabled && cfg.SampleRatio == 0 {
+		cfg.SampleRatio = 1.0
+	}
+	if cfg.Enabled && cfg.ServiceName == "" {
+		cfg.ServiceName = "felix"
+	}
 }
 
 // IsServerParallelSafe reports whether the named MCP server is currently

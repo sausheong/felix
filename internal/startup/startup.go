@@ -25,6 +25,7 @@ import (
 	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/mcp"
 	"github.com/sausheong/felix/internal/memory"
+	otelpkg "github.com/sausheong/felix/internal/otel"
 	"github.com/sausheong/felix/internal/session"
 	"github.com/sausheong/felix/internal/skill"
 	"github.com/sausheong/felix/internal/tokens"
@@ -287,6 +288,13 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// than using slog.Default().Handler() because in Go 1.22+ the default
 	// handler routes through log.Logger which routes back through
 	// slog.Default(), creating a deadlock when LogBuffer replaces it.
+	//
+	// Initial install uses TextHandler only; if the loaded config enables
+	// OTel logs, we re-install below with a fanout that also forwards to
+	// the OTel slog bridge. The brief window of "TextHandler only" is the
+	// price of loading config AFTER the LogBuffer install (which is
+	// itself necessary because config.Load emits warnings we want to
+	// capture).
 	logBuf := gateway.NewLogBuffer(2000, slog.NewTextHandler(logWriter, nil))
 	slog.SetDefault(slog.New(logBuf))
 
@@ -294,6 +302,39 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+
+	// OTel: build the SDK pipelines (traces / metrics / logs) before
+	// anything else that might emit telemetry, so init-time errors land
+	// in the user's collector. Disabled() when the user hasn't opted in.
+	otelProv, err := otelpkg.Setup(context.Background(), otelpkg.Config{
+		Enabled:     cfg.OTel.Enabled,
+		Endpoint:    cfg.OTel.Endpoint,
+		ServiceName: cfg.OTel.ServiceName,
+		Version:     version,
+		SampleRatio: cfg.OTel.SampleRatio,
+		Headers:     cfg.OTel.Headers,
+		Traces:      cfg.OTel.Signals.Traces,
+		Metrics:     cfg.OTel.Signals.Metrics,
+		Logs:        cfg.OTel.Signals.Logs,
+	})
+	if err != nil {
+		// Setup never fails for the disabled path; here a non-nil err
+		// means a configured-but-broken endpoint. Log and continue with
+		// the no-op provider so Felix still serves chat.
+		slog.Warn("otel: setup failed; running without OTel", "error", err)
+		otelProv = otelpkg.Disabled()
+	}
+	if otelProv.LoggerHandler != nil {
+		// Re-install slog.Default with the fanout so subsequent log
+		// records reach both stderr/log-file AND the OTLP/logs collector.
+		// The LogBuffer keeps capturing for the local /logs view.
+		fan := newFanoutHandler(slog.NewTextHandler(logWriter, nil), otelProv.LoggerHandler)
+		logBuf = gateway.NewLogBuffer(2000, fan)
+		slog.SetDefault(slog.New(logBuf))
+	}
+	// Wire the agent package's tracer once. Safe to call with nil — the
+	// trace.go code nil-checks before creating spans.
+	agent.SetOTelTracer(otelProv.Tracer("felix.agent"))
 
 	// Bundled-Ollama supervisor — start before InitProviders so the local
 	// provider's BaseURL reflects the bound port.
@@ -748,8 +789,10 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		cronScheduler.Start(ctx)
 	}
 
-	// Init metrics
-	metrics := gateway.NewMetrics()
+	// Init metrics. When OTel is enabled the meter mirrors every counter
+	// to the configured OTLP/metrics endpoint; when disabled the meter
+	// is a no-op and only the local /metrics endpoint sees the data.
+	metrics := gateway.NewMetricsWithMeter(otelProv.Meter("felix.gateway"))
 
 	// Start gateway HTTP server
 	port := cfg.Gateway.Port
@@ -810,6 +853,12 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		srv.Shutdown(shutdownCtx)
+		// OTel last so trailing spans/metrics/logs from the cleanup steps
+		// above get flushed before exporters close. 5s budget — exporters
+		// shut down quickly when their queues are short.
+		otelCtx, otelCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer otelCancel()
+		_ = otelProv.Shutdown(otelCtx)
 	}
 
 	return &Result{

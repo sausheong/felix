@@ -1415,6 +1415,74 @@ html.dark .error-state { background: #450a0a; }
 			if (!cfg.gateway.reload) cfg.gateway.reload = {};
 			cfg.gateway.reload.mode = v;
 		});
+
+		// === OpenTelemetry ===
+		// Felix can additionally export traces, metrics, and logs to an
+		// OTLP/HTTP collector. Disabled by default. Standard OTEL_*
+		// environment variables (OTEL_EXPORTER_OTLP_ENDPOINT,
+		// OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_HEADERS, ...) override
+		// the values set here on the next process start. Settings here
+		// require a restart to take effect — OTel SDK providers can't
+		// safely swap mid-flight.
+		if (!cfg.otel) cfg.otel = {};
+		if (!cfg.otel.signals) cfg.otel.signals = {traces: true, metrics: true, logs: true};
+		var otelSec = makeSection(p, 'OpenTelemetry');
+		var otelNote = document.createElement('div');
+		otelNote.className = 'note';
+		otelNote.style.marginBottom = '8px';
+		otelNote.style.opacity = '0.75';
+		otelNote.textContent = 'Restart required to apply changes.';
+		otelSec.appendChild(otelNote);
+
+		makeField(otelSec, 'Enabled', 'toggle', !!cfg.otel.enabled, function(v) {
+			cfg.otel.enabled = v;
+		});
+		makeField(otelSec, 'Endpoint (full URL, e.g. http://collector:4318/)', 'text',
+			cfg.otel.endpoint || '', function(v) { cfg.otel.endpoint = v.trim(); });
+
+		var otelRow = makeRow(otelSec);
+		makeField(otelRow, 'Service Name', 'text', cfg.otel.serviceName || 'felix', function(v) {
+			cfg.otel.serviceName = v;
+		});
+		makeField(otelRow, 'Sample Ratio (0..1)', 'number',
+			cfg.otel.sampleRatio == null ? 1.0 : cfg.otel.sampleRatio,
+			function(v) { cfg.otel.sampleRatio = parseFloat(v) || 0; });
+
+		var sigRow = makeRow(otelSec);
+		makeField(sigRow, 'Traces', 'toggle', cfg.otel.signals.traces !== false, function(v) {
+			cfg.otel.signals.traces = v;
+		});
+		makeField(sigRow, 'Metrics', 'toggle', cfg.otel.signals.metrics !== false, function(v) {
+			cfg.otel.signals.metrics = v;
+		});
+		makeField(sigRow, 'Logs', 'toggle', cfg.otel.signals.logs !== false, function(v) {
+			cfg.otel.signals.logs = v;
+		});
+
+		// Headers — comma-separated key=value pairs. Round-trip in/out of
+		// the cfg.otel.headers map. Most users won't touch this.
+		var hdrLines = [];
+		if (cfg.otel.headers) {
+			for (var hk in cfg.otel.headers) {
+				if (Object.prototype.hasOwnProperty.call(cfg.otel.headers, hk)) {
+					hdrLines.push(hk + '=' + cfg.otel.headers[hk]);
+				}
+			}
+		}
+		makeField(otelSec, 'Headers (key=value, comma-separated; e.g. X-Scope-OrgID=tenant1)', 'text',
+			hdrLines.join(', '),
+			function(v) {
+				var out = {};
+				var parts = (v || '').split(',');
+				for (var pi = 0; pi < parts.length; pi++) {
+					var s = parts[pi].trim();
+					if (!s) continue;
+					var eq = s.indexOf('=');
+					if (eq < 0) continue;
+					out[s.substring(0, eq).trim()] = s.substring(eq + 1).trim();
+				}
+				cfg.otel.headers = out;
+			});
 	}
 
 	// === Providers Panel ===
