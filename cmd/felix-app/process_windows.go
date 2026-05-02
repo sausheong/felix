@@ -61,7 +61,7 @@ const gatewayPort = 18789
 func startOrAttachGateway(ctx context.Context, logWriter io.Writer, readyTimeout time.Duration) (*gateway, error) {
 	if probeHealth(gatewayPort) {
 		slog.Info("attaching to existing gateway on port", "port", gatewayPort)
-		return &gateway{port: gatewayPort, owned: false, exitCh: closedExitCh()}, nil
+		return &gateway{port: gatewayPort, owned: false, exitCh: noExitCh()}, nil
 	}
 	bin, err := findFelixBinary()
 	if err != nil {
@@ -142,8 +142,7 @@ func waitForReady(ctx context.Context, port int, timeout time.Duration) error {
 	}
 }
 
-func closedExitCh() chan error {
-	ch := make(chan error)
-	close(ch)
-	return ch
+// noExitCh — see process_unix.go for the doc string.
+func noExitCh() chan error {
+	return make(chan error)
 }

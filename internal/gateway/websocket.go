@@ -175,6 +175,7 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	defer releaseConnMutex(conn)
 
 	conn.SetReadLimit(1 * 1024 * 1024) // 1MB max message size
 
@@ -1234,10 +1235,40 @@ func flattenAttrs(attrs []any) map[string]any {
 	return out
 }
 
+// connWriteMutexes serialises writes to each *websocket.Conn.
+// gorilla/websocket explicitly forbids concurrent writes to a single
+// connection (Conn.NextWriter / Conn.WriteJSON panic with
+// "concurrent write to websocket connection" if violated). The chat
+// path is multi-goroutine by construction:
+//
+//   - the main agent-event drain loop writes EventTextDelta /
+//     EventToolCallStart / EventToolResult / EventDone events
+//   - the trace.SetOnMark callback fires from any goroutine inside
+//     Runtime.Run (cortex recall, parallel tool dispatch, streaming
+//     tools), each one calling writeJSON on the same conn
+//   - chat.compact / chat.abort responses can land mid-stream
+//
+// Without serialisation, two of those goroutines can race into
+// Conn.NextWriter and crash the whole gateway process. The map is
+// keyed by conn pointer; entries are reaped on disconnect via
+// releaseConnMutex so long-running gateways don't accumulate them.
+var connWriteMutexes sync.Map // *websocket.Conn → *sync.Mutex
+
 func writeJSON(conn *websocket.Conn, v any) {
+	muAny, _ := connWriteMutexes.LoadOrStore(conn, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
 	if err := conn.WriteJSON(v); err != nil {
 		slog.Error("websocket write error", "error", err)
 	}
+}
+
+// releaseConnMutex drops the per-connection write mutex from the
+// global map. Call from the disconnect path so the map size tracks
+// active connections rather than total connections seen.
+func releaseConnMutex(conn *websocket.Conn) {
+	connWriteMutexes.Delete(conn)
 }
 
 // taskOverlayExecutor wraps the shared tools.Registry and adds the per-chat

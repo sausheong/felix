@@ -90,7 +90,7 @@ const gatewayPort = 18789
 func startOrAttachGateway(ctx context.Context, logWriter io.Writer, readyTimeout time.Duration) (*gateway, error) {
 	if probeHealth(gatewayPort) {
 		slog.Info("attaching to existing gateway on port", "port", gatewayPort)
-		return &gateway{port: gatewayPort, owned: false, exitCh: closedExitCh()}, nil
+		return &gateway{port: gatewayPort, owned: false, exitCh: noExitCh()}, nil
 	}
 	bin, err := findFelixBinary()
 	if err != nil {
@@ -207,11 +207,13 @@ func waitForReady(ctx context.Context, port int, timeout time.Duration) error {
 	}
 }
 
-// closedExitCh returns an already-closed error channel — used for the
-// attach-mode gateway where we have no Wait() to feed the channel,
-// but callers still want to range over it without blocking forever.
-func closedExitCh() chan error {
-	ch := make(chan error)
-	close(ch)
-	return ch
+// noExitCh returns a never-fires error channel — used for the
+// attach-mode gateway (we have no Wait() to feed the channel) and
+// for the post-crash sentinel state in main.go (the subprocess is
+// already gone and we must not re-fire the watcher case). Reading
+// from a closed channel returns immediately and would put the select
+// loop into a hot loop logging the same "exited unexpectedly" error
+// thousands of times per second; this channel blocks forever instead.
+func noExitCh() chan error {
+	return make(chan error)
 }

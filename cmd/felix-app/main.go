@@ -201,12 +201,15 @@ func onReady() {
 				return
 			case err := <-gw.exitCh:
 				// The subprocess exited unexpectedly (we did not call
-				// stop()). Log it loudly but leave the menubar
-				// running so the user can hit Restart — we no longer
-				// have a gateway to talk to but the tray still works.
+				// stop()). Log it loudly ONCE, surface the error to the
+				// user, and swap gw to a sentinel that uses noExitCh()
+				// so this case can never re-fire — without that swap,
+				// the closed exitCh would keep producing zero values
+				// and we'd hot-loop, spamming thousands of identical
+				// error lines per second into felix-app.log.
 				slog.Error("gateway subprocess exited unexpectedly", "error", err)
 				showError("Felix's gateway process stopped unexpectedly. Use the Restart menu to relaunch it.")
-				gw = &gateway{port: port, owned: false, exitCh: closedExitCh()}
+				gw = &gateway{port: port, owned: false, exitCh: noExitCh()}
 			}
 		}
 	}()
