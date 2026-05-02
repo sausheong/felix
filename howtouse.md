@@ -15,7 +15,6 @@ Felix is a self-hosted AI agent gateway. It runs as a single binary on your mach
 - [Message Routing](#message-routing)
 - [Skills](#skills)
 - [Memory](#memory)
-- [Heartbeat](#heartbeat)
 - [Cron Jobs](#cron-jobs)
 - [Browser Tool](#browser-tool)
 - [Send Message Tool](#send-message-tool)
@@ -53,7 +52,7 @@ The wizard walks you through choosing an LLM provider and entering your API key 
 ./felix chat
 ```
 
-**Or start the full gateway (web chat, Settings UI, WebSocket API, cron, heartbeat):**
+**Or start the full gateway (web chat, Settings UI, WebSocket API, cron):**
 ```bash
 ./felix start
 ```
@@ -79,7 +78,7 @@ This checks your config file, data directories, API keys, agent workspaces, and 
 | Command | Description |
 |---------|-------------|
 | `felix onboard` | Interactive setup wizard |
-| `felix start` | Start the gateway server (HTTP + WebSocket + web chat + cron + heartbeat) |
+| `felix start` | Start the gateway server (HTTP + WebSocket + web chat + cron) |
 | `felix start -c path/to/config.json5` | Start with a custom config path |
 | `felix chat` | Start an interactive CLI chat session with the default agent |
 | `felix chat myagent` | Chat with a specific agent |
@@ -599,9 +598,9 @@ bound to the `cli` channel is reachable from the browser too.
 There is no inbound Telegram or WhatsApp channel adapter — Felix used to
 ship those but they were retired. What remains is the **outbound**
 `send_message` tool, which can push a message to a Telegram chat via
-the Bot API. Use this for heartbeat/cron alerts when you want
-notifications on your phone but the agent itself runs on your machine
-and is reached via CLI or the web chat. See
+the Bot API. Use this for cron alerts when you want notifications on
+your phone but the agent itself runs on your machine and is reached
+via CLI or the web chat. See
 [Send Message Tool](#send-message-tool) below.
 
 ---
@@ -940,40 +939,9 @@ The agent will recall this information when it's relevant to the conversation.
 
 ---
 
-## Heartbeat
-
-The heartbeat daemon periodically sends a checklist to the agent for proactive actions — like checking if a server is up, if disk space is low, or if there are new emails.
-
-### Enable heartbeat
-
-```json5
-{
-  "heartbeat": {
-    "enabled": true,
-    "interval": "30m"
-  }
-}
-```
-
-### Create a heartbeat checklist
-
-Place a `HEARTBEAT.md` file in the agent's workspace:
-
-```bash
-cat > ~/.felix/workspace-default/HEARTBEAT.md << 'EOF'
-- Check if the web server at localhost:8080 is responding
-- Check disk usage and warn if any partition is above 90%
-- Check if there are any failed systemd services
-EOF
-```
-
-Every 30 minutes, the agent reads this file, evaluates each item, and takes action if needed. If everything is fine, it responds silently with `HEARTBEAT_OK`.
-
----
-
 ## Cron Jobs
 
-Schedule recurring prompts for an agent. Unlike heartbeat (which reads a checklist file), cron jobs send a fixed prompt on a schedule.
+Schedule recurring prompts for an agent. Cron is the single recurring-work mechanism in Felix — a previous "heartbeat" daemon (which read `HEARTBEAT.md` per agent on a fixed interval) was removed in favour of explicit cron jobs that you create and manage individually. To run a periodic checklist (uptime check, disk warnings, etc.), schedule a cron job whose prompt embeds the checklist or instructs the agent to read a file you maintain.
 
 ```json5
 {
@@ -1065,8 +1033,8 @@ The browser context is destroyed after the action completes, so state (cookies, 
 
 The `send_message` tool lets agents proactively push messages to a
 Telegram chat via the Bot API. This is the **only** outbound channel
-currently wired up — useful for heartbeat / cron alerts so you get
-notified on your phone without running an inbound channel adapter.
+currently wired up — useful for cron alerts so you get notified on
+your phone without running an inbound channel adapter.
 
 ### Configure
 
@@ -1545,7 +1513,7 @@ silently change behaviour.
 
 The assistant chats over CLI / web; it can also push notifications to
 your phone via the `send_message` tool when something interesting
-happens during a heartbeat or cron tick.
+happens during a cron tick.
 
 ```json5
 {
@@ -1575,8 +1543,7 @@ happens during a heartbeat or cron tick.
     "bot_token": "123456:ABC...",
     "default_chat_id": "123456789"
   },
-  "memory":    { "enabled": true },
-  "heartbeat": { "enabled": false }
+  "memory":    { "enabled": true }
 }
 ```
 
@@ -1719,7 +1686,6 @@ All Felix state lives in `~/.felix/` (on Windows: `C:\Users\<you>\.felix\`):
   ollama/                # Bundled Ollama model store (when enabled)
   workspace-default/     # Default agent workspace
     IDENTITY.md          # Agent identity/personality
-    HEARTBEAT.md         # Heartbeat checklist
     skills/              # Agent-specific skills
     .felix/todos.json    # Per-workspace todo list (todo_write tool)
 ```

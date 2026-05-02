@@ -22,7 +22,6 @@ type Config struct {
 	Agents     AgentsConfig              `json:"agents"`
 	Bindings   []Binding                 `json:"bindings"`
 	Channels   ChannelsConfig            `json:"channels"`
-	Heartbeat  HeartbeatConfig           `json:"heartbeat"`
 	Memory     MemoryConfig              `json:"memory"`
 	Cortex     CortexConfig              `json:"cortex"`
 	AgentLoop  AgentLoopConfig           `json:"agentLoop"`
@@ -256,11 +255,6 @@ type ChannelsConfig struct {
 type CLIConfig struct {
 	Enabled     bool `json:"enabled"`
 	Interactive bool `json:"interactive"`
-}
-
-type HeartbeatConfig struct {
-	Interval string `json:"interval"`
-	Enabled  bool   `json:"enabled"`
 }
 
 type MemoryConfig struct {
@@ -498,10 +492,6 @@ func DefaultConfig() *Config {
 		Channels: ChannelsConfig{
 			CLI: CLIConfig{Enabled: true, Interactive: true},
 		},
-		Heartbeat: HeartbeatConfig{
-			Interval: "30m",
-			Enabled:  false,
-		},
 		Memory: MemoryConfig{
 			Enabled:           true,
 			EmbeddingProvider: "local",
@@ -665,7 +655,6 @@ func (c *Config) UpdateFrom(src *Config) {
 	c.Agents = src.Agents
 	c.Bindings = src.Bindings
 	c.Channels = src.Channels
-	c.Heartbeat = src.Heartbeat
 	c.Memory = src.Memory
 	c.Cortex = src.Cortex
 	c.AgentLoop = src.AgentLoop

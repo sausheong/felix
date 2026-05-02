@@ -108,7 +108,7 @@ type Runtime struct {
 	// (matches the no-policy default).
 	Permission tools.PermissionChecker
 
-	// Depth is the recursion level: 0 for top-level chat/cron/heartbeat agents;
+	// Depth is the recursion level: 0 for top-level chat/cron agents;
 	// subagents get parent.Depth + 1. Used by maxAgentDepth() enforcement in
 	// the subagent factory.
 	Depth int
@@ -140,11 +140,11 @@ type Runtime struct {
 	touchedFiles []string
 
 	// IngestSource controls whether this run's thread is ingested into Cortex.
-	// "chat" (or empty for backward compatibility) ingests; "cron" / "heartbeat"
-	// / any other value skips ingest. Recall always runs regardless — only the
-	// write side is gated. Without this, scheduled runs flood the knowledge
-	// graph with the agent's own tool-use chatter and queue embed calls that
-	// block the next user-initiated chat.
+	// "chat" (or empty for backward compatibility) ingests; "cron" / any other
+	// value skips ingest. Recall always runs regardless — only the write side
+	// is gated. Without this, scheduled runs flood the knowledge graph with
+	// the agent's own tool-use chatter and queue embed calls that block the
+	// next user-initiated chat.
 	IngestSource string
 
 	// CalibratorStore persists the per-session token Calibrator so its
@@ -329,8 +329,8 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 		// each call costs an embed.
 		//
 		// Ingest is gated by IngestSource — only "chat" (or empty for
-		// backward compat) writes to the graph. Cron and heartbeat runs
-		// would otherwise flood the graph with agent self-talk.
+		// backward compat) writes to the graph. Cron runs would otherwise
+		// flood the graph with agent self-talk.
 		var thread []conversation.Message
 		cortexContext := ""
 		var cortexCh chan string // receives the formatted hint+results
@@ -361,7 +361,7 @@ func (r *Runtime) Run(ctx context.Context, userMsg string, images []llm.ImageCon
 			}
 
 			// Deferred ingest fires on every goroutine exit path. Skipped for
-			// non-chat runs (cron / heartbeat) so the graph stays focused on
+			// non-chat runs (cron) so the graph stays focused on
 			// human-initiated conversations.
 			cx := r.Cortex
 			defer func() {

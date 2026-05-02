@@ -45,15 +45,15 @@ type RuntimeDeps struct {
 
 // RuntimeInputs holds the per-Runtime-instance inputs that genuinely vary
 // per call site: the resolved LLM provider for this agent's model, the tool
-// executor (different per heartbeat/cron/chat/subagent path), the session,
-// the per-agent compaction manager, and the IngestSource flag (controls
+// executor (different per cron/chat/subagent path), the session, the
+// per-agent compaction manager, and the IngestSource flag (controls
 // whether this run writes to Cortex).
 type RuntimeInputs struct {
 	Provider     llm.LLMProvider
 	Tools        tools.Executor
 	Session      *session.Session
 	Compaction   *compaction.Manager
-	IngestSource string // "" | "chat" | "cron" | "heartbeat"
+	IngestSource string // "" | "chat" | "cron"
 }
 
 // BuildRuntimeForAgent constructs a Runtime for the given AgentConfig using

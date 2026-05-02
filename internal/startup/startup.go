@@ -21,7 +21,6 @@ import (
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
 	"github.com/sausheong/felix/internal/cron"
 	"github.com/sausheong/felix/internal/gateway"
-	"github.com/sausheong/felix/internal/heartbeat"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/mcp"
@@ -533,9 +532,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	}()
 
 	// resolveCortex returns the *cortex.Cortex for a given chat-agent model
-	// (or nil if cortex is disabled / build fails). Used by the heartbeat,
-	// cron, and cron-tool agent factories so each agent's cortex extractor
-	// matches its chat model.
+	// (or nil if cortex is disabled / build fails). Used by the cron and
+	// cron-tool agent factories so each agent's cortex extractor matches
+	// its chat model.
 	resolveCortex := func(agentModel string) *cortex.Cortex {
 		if cxProvider == nil {
 			return nil
@@ -601,14 +600,14 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 
 	ctx := context.Background()
 
-	// Build the compaction Manager once and share across heartbeat, cron,
-	// and the cron-tool agent factory below. The Manager's per-session mutex
-	// map only serializes correctly when the same instance is reused.
+	// Build the compaction Manager once and share across cron and the
+	// cron-tool agent factory below. The Manager's per-session mutex map
+	// only serializes correctly when the same instance is reused.
 	startupCompactionMgr := compaction.BuildManager(cfg)
 
 	// Shared Runtime dependencies for every Runtime built in this process —
-	// heartbeat, cron-static, cron-adapter, and the subagent factory.
-	// Per-call inputs (provider, tools, session, ingest-source) are passed via
+	// cron-static, cron-adapter, and the subagent factory. Per-call inputs
+	// (provider, tools, session, ingest-source) are passed via
 	// agent.RuntimeInputs at each call site below.
 	runtimeDeps := agent.RuntimeDeps{
 		Skills:          skillLoader,
@@ -620,9 +619,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		CalibratorStore: calibratorStore,
 	}
 
-	// Subagent input builder shared by all three call sites in this file
-	// (heartbeat, cron-static, cron-adapter). Builds a fresh per-subagent
-	// tool registry + provider lookup + in-memory session. Subagents do NOT
+	// Subagent input builder shared by both call sites in this file
+	// (cron-static, cron-adapter). Builds a fresh per-subagent tool
+	// registry + provider lookup + in-memory session. Subagents do NOT
 	// ingest into Cortex (IngestSource="") since they're short-lived and
 	// would otherwise flood the graph with tool-use chatter.
 	buildSubagentInputs := func(a *config.AgentConfig) (agent.RuntimeInputs, error) {
@@ -650,55 +649,6 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// can dispatch to subagents via the task tool. The same builder closure
 	// is reused across all chat connections.
 	wsHandler.SetSubagentBuilder(buildSubagentInputs)
-
-	// Start heartbeat daemon for each agent if enabled
-	var heartbeats []*heartbeat.Daemon
-	if cfg.Heartbeat.Enabled {
-		interval, err := time.ParseDuration(cfg.Heartbeat.Interval)
-		if err != nil {
-			interval = 30 * time.Minute
-		}
-
-		for _, agentCfg := range cfg.Agents.List {
-			providerName, _ := llm.ParseProviderModel(agentCfg.Model)
-			provider, ok := providers[providerName]
-			if !ok {
-				continue
-			}
-
-			agentCfg := agentCfg
-			agentFn := func(ctx context.Context, prompt string) (string, error) {
-				sess := session.NewSession(agentCfg.ID, "heartbeat")
-				defer startupCompactionMgr.ForgetSession(sess)
-				hbToolReg := tools.NewRegistry()
-				tools.RegisterCoreToolsWithSearch(hbToolReg, agentCfg.Workspace, execPolicy, searchBackend)
-				if _, err := mcp.RegisterTools(hbToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
-					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
-				}
-				tools.RegisterSendMessage(hbToolReg, sendMsgConfigFn)
-
-				rt, err := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
-					Provider:     provider,
-					Tools:        hbToolReg,
-					Session:      sess,
-					Compaction:   startupCompactionMgr,
-					IngestSource: "heartbeat",
-				}, &agentCfg)
-				if err != nil {
-					return "", fmt.Errorf("build runtime for heartbeat agent %q: %w", agentCfg.ID, err)
-				}
-				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
-					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
-					hbToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
-				}
-				return rt.RunSync(ctx, prompt, nil)
-			}
-
-			daemon := heartbeat.NewDaemon(agentCfg.Workspace, interval, agentFn)
-			daemon.Start(ctx)
-			heartbeats = append(heartbeats, daemon)
-		}
-	}
 
 	// Start cron scheduler for agents with cron jobs
 	cronScheduler := cron.NewScheduler()
@@ -850,9 +800,6 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			slog.Warn("mcp: manager close timed out, continuing shutdown")
 		}
 		cronScheduler.Stop()
-		for _, hb := range heartbeats {
-			hb.Stop()
-		}
 		if configWatcher != nil {
 			configWatcher.Stop()
 		}

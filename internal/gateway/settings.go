@@ -1546,7 +1546,7 @@ html.dark .error-state { background: #450a0a; }
 		sec.appendChild(addBtn);
 	}
 
-	// === Intelligence Panel (Memory + Cortex + Heartbeat) ===
+	// === Intelligence Panel (Memory + Cortex + Compaction + Agent Loop) ===
 	function renderIntelligence() {
 		var p = document.getElementById('panel-intelligence');
 		p.innerHTML = '';

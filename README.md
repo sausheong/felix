@@ -27,6 +27,7 @@ Every design decision in Felix flows from three commitments:
 - **Model-agnostic** — Claude, GPT, Gemini, Qwen, Ollama, LM Studio, DeepSeek, or any OpenAI-compatible API.
 - **Multi-agent** — multiple agents with different models, tools, and personas.
 - **Extended reasoning** — `reasoning: off|low|medium|high` per-agent, mapped to Claude thinking budgets, OpenAI o-series `reasoning_effort`, and Gemini 2.5 thinking config.
+- **Context window auto-detection with override** — Felix infers a model's context window from its identifier (handles proxy prefixes like `platformai/claude-sonnet-…` correctly); a per-agent `contextWindow` config field lets you pin a specific value when the proxy or fine-tune doesn't match a known family. Defaults: 32k for unknown local/Ollama models, 128k for unknown remote models.
 - **Cross-provider tool portability** — JSON Schema fields one provider rejects (Gemini drops `anyOf`/`oneOf`/`format`; OpenAI drops `$ref`/`definitions`) are stripped at the provider boundary so a single tool definition works across providers.
 - **MCP client** — connect to external [Model Context Protocol](https://modelcontextprotocol.io) servers over Streamable-HTTP or stdio. OAuth2 (client credentials, authorization code + PKCE) and bearer auth supported. Expired tokens trigger an inline "Re-authenticate" button in the chat — no restart needed.
 - **Persistent memory** — BM25 lexical search over Markdown files, recalled automatically each turn. Optional vector search via `chromem-go` when an embedding provider is configured.
@@ -37,7 +38,7 @@ Every design decision in Felix flows from three commitments:
 - **Vision/image support** — paste or drop image paths in CLI/web chat and the LLM analyzes them.
 - **Tool policies** — per-agent allow/deny lists for every built-in and MCP-provided tool.
 - **Session persistence** — append-only JSONL files with DAG structure and branching. Compaction is splice-based, never destructive.
-- **Smart compaction** — token-threshold or message-count triggered, with a 9-section structured prompt; three-stage fallback chain (full → small-only → placeholder) and a per-session circuit breaker. Async compaction between turns hides the cost from the user.
+- **Smart compaction** — token-threshold or message-count triggered, with a structured prompt; three-stage fallback chain (full → small-only → placeholder) and a per-session circuit breaker. Compaction can run asynchronously between turns: when the next turn would push past the threshold, Felix kicks off summarization in the background and the just-finished turn returns immediately; the next user message either finds the work done or briefly waits on the in-flight handle.
 - **Cache-stability invariant** — request prefixes are byte-stable across turns (sorted tool definitions, deterministic schema normalization) so Anthropic and OpenAI prompt caches keep hitting.
 - **Stream-failure resilience** — when a streaming response dies mid-flight (TCP reset, idle timeout, partial SSE) the runtime discards the partial output and retries via the provider's non-streaming endpoint, preserving the byte-identical prompt prefix.
 - **Config hot-reload** — edit `felix.json5` while running, changes apply immediately.
@@ -148,7 +149,7 @@ make build-app-windows  # Windows — produces felix-app.exe and felix.exe (ship
 | **Logs** | Opens the live logs view (`/logs`) |
 | **Settings** | Opens the Settings UI (`/settings`) — tabs: Agents, Providers, Models, Intelligence, Security, Messaging, MCP, Skills, Memory, Gateway |
 | **Restart** | Stops the gateway subprocess and respawns a fresh one |
-| **Quit** | Sends SIGTERM to the gateway subprocess (with an 8s graceful-exit budget) and exits the tray |
+| **Quit** | Sends SIGTERM to the gateway's process group (with a 15s graceful-exit budget; SIGKILL fallback). Cleanup runs the bundled Ollama supervisor first so a force-killed gateway still leaves no orphaned ollama. The whole sequence is bounded by an outer 25s deadline. |
 
 ### Web chat interface
 
@@ -190,7 +191,7 @@ Single-process, hub-and-spoke. All components run in one binary.
 - **Skill loader** — embedded starter skills + user skills, hot-reloaded.
 - **Compaction Manager** — three-stage fallback, per-session circuit breaker, async between-turns.
 - **MCP Manager** — Streamable-HTTP and stdio clients with OAuth2 and bearer auth, with in-process re-authentication.
-- **Heartbeat + Cron** — recurring prompts on schedules.
+- **Cron** — recurring prompts on schedules; jobs added via the `cron` tool or static config, with pause/resume/remove management.
 - **Bundled Ollama supervisor** — keeps a local LLM available without external setup.
 
 The system tray app is a thin launcher around the gateway — see the next section.
@@ -387,7 +388,7 @@ All state lives in `~/.felix/` (on Windows: `C:\Users\<you>\.felix\`) — no ext
                            # (ffmpeg, imagemagick, pandoc, pdftotext, cortex) are
                            # seeded here on first run
   workspace-<agentId>/     # Per-agent workspace; can hold IDENTITY.md, FELIX.md,
-                           # AGENTS.md, HEARTBEAT.md, agent-specific skills/
+                           # AGENTS.md, agent-specific skills/
   brain.db                 # Cortex knowledge graph (SQLite)
   cron-jobs.json           # Persisted dynamic cron jobs
   mcp-tokens/              # OAuth refresh tokens per MCP server

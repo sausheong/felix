@@ -34,8 +34,6 @@ func TestStartGatewaySmoke(t *testing.T) {
 	//  - Local.Enabled=false skips the bundled Ollama supervisor (which
 	//    would block trying to spawn an ollama binary that may not exist
 	//    in CI).
-	//  - Heartbeat.Enabled=false skips the background daemon goroutines
-	//    (which would otherwise try to call providers we haven't set up).
 	//  - Memory.Enabled=false skips the embedder bootstrap.
 	//  - Cortex.Enabled=false skips the embedder + DuckDB init.
 	//  - The default agent uses an unconfigured "anthropic" provider;
@@ -61,7 +59,6 @@ func TestStartGatewaySmoke(t *testing.T) {
     ]
   },
   "channels": {"cli": {"enabled": false}},
-  "heartbeat": {"enabled": false},
   "memory": {"enabled": false},
   "cortex": {"enabled": false},
   "local": {"enabled": false}

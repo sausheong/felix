@@ -146,8 +146,8 @@ func startOrAttachGateway(ctx context.Context, logWriter io.Writer, readyTimeout
 // 15 s budget covers the gateway's full cleanup chain in the worst
 // case: localSup.Stop (~7 s SIGTERM+SIGKILL grace for the bundled
 // ollama, which lives in its own process group and would otherwise be
-// orphaned), MCP close (8 s), heartbeats and cron stop (~instant),
-// HTTP server Shutdown (~instant for an idle server). The cleanup
+// orphaned), MCP close (8 s), cron stop (~instant), HTTP server
+// Shutdown (~instant for an idle server). The cleanup
 // runs localSup.Stop FIRST so even if SIGKILL arrives early, ollama
 // is already gone before the gateway dies — this is the load-bearing
 // invariant for "menubar Quit kills the whole tree".
