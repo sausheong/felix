@@ -832,8 +832,6 @@ Single-process, hub-and-spoke. All components run in one binary.
 - **Cron** — recurring prompts on schedules, with pause/resume/remove management.
 - **Bundled Ollama supervisor** — keeps a local LLM available without external setup.
 
-For deeper detail see `design.md`.
-
 ---
 
 ## Data directory
@@ -890,9 +888,3 @@ make help                # All targets
 | OAuth2 (MCP auth) | `golang.org/x/oauth2` |
 | System tray | `fyne.io/systray` |
 
----
-
-## Documentation
-
-- [design.md](design.md) — architecture and internals deep-dive.
-- [CLAUDE.md](CLAUDE.md) — context for Claude Code when working in this repo.
