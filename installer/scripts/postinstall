@@ -35,6 +35,45 @@ fi
 xattr -dr com.apple.quarantine /Applications/Felix.app 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
+# Symlink the bundled `felix` CLI into /usr/local/bin so users can run
+# `felix chat`, `felix doctor`, etc. from any terminal without typing the
+# full path inside the app bundle.
+#
+# Why /usr/local/bin: it's the canonical location for third-party Unix
+# binaries on macOS (Homebrew uses it). /usr/bin is protected by SIP and
+# installers can't write there.
+#
+# Why a symlink (not a copy): the binary inside Felix.app is the source
+# of truth — updating Felix.app automatically updates the CLI too. A copy
+# would silently get out of sync after every upgrade.
+#
+# Collision policy: if /usr/local/bin/felix already exists and isn't
+# OUR symlink (e.g. installed via Homebrew, or copied by hand), back it
+# up to felix.bak and proceed. We don't refuse, because the alternative
+# is the user running `felix --version` and getting an old build with no
+# obvious cause.
+# ---------------------------------------------------------------------------
+APP_FELIX="/Applications/Felix.app/Contents/Resources/bin/felix"
+SYMLINK_TARGET="/usr/local/bin/felix"
+
+if [ -x "$APP_FELIX" ]; then
+  mkdir -p /usr/local/bin
+
+  if [ -L "$SYMLINK_TARGET" ]; then
+    # Already a symlink — overwrite (it may point at a previous app
+    # location or a stale path). `ln -sfn` rewrites in place.
+    ln -sfn "$APP_FELIX" "$SYMLINK_TARGET"
+  elif [ -e "$SYMLINK_TARGET" ]; then
+    # A regular file or directory exists — back it up before claiming the
+    # name. Don't clobber another tool's `felix` binary silently.
+    mv "$SYMLINK_TARGET" "${SYMLINK_TARGET}.bak.$(date +%s)" 2>/dev/null || true
+    ln -sfn "$APP_FELIX" "$SYMLINK_TARGET"
+  else
+    ln -sfn "$APP_FELIX" "$SYMLINK_TARGET"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Provider setup — only if no config exists yet
 # ---------------------------------------------------------------------------
 if [ ! -f "$CONFIG" ]; then
