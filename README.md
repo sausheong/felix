@@ -6,8 +6,6 @@ A self-hosted AI agent gateway written in Go. Single binary, low memory, runs en
 
 Felix connects you (via CLI or web chat) to LLMs — Claude, GPT, Gemini, Qwen, Ollama, or any OpenAI-compatible endpoint — and lets agents execute tasks on your hardware using a fixed registry of in-process tools plus any number of remote MCP servers.
 
----
-
 ## Design philosophy
 
 1. **Self-sufficient.** One binary, one directory of state, no required network dependency. The LLM can be local. The vector index is in-process. The knowledge graph is a SQLite file. There is no Felix cloud, no Felix account, no Felix backend that anyone could turn off.
@@ -15,7 +13,7 @@ Felix connects you (via CLI or web chat) to LLMs — Claude, GPT, Gemini, Qwen, 
 3. **Usable out of the box by non-technical people.** The default install — no config edits, no API keys, no `vim` — must just work. Advanced configuration can be as complex as it needs to be, but it must not be in the way of the default path.
 4. **Secure by default.** An agent that can read files, run shell commands, and make web requests is genuinely powerful — defaults have to protect users who won't read the security docs. Felix binds to localhost only, ships the bash tool in allowlist mode rather than full shell access, blocks web requests to internal IP ranges and cloud metadata endpoints, contains file access to each agent's workspace with symlink resolution, and writes config and session files with owner-only permissions. You can relax any of it deliberately; you don't have to opt out of it.
 
----
+
 
 ## Features
 
@@ -57,7 +55,6 @@ Felix connects you (via CLI or web chat) to LLMs — Claude, GPT, Gemini, Qwen, 
 - OpenTelemetry export (opt-in): traces, metrics, and logs to any OTLP/HTTP collector via config or standard `OTEL_*` env vars.
 - Localhost-only by default; optional bearer token auth on all HTTP and WebSocket endpoints.
 
----
 
 ## Install
 
@@ -81,7 +78,6 @@ make build-app-windows   # Windows system tray app -> felix-app.exe
 
 Then run `./felix onboard` to walk through provider setup. If you skip every cloud provider, the wizard configures the bundled Ollama with `gemma4` so you have a working agent with zero credentials.
 
----
 
 ## First steps
 
@@ -116,7 +112,7 @@ Image attachments work too — type a file path in the message:
 
 Supported formats: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp` (max 10 MB).
 
----
+
 
 ## CLI commands
 
@@ -136,7 +132,7 @@ Supported formats: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp` (max 10 MB).
 | `felix doctor` | Diagnostic checks |
 | `felix version` | Print version + commit |
 
----
+
 
 ## System tray app
 
@@ -150,7 +146,7 @@ The Settings page has tabs for Agents, Providers, Models, Intelligence, Security
 
 **Environment variables.** macOS `.app` bundles don't inherit shell environment variables; Felix.app loads `~/.zshrc` / `~/.bashrc` at startup, so `export ANTHROPIC_API_KEY=...` works. On Windows, set via System Settings or PowerShell `[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY","sk-ant-...","User")`. Either way, you can put keys directly in `felix.json5` instead.
 
----
+
 
 ## Configuration
 
@@ -182,7 +178,7 @@ export GEMINI_API_KEY="AIza..."
 export DEEPSEEK_API_KEY="sk-..."
 ```
 
----
+
 
 ## LLM providers
 
@@ -253,7 +249,7 @@ You can override the model for one CLI session: `felix chat -m openai/gpt-5`.
 
 Per-agent `reasoning: off|low|medium|high` (default `off`). Maps to Anthropic thinking budgets, OpenAI `reasoning_effort`, Gemini `ThinkingConfig`, and Qwen `enable_thinking`. Models that don't support extended reasoning log `reasoning ignored` and proceed normally. Editable in the Settings UI's Agents tab.
 
----
+
 
 ## Multiple agents
 
@@ -365,7 +361,7 @@ Two flags wire it up:
 - Subagents can't themselves delegate (no `task` tool registered for them); a depth cap of 3 is enforced as defense-in-depth.
 - Multiple parallel `task` calls aren't supported — they run sequentially.
 
----
+
 
 ## Tools
 
@@ -537,7 +533,7 @@ Felix can connect to external [Model Context Protocol](https://modelcontextproto
 
 Tools discovered from an MCP server are auto-added to agent allowlists at startup. Servers can also be edited from the Settings UI's MCP tab. A per-server circuit breaker stops calling a stuck upstream after 3 consecutive auth failures so the agent can't fall into a token-burning self-heal loop.
 
----
+
 
 ## Skills
 
@@ -568,7 +564,7 @@ tags: [git, version-control, commit]
 
 The default install seeds `cortex`, `ffmpeg`, `imagemagick`, `pandoc`, and `pdftotext` so the agent arrives knowing how to reason about common command-line tools.
 
----
+
 
 ## Memory
 
@@ -592,7 +588,7 @@ EOF
 
 If you also configure an `embeddingProvider` and `embeddingModel` under `memory`, vector search via `chromem-go` runs alongside BM25.
 
----
+
 
 ## Local LLM (bundled Ollama)
 
@@ -607,7 +603,7 @@ felix model rm gemma4         # free disk space
 
 The bundled Ollama runs as a child of Felix on a free port in `127.0.0.1:18790–18799` and shuts down when Felix exits. It does not interfere with any system Ollama you may have on `:11434`.
 
----
+
 
 ## WebSocket API
 
@@ -650,7 +646,7 @@ ws.onmessage = (event) => {
 
 If `gateway.auth.token` is set in `felix.json5`, include `Authorization: Bearer <token>` on the WebSocket upgrade.
 
----
+
 
 ## Observability
 
@@ -682,7 +678,7 @@ OTEL_SERVICE_NAME="felix-prod" \
 
 OTel changes require a **restart** (the SDK doesn't support swapping providers in flight).
 
----
+
 
 ## Security
 
@@ -704,7 +700,7 @@ Felix is designed to run on your own hardware. The defaults protect you from the
 
 WebSocket clients then need `Authorization: Bearer my-secret-token` on the upgrade.
 
----
+
 
 ## Example configurations
 
@@ -814,7 +810,7 @@ WebSocket clients then need `Authorization: Bearer my-secret-token` on the upgra
 }
 ```
 
----
+
 
 ## Architecture
 
@@ -832,7 +828,7 @@ Single-process, hub-and-spoke. All components run in one binary.
 - **Cron** — recurring prompts on schedules, with pause/resume/remove management.
 - **Bundled Ollama supervisor** — keeps a local LLM available without external setup.
 
----
+
 
 ## Data directory
 
@@ -852,7 +848,7 @@ ollama/                 # Bundled Ollama model store
 
 Plain files. Inspect with a text editor; back up with `rsync`; copy to another machine and pick up exactly where you left off.
 
----
+
 
 ## Development
 
