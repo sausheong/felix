@@ -93,12 +93,25 @@ func NewAuthCodePKCEHTTPClient(ctx context.Context, cfg AuthCodePKCEConfig) (*ht
 	// refresh_token grant) when it isn't. If we have only a refresh token,
 	// pass an empty *oauth2.Token{RefreshToken: x} — oauth2 will refresh
 	// on first Token() call.
-	src := oauth2.ReuseTokenSource(tok, oauthCfg.TokenSource(ctx, tok))
+	//
+	// IMPORTANT: pass context.Background() — not the caller's ctx — to
+	// both TokenSource and NewClient. Both bake the ctx into the
+	// long-lived refresh transport, so refreshes minutes or hours later
+	// would fail with "context canceled" if we used a short-lived ctx
+	// (e.g. the 30s mcpInitCtx from startup, or a per-tool-call ctx
+	// from the auto-Reconnect retry path). The returned *http.Client
+	// outlives any per-call deadline; it must carry its own.
+	bgSrc := oauthCfg.TokenSource(context.Background(), tok)
+	src := oauth2.ReuseTokenSource(tok, bgSrc)
 	persisting := &persistingTokenSource{src: src, path: cfg.StorePath, last: tok}
 
 	// Force a refresh now if the current access token is unusable; this
 	// surfaces a stale-refresh-token error early instead of on the first
-	// MCP request.
+	// MCP request. (This refresh runs on the long-lived bgSrc above, so
+	// the caller's ctx only bounds how long we'll wait for it indirectly
+	// via the persistingTokenSource — there's no clean way to cancel an
+	// in-flight oauth2 refresh from outside, but in practice IdP token
+	// endpoints respond in well under any sensible startup budget.)
 	if !tokenUsable(tok) {
 		fresh, err := persisting.Token()
 		if err != nil {
@@ -107,7 +120,7 @@ func NewAuthCodePKCEHTTPClient(ctx context.Context, cfg AuthCodePKCEConfig) (*ht
 		_ = fresh
 	}
 
-	return oauth2.NewClient(ctx, persisting), nil
+	return oauth2.NewClient(context.Background(), persisting), nil
 }
 
 // RunInteractiveLogin performs the full PKCE dance: generates a verifier

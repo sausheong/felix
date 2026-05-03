@@ -230,6 +230,84 @@ func TestNewAuthCodePKCEHTTPClient_RefreshesExpiredAccessTokenSilently(t *testin
 	assert.Equal(t, "rotated-refresh", loaded.RefreshToken)
 }
 
+// Regression: the caller's ctx must NOT be baked into the long-lived
+// OAuth refresh transport. Real-world failure mode this guards against:
+// startup builds the manager under a 30s mcpInitCtx and cancels it
+// immediately after NewManager returns; the per-tool-call retry path
+// (adapter.go's Reconnect-on-auth-failure) passes a per-call ctx that
+// dies as soon as the tool call ends. In both cases, every subsequent
+// token refresh on the cached *http.Client would fail with
+// "context canceled" — exactly the symptom seen on
+// gt-aipgm-aiap-prd.auth.ap-southeast-1.amazoncognito.com/oauth2/token.
+//
+// The test cancels the caller's ctx BEFORE construction and uses an
+// already-expired access token so the construction path runs a refresh.
+// On the buggy code the refresh POST fails with "context canceled"
+// and NewAuthCodePKCEHTTPClient returns an error. On the fixed code
+// the refresh runs on a context.Background()-rooted token source and
+// succeeds.
+func TestNewAuthCodePKCEHTTPClient_RefreshSurvivesCanceledCallerCtx(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tok.json")
+
+	var refreshCalls atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshCalls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(body))
+		assert.Equal(t, "refresh_token", form.Get("grant_type"))
+		assert.Equal(t, "stale", form.Get("refresh_token"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "fresh",
+			"refresh_token": "rotated",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+		})
+	}))
+	defer tokenServer.Close()
+
+	openBrowser = func(string) { t.Errorf("browser must not open during silent refresh") }
+	defer func() { openBrowser = openBrowserOS }()
+
+	require.NoError(t, saveToken(path, &oauth2.Token{
+		AccessToken:  "expired",
+		RefreshToken: "stale",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(-time.Minute),
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // dead before NewAuthCodePKCEHTTPClient is even called
+
+	client, err := NewAuthCodePKCEHTTPClient(ctx, AuthCodePKCEConfig{
+		AuthURL:   "http://example.invalid/authorize",
+		TokenURL:  tokenServer.URL,
+		ClientID:  "cid",
+		StorePath: path,
+	})
+	require.NoError(t, err, "construction must not depend on caller's ctx for token refresh")
+	require.GreaterOrEqual(t, refreshCalls.Load(), int32(1), "expected at least one refresh during construction")
+
+	// Subsequent resource calls go through the same Transport — also
+	// must not fail because the caller's ctx is dead.
+	resourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer fresh", r.Header.Get("Authorization"))
+		w.WriteHeader(200)
+	}))
+	defer resourceServer.Close()
+
+	resp, err := client.Get(resourceServer.URL + "/")
+	require.NoError(t, err, "post-construction request must not fail because the caller's ctx was canceled")
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+
+	loaded, err := loadToken(path)
+	require.NoError(t, err)
+	assert.Equal(t, "fresh", loaded.AccessToken)
+	assert.Equal(t, "rotated", loaded.RefreshToken)
+}
+
 func TestRunInteractiveLogin_CompletesPKCEDance(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tok.json")
