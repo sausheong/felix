@@ -1,4 +1,4 @@
-![Felix](felix.jpg)
+![Felix](infographic.png)
 
 # Felix
 
