@@ -1573,6 +1573,32 @@ html.dark .error-state { background: #450a0a; }
 					cfg.agents.list[idx].fallbackModel = v;
 				});
 
+				var row2bb = makeRow(item);
+				makeField(row2bb, 'Reasoning', 'select', {
+					value: a.reasoning || 'off',
+					options: [
+						{value: 'off',    label: 'off'},
+						{value: 'low',    label: 'low'},
+						{value: 'medium', label: 'medium'},
+						{value: 'high',   label: 'high'}
+					]
+				}, function(v) {
+					// Store empty string for "off" so omitempty drops it from the saved JSON.
+					cfg.agents.list[idx].reasoning = (v === 'off') ? '' : v;
+				});
+				var reasoningHelp = document.createElement('div');
+				reasoningHelp.className = 'form-group';
+				var rhLabel = document.createElement('label');
+				rhLabel.textContent = ' ';
+				reasoningHelp.appendChild(rhLabel);
+				var rhNote = document.createElement('div');
+				rhNote.style.fontSize = '0.85em';
+				rhNote.style.color = '#666';
+				rhNote.style.lineHeight = '1.4';
+				rhNote.textContent = 'Maps to Anthropic thinking budget, OpenAI reasoning_effort, Gemini ThinkingConfig, Qwen enable_thinking. Ignored by models that do not support extended reasoning.';
+				reasoningHelp.appendChild(rhNote);
+				row2bb.appendChild(reasoningHelp);
+
 				// Subagent group: opt-in flag + the description that the
 				// supervisor task tool shows to its LLM + inheritContext.
 				// Setting Subagent without a description is technically
