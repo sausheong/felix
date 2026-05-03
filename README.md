@@ -8,25 +8,25 @@ Felix connects you (via CLI or web chat) to LLMs — Claude, GPT, Gemini, Qwen, 
 
 ---
 
-## Three pillars
+## Design philosophy
 
-Every design decision in Felix flows from three commitments:
+Felix is designed around being:
 
 1. **Self-sufficient.** Felix runs on one machine, owns its own state, and has no required network dependency. The LLM can be local. The vector index is in-process. The knowledge graph is a SQLite file. There is no Felix cloud, no Felix account, no Felix backend that anyone could turn off.
 2. **Robust.** Long-running agents touch files, shell out, talk to flaky APIs, and accumulate state across restarts. Every external call has a timeout. Every queue has a cap. Every per-call resource has a paired cleanup. On-disk state heals itself on the next load.
-3. **Usable out of the box by non-technical people.** The default install — no config edits, no API keys, no `vim` — must just work. A first-time user installs Felix, clicks through onboarding, and has a useful agent running locally within minutes. Advanced configuration can be as complex as it needs to be, but it must not be in the way of the default path.
+3. **Usable out of the box by non-technical people.** The default install — no config edits, no API keys, no `vim` — must just work. A first-time user installs Felix, local LLM is automatically downloaded and you will have a useful agent running locally after that. Advanced configuration can be as complex as it needs to be, but it must not be in the way of the default path.
 
 ---
 
 ## Features
 
-- **Single binary** — no runtime dependencies, no Node.js, no npm. Download and run.
+- **Single binary** — no runtime dependencies. Download and run.
 - **System tray app** — runs the gateway in the background with a tray icon, web chat, and one-click access to settings (macOS and Windows).
 - **Two interfaces** — local CLI (`felix chat`) and a web chat page served by the gateway.
 - **Bundled local LLM** — ships an Ollama binary so you can run agents with no API key. Downloads Gemma4 on first startup if it doesn't find any other models.
 - **Model-agnostic** — Claude, GPT, Gemini, Qwen, Ollama, LM Studio, DeepSeek, or any OpenAI-compatible API.
 - **Multi-agent** — multiple agents with different models, tools, and personas.
-- **Extended reasoning** — `reasoning: off|low|medium|high` per-agent, mapped to Claude thinking budgets, OpenAI o-series `reasoning_effort`, and Gemini 2.5 thinking config.
+- **Extended reasoning** — `reasoning: off|low|medium|high` per-agent, mapped to Claude thinking budgets, OpenAI  `reasoning_effort`, and Gemini  thinking config.
 - **Context window auto-detection with override** — Felix infers a model's context window from its identifier (handles proxy prefixes like `platformai/claude-sonnet-…` correctly); a per-agent `contextWindow` config field lets you pin a specific value when the proxy or fine-tune doesn't match a known family. Defaults: 32k for unknown local/Ollama models, 128k for unknown remote models.
 - **Cross-provider tool portability** — JSON Schema fields one provider rejects (Gemini drops `anyOf`/`oneOf`/`format`; OpenAI drops `$ref`/`definitions`) are stripped at the provider boundary so a single tool definition works across providers.
 - **MCP client** — connect to external [Model Context Protocol](https://modelcontextprotocol.io) servers over Streamable-HTTP or stdio. OAuth2 (client credentials, authorization code + PKCE) and bearer auth supported. Expired tokens trigger an inline "Re-authenticate" button in the chat — no restart needed. Auth-shaped failures (401/403, OAuth refresh errors, MCP session-rejection wording) trigger automatic Reconnect+retry; a per-server circuit breaker (3 consecutive failures) stops calling a stuck upstream so the agent can't fall into a token-burning self-heal loop.
@@ -43,7 +43,7 @@ Every design decision in Felix flows from three commitments:
 - **Stream-failure resilience** — when a streaming response dies mid-flight (TCP reset, idle timeout, partial SSE) the runtime discards the partial output and retries via the provider's non-streaming endpoint, preserving the byte-identical prompt prefix.
 - **Config hot-reload** — edit `felix.json5` while running, changes apply immediately.
 - **WebSocket API** — JSON-RPC 2.0 control plane for programmatic access.
-- **OpenTelemetry export (optional)** — opt-in OTLP/HTTP exporter for traces, metrics, and logs. Each chat turn becomes an `agent.run` span with phase events for cortex recall, context assembly, LLM TTFT, and tool execution. The existing `/metrics` endpoint and `/logs` view stay unchanged. Configure via `felix.json5` or standard `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_SERVICE_NAME` env vars.
+- **OpenTelemetry export ** — opt-in OTLP/HTTP exporter for traces, metrics, and logs. Each chat turn becomes an `agent.run` span with phase events for cortex recall, context assembly, LLM TTFT, and tool execution. The existing `/metrics` endpoint and `/logs` view stay unchanged. Configure via `felix.json5` or standard `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_SERVICE_NAME` env vars.
 - **Local-first** — all data lives on your filesystem, no external database required.
 
 ---
@@ -93,7 +93,7 @@ Felix ships with a bundled Ollama binary so you can run agents offline with no A
 To pull additional models later:
 
 ```bash
-felix model pull qwen2.5:0.5b
+felix model pull qwen9.5:0.5b
 felix model list
 felix model status
 felix model rm qwen2.5:0.5b
