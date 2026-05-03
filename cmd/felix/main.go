@@ -82,20 +82,27 @@ func startCmd() *cobra.Command {
 
 func chatCmd() *cobra.Command {
 	var configPath, model string
+	var noGateway bool
 	cmd := &cobra.Command{
 		Use:   "chat [agent]",
 		Short: "Start an interactive chat session",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			agentID := "default"
+			// Empty agentID means "let runChat pick" — prefer an agent
+			// literally named "default", else fall back to the first
+			// agent in the config. This keeps configs that name their
+			// agent something else (e.g. "claude", "main") usable
+			// without forcing every user to type the agent ID.
+			agentID := ""
 			if len(args) > 0 {
 				agentID = args[0]
 			}
-			return runChat(agentID, configPath, model)
+			return runChat(agentID, configPath, model, noGateway)
 		},
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to config file")
-	cmd.Flags().StringVarP(&model, "model", "m", "", "override model (e.g. anthropic/claude-opus-4-0-20250514)")
+	cmd.Flags().StringVarP(&model, "model", "m", "", "override model (e.g. anthropic/claude-opus-4-0-20250514); forces in-process mode")
+	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "skip the running-gateway probe and always run an in-process Runtime")
 	return cmd
 }
 
@@ -211,15 +218,55 @@ func runStart(configPath string) error {
 	return nil
 }
 
-func runChat(agentID, configPath, modelOverride string) error {
+func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// Resolve a missing agentID. Prefer "default" if such an agent exists;
+	// otherwise pick the first agent in the config. Only error if the
+	// config has no agents at all.
+	if agentID == "" {
+		if _, ok := cfg.GetAgent("default"); ok {
+			agentID = "default"
+		} else if len(cfg.Agents.List) > 0 {
+			agentID = cfg.Agents.List[0].ID
+		} else {
+			return fmt.Errorf("no agents configured in %s", configPath)
+		}
+	}
+
 	agentCfg, ok := cfg.GetAgent(agentID)
 	if !ok {
 		return fmt.Errorf("agent %q not found in config", agentID)
+	}
+
+	// Gateway-mode dispatch: if a Felix gateway is already running on
+	// the configured bind address, talk to *it* over WebSocket instead
+	// of building a parallel in-process Runtime. This avoids two
+	// processes fighting over the bundled Ollama port and over session
+	// JSONL files, and lets the terminal share state (sessions, memory,
+	// cortex, MCP) with the web chat at /chat.
+	//
+	// Skipped when:
+	//   - --no-gateway is set (explicit opt-out for debugging)
+	//   - -m is set (the gateway's chat.send has no per-call model
+	//     override, so the user's intent — "this turn uses a different
+	//     model" — can only be satisfied in-process)
+	if !noGateway && modelOverride == "" {
+		baseURL := gatewayBaseURL(cfg)
+		if probeGateway(baseURL, cfg.Gateway.Auth.Token, 250*time.Millisecond) {
+			return runChatViaGateway(context.Background(), agentID, agentCfg.Model, baseURL, cfg.Gateway.Auth.Token)
+		}
+	} else if !noGateway && modelOverride != "" {
+		// Quietly note the situation if we know the gateway is up but
+		// can't use it because of -m. Helps the user understand why
+		// they're running in-process when they expected gateway mode.
+		baseURL := gatewayBaseURL(cfg)
+		if probeGateway(baseURL, cfg.Gateway.Auth.Token, 250*time.Millisecond) {
+			fmt.Fprintln(os.Stderr, "Gateway is running but -m forces in-process mode (gateway has no per-call model override). Stop the gateway or omit -m to share state.")
+		}
 	}
 
 	modelStr := agentCfg.Model
@@ -239,7 +286,13 @@ func runChat(agentID, configPath, modelOverride string) error {
 	}
 
 	opts := startup.ResolveProviderOpts(providerName, cfg)
-	if opts.APIKey == "" {
+	// Skip the API-key gate for providers that don't use one:
+	//   - "local" — the bundled Ollama runtime, never has a key
+	//   - "openai-compatible" — typically points at localhost (Ollama,
+	//     LM Studio, vLLM); a key is optional. Cloud OpenAI-compatible
+	//     proxies (DeepSeek, etc.) that do need a key will surface a
+	//     401 from the upstream API instead.
+	if opts.APIKey == "" && opts.Kind != "local" && opts.Kind != "openai-compatible" {
 		return fmt.Errorf("no API key set for provider %q (set %s_API_KEY or %s_AUTH_TOKEN env var)",
 			providerName, strings.ToUpper(providerName), strings.ToUpper(providerName))
 	}
@@ -390,7 +443,10 @@ func runChat(agentID, configPath, modelOverride string) error {
 			return nil, fmt.Errorf("invalid model %q (no provider prefix)", model)
 		}
 		opts := startup.ResolveProviderOpts(pName, cfg)
-		if opts.APIKey == "" && pName != "local" {
+		// Same exemption as the chat-agent path above: "local" never
+		// uses a key, and "openai-compatible" treats it as optional
+		// (localhost Ollama / LM Studio / vLLM).
+		if opts.APIKey == "" && opts.Kind != "local" && opts.Kind != "openai-compatible" {
 			return nil, fmt.Errorf("no API key set for provider %q", pName)
 		}
 		return llm.NewProvider(pName, opts)
