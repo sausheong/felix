@@ -227,6 +227,7 @@ body {
 	letter-spacing: 0.05em;
 }
 #new-job-card input,
+#new-job-card select,
 #new-job-card textarea {
 	background: var(--bg-input);
 	border: 1px solid var(--border);
@@ -239,7 +240,16 @@ body {
 	transition: border-color 0.2s;
 }
 #new-job-card input:focus,
+#new-job-card select:focus,
 #new-job-card textarea:focus { border-color: var(--accent); }
+.job-meta {
+	font-size: 0.75rem;
+	color: var(--text-muted);
+	margin-top: 0.15rem;
+}
+.job-meta .agent {
+	color: var(--accent2);
+}
 #new-job-card textarea {
 	min-height: 60px;
 	resize: vertical;
@@ -297,6 +307,11 @@ body {
 			<label for="new-job-name">Name</label>
 			<input id="new-job-name" type="text" placeholder="daily-summary">
 			<div class="field-hint">Unique identifier — letters, digits, dashes, underscores.</div>
+		</div>
+		<div class="field">
+			<label for="new-job-agent">Agent</label>
+			<select id="new-job-agent"></select>
+			<div class="field-hint">The agent the job will run as — uses that agent's model, workspace, tools, and policies.</div>
 		</div>
 		<div class="field">
 			<label for="new-job-schedule">Schedule</label>
@@ -386,11 +401,13 @@ body {
 	var addJobToggle = document.getElementById('add-job-toggle');
 	var newJobCard = document.getElementById('new-job-card');
 	var newJobName = document.getElementById('new-job-name');
+	var newJobAgent = document.getElementById('new-job-agent');
 	var newJobSchedule = document.getElementById('new-job-schedule');
 	var newJobPrompt = document.getElementById('new-job-prompt');
 	var newJobCreate = document.getElementById('new-job-create');
 	var newJobCancel = document.getElementById('new-job-cancel');
 	var newJobError = document.getElementById('new-job-error');
+	var agentList = []; // last-fetched agents, used for picking a default and labeling jobs
 
 	function resetNewJobForm() {
 		newJobName.value = '';
@@ -484,6 +501,7 @@ body {
 
 	newJobCreate.addEventListener('click', function() {
 		var name = newJobName.value.trim();
+		var agentId = newJobAgent.value;
 		var schedule = newJobSchedule.value.trim();
 		var prompt = newJobPrompt.value.trim();
 		newJobError.textContent = '';
@@ -491,8 +509,12 @@ body {
 			newJobError.textContent = 'name, schedule, and prompt are required';
 			return;
 		}
+		if (!agentId) {
+			newJobError.textContent = 'pick the agent the job will run as';
+			return;
+		}
 		newJobCreate.disabled = true;
-		sendRPC('jobs.add', { name: name, schedule: schedule, prompt: prompt }, function() {
+		sendRPC('jobs.add', { agentId: agentId, name: name, schedule: schedule, prompt: prompt }, function() {
 			newJobCreate.disabled = false;
 			newJobCard.style.display = 'none';
 			addJobToggle.textContent = '+ Add new job';
@@ -503,6 +525,25 @@ body {
 		// the button after a short delay if no callback fires.
 		setTimeout(function() { newJobCreate.disabled = false; }, 3000);
 	});
+
+	function refreshAgents() {
+		sendRPC('agent.status', {}, function(result) {
+			agentList = (result && result.agents) || [];
+			var prevSelection = newJobAgent.value;
+			newJobAgent.innerHTML = '';
+			for (var i = 0; i < agentList.length; i++) {
+				var opt = document.createElement('option');
+				opt.value = agentList[i].id;
+				opt.textContent = agentList[i].name
+					? agentList[i].name + ' (' + agentList[i].id + ')'
+					: agentList[i].id;
+				newJobAgent.appendChild(opt);
+			}
+			if (prevSelection) {
+				newJobAgent.value = prevSelection;
+			}
+		});
+	}
 
 	function renderJobs(jobs) {
 		jobsList.innerHTML = '';
@@ -533,6 +574,17 @@ body {
 				var schedule = document.createElement('div');
 				schedule.className = 'job-schedule';
 				schedule.textContent = 'Every ' + job.schedule;
+
+				var meta = document.createElement('div');
+				meta.className = 'job-meta';
+				if (job.agentId) {
+					var agentSpan = document.createElement('span');
+					agentSpan.className = 'agent';
+					agentSpan.textContent = 'runs as ' + job.agentId;
+					meta.appendChild(agentSpan);
+				} else {
+					meta.textContent = 'runs as default agent';
+				}
 
 				var prompt = document.createElement('div');
 				prompt.className = 'job-prompt';
@@ -607,6 +659,7 @@ body {
 
 				card.appendChild(header);
 				card.appendChild(schedule);
+				card.appendChild(meta);
 				card.appendChild(prompt);
 				card.appendChild(actions);
 				card.appendChild(editArea);
@@ -625,6 +678,7 @@ body {
 				clearTimeout(reconnectTimer);
 				reconnectTimer = null;
 			}
+			refreshAgents();
 			refreshJobs();
 		};
 

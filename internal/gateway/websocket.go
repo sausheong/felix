@@ -411,17 +411,25 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		return
 	}
 
-	// Wire the task tool for subagent dispatch. The shared h.tools registry
-	// can't hold the per-call task tool (which captures THIS rt as Parent),
-	// so we overlay it via a per-chat executor that adds "task" on top of
-	// the shared registry. Activation requires both an installed builder
-	// and at least one eligible subagent in the live config.
+	// Per-chat tool overlay. Wires "task" (subagent dispatch — captures THIS
+	// rt as parent) and "cron" (captures THIS chat agent's ID so jobs the
+	// LLM schedules run as the same agent). Both must be per-chat: the
+	// shared h.tools registry would race-clobber across concurrent chats.
+	h.mu.RLock()
+	js := h.jobScheduler
+	h.mu.RUnlock()
+	overlay := &chatToolOverlay{base: h.tools}
 	if subagentBuild != nil && cfg != nil {
 		if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
 			factory := agent.MakeSubagentFactory(cfg, runtimeDeps, subagentBuild, rt)
-			taskTool := tools.NewTaskTool(factory, rt.Depth, eligible)
-			rt.Tools = &taskOverlayExecutor{base: h.tools, task: taskTool}
+			overlay.task = tools.NewTaskTool(factory, rt.Depth, eligible)
 		}
+	}
+	if js != nil {
+		overlay.cron = &tools.CronTool{AgentID: agentCfg.ID, Scheduler: js}
+	}
+	if overlay.task != nil || overlay.cron != nil {
+		rt.Tools = overlay
 	}
 
 	runCtx, runCancel := context.WithCancel(context.Background())
@@ -1122,6 +1130,7 @@ func (h *WebSocketHandler) handleJobsRemove(conn *websocket.Conn, req JSONRPCReq
 }
 
 type jobAddParams struct {
+	AgentID  string `json:"agentId"`
 	Name     string `json:"name"`
 	Schedule string `json:"schedule"`
 	Prompt   string `json:"prompt"`
@@ -1159,7 +1168,7 @@ func (h *WebSocketHandler) handleJobsAdd(conn *websocket.Conn, req JSONRPCReques
 		return
 	}
 
-	if err := js.AddJob(params.Name, params.Schedule, params.Prompt); err != nil {
+	if err := js.AddJob(params.AgentID, params.Name, params.Schedule, params.Prompt); err != nil {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
 			Error:   map[string]any{"code": -32603, "message": err.Error()},
@@ -1271,46 +1280,93 @@ func releaseConnMutex(conn *websocket.Conn) {
 	connWriteMutexes.Delete(conn)
 }
 
-// taskOverlayExecutor wraps the shared tools.Registry and adds the per-chat
-// "task" tool on top. The shared registry can't hold the task tool because
-// each chat needs its own task tool with its own parent Runtime captured;
-// registering on the shared registry would either race-clobber other chats
-// or cross-wire parents. The overlay is read-through for everything except
-// the "task" name.
-type taskOverlayExecutor struct {
+// chatToolOverlay wraps the shared tools.Registry and adds per-chat tool
+// instances on top. Per-chat overlay is required for tools that must
+// capture state from THIS chat's runtime — registering on the shared
+// registry would either race-clobber other chats or cross-wire that state.
+//
+// Currently overlaid:
+//   - "task": captures the chat's parent Runtime so subagents can be
+//     dispatched with the right depth/lineage. Optional (nil when no
+//     subagents are eligible).
+//   - "cron": captures the chat agent's ID so jobs the LLM schedules run
+//     as the agent that scheduled them. Optional (nil when there's no
+//     job scheduler wired).
+//
+// The overlay is read-through for every tool name not in its overlay set.
+type chatToolOverlay struct {
 	base *tools.Registry
-	task *tools.TaskTool
+	task *tools.TaskTool // optional
+	cron *tools.CronTool // optional
 }
 
-func (e *taskOverlayExecutor) Execute(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
-	if name == e.task.Name() {
+func (e *chatToolOverlay) Execute(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
+	if e.task != nil && name == e.task.Name() {
 		return e.task.Execute(ctx, input)
+	}
+	if e.cron != nil && name == e.cron.Name() {
+		return e.cron.Execute(ctx, input)
 	}
 	return e.base.Execute(ctx, name, input)
 }
 
-func (e *taskOverlayExecutor) ToolDefs() []llm.ToolDef {
+func (e *chatToolOverlay) ToolDefs() []llm.ToolDef {
 	defs := e.base.ToolDefs()
-	defs = append(defs, llm.ToolDef{
-		Name:        e.task.Name(),
-		Description: e.task.Description(),
-		Parameters:  e.task.Parameters(),
-	})
+	// Drop any name we override so the per-chat version wins. The shared
+	// registry no longer holds "cron" in production wiring (startup.go
+	// stopped registering it globally), but a stale def would still break
+	// prompt-cache stability if we duplicated it.
+	if e.cron != nil {
+		filtered := defs[:0]
+		for _, d := range defs {
+			if d.Name != e.cron.Name() {
+				filtered = append(filtered, d)
+			}
+		}
+		defs = filtered
+		defs = append(defs, llm.ToolDef{
+			Name:        e.cron.Name(),
+			Description: e.cron.Description(),
+			Parameters:  e.cron.Parameters(),
+		})
+	}
+	if e.task != nil {
+		defs = append(defs, llm.ToolDef{
+			Name:        e.task.Name(),
+			Description: e.task.Description(),
+			Parameters:  e.task.Parameters(),
+		})
+	}
 	// Re-sort to keep prompt-cache-stable ordering — see Registry.ToolDefs.
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	return defs
 }
 
-func (e *taskOverlayExecutor) Names() []string {
+func (e *chatToolOverlay) Names() []string {
 	names := e.base.Names()
-	names = append(names, e.task.Name())
+	if e.cron != nil {
+		filtered := names[:0]
+		for _, n := range names {
+			if n != e.cron.Name() {
+				filtered = append(filtered, n)
+			}
+		}
+		names = filtered
+		names = append(names, e.cron.Name())
+	}
+	if e.task != nil {
+		names = append(names, e.task.Name())
+	}
 	sort.Strings(names)
 	return names
 }
 
-func (e *taskOverlayExecutor) Get(name string) (tools.Tool, bool) {
-	if name == e.task.Name() {
+func (e *chatToolOverlay) Get(name string) (tools.Tool, bool) {
+	if e.task != nil && name == e.task.Name() {
 		return e.task, true
+	}
+	if e.cron != nil && name == e.cron.Name() {
+		return e.cron, true
 	}
 	return e.base.Get(name)
 }

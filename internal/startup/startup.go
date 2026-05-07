@@ -99,27 +99,37 @@ func InitProviders(cfg *config.Config) map[string]llm.LLMProvider {
 // Without it, tool-added jobs only live for the current process — a gateway
 // restart wipes them. With it, every mutation is flushed to disk and the file
 // is replayed at startup via Restore().
+//
+// AgentFactory receives both the agentID the job will run as and the job's
+// name. When AddJob is called with an empty agentID (legacy persisted jobs
+// or UI calls that omit the field), the adapter substitutes DefaultAgentID
+// before invoking AgentFactory so existing wiring behaves identically.
 type CronSchedulerAdapter struct {
-	Scheduler    *cron.Scheduler
-	Ctx          context.Context
-	AgentFactory func(name string) func(context.Context, string) (string, error)
-	OutputFn     cron.OutputFunc
-	JobsFile     string
+	Scheduler      *cron.Scheduler
+	Ctx            context.Context
+	AgentFactory   func(agentID, name string) func(context.Context, string) (string, error)
+	OutputFn       cron.OutputFunc
+	JobsFile       string
+	DefaultAgentID string // used when AddJob is called with an empty agentID
 }
 
 // persistedJob is the on-disk shape. We don't persist AgentFn/OutputFn — they
 // are reconstructed from AgentFactory/OutputFn at Restore time.
 type persistedJob struct {
 	Name     string `json:"name"`
+	AgentID  string `json:"agentId,omitempty"`
 	Schedule string `json:"schedule"`
 	Prompt   string `json:"prompt"`
 	Paused   bool   `json:"paused"`
 }
 
-func (a *CronSchedulerAdapter) addJobInternal(name, schedule, prompt string, persist bool) error {
+func (a *CronSchedulerAdapter) addJobInternal(agentID, name, schedule, prompt string, persist bool) error {
+	if agentID == "" {
+		agentID = a.DefaultAgentID
+	}
 	var agentFn func(context.Context, string) (string, error)
 	if a.AgentFactory != nil {
-		agentFn = a.AgentFactory(name)
+		agentFn = a.AgentFactory(agentID, name)
 	} else {
 		agentFn = func(ctx context.Context, p string) (string, error) {
 			slog.Info("dynamic cron job executed (no agent)", "name", name)
@@ -129,6 +139,7 @@ func (a *CronSchedulerAdapter) addJobInternal(name, schedule, prompt string, per
 
 	err := a.Scheduler.Add(cron.Job{
 		Name:     name,
+		AgentID:  agentID,
 		Schedule: schedule,
 		Prompt:   prompt,
 		AgentFn:  agentFn,
@@ -144,8 +155,8 @@ func (a *CronSchedulerAdapter) addJobInternal(name, schedule, prompt string, per
 	return nil
 }
 
-func (a *CronSchedulerAdapter) AddJob(name, schedule, prompt string) error {
-	return a.addJobInternal(name, schedule, prompt, true)
+func (a *CronSchedulerAdapter) AddJob(agentID, name, schedule, prompt string) error {
+	return a.addJobInternal(agentID, name, schedule, prompt, true)
 }
 
 func (a *CronSchedulerAdapter) RemoveJob(name string) error {
@@ -162,6 +173,7 @@ func (a *CronSchedulerAdapter) ListJobs() []tools.JobInfo {
 	for i, j := range jobs {
 		infos[i] = tools.JobInfo{
 			Name:     j.Name,
+			AgentID:  j.AgentID,
 			Schedule: j.Schedule,
 			Prompt:   j.Prompt,
 			Paused:   j.Paused,
@@ -205,6 +217,7 @@ func (a *CronSchedulerAdapter) persist() {
 	for _, j := range jobs {
 		out = append(out, persistedJob{
 			Name:     j.Name,
+			AgentID:  j.AgentID,
 			Schedule: j.Schedule,
 			Prompt:   j.Prompt,
 			Paused:   j.Paused,
@@ -245,8 +258,10 @@ func (a *CronSchedulerAdapter) Restore() error {
 	}
 	for _, p := range stored {
 		// Skip persistence on each individual restore so we don't rewrite the
-		// file N times during startup; we'll flush once at the end.
-		if err := a.addJobInternal(p.Name, p.Schedule, p.Prompt, false); err != nil {
+		// file N times during startup; we'll flush once at the end. Old
+		// persisted jobs (pre-AgentID) have empty p.AgentID; addJobInternal
+		// substitutes DefaultAgentID for them so behavior is unchanged.
+		if err := a.addJobInternal(p.AgentID, p.Name, p.Schedule, p.Prompt, false); err != nil {
 			slog.Warn("cron restore: skipped invalid job", "name", p.Name, "error", err)
 			continue
 		}
@@ -660,6 +675,13 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		CalibratorStore: calibratorStore,
 	}
 
+	// runtimeJobScheduler is late-bound below to the CronSchedulerAdapter
+	// so cron-launched runs and subagents that themselves register the cron
+	// tool route new jobs back through the same adapter (and thus the same
+	// persistence file). nil-safe: tools.RegisterCron tolerates a nil
+	// scheduler — the CronTool surfaces "not available" at execution time.
+	var runtimeJobScheduler tools.JobScheduler
+
 	// Subagent input builder shared by both call sites in this file
 	// (cron-static, cron-adapter). Builds a fresh per-subagent tool
 	// registry + provider lookup + in-memory session. Subagents do NOT
@@ -677,6 +699,11 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
 		}
 		tools.RegisterSendMessage(reg, sendMsgConfigFn)
+		// Subagents that schedule cron jobs schedule them as themselves.
+		// runtimeJobScheduler is set below after the adapter exists; the
+		// subagent build is invoked at task-dispatch time, by which point
+		// it is non-nil.
+		tools.RegisterCron(reg, a.ID, runtimeJobScheduler)
 		return agent.RuntimeInputs{
 			Provider:     p,
 			Tools:        reg,
@@ -691,91 +718,96 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// is reused across all chat connections.
 	wsHandler.SetSubagentBuilder(buildSubagentInputs)
 
+	// resolveAgentCfg returns the agent config matching id, falling back to
+	// the first agent if id is empty or unknown. Used by the cron adapter so
+	// jobs always have *some* agent to run as even if the configured agent
+	// has been removed since the job was persisted.
+	resolveAgentCfg := func(id string) config.AgentConfig {
+		if id != "" {
+			for _, a := range cfg.Agents.List {
+				if a.ID == id {
+					return a
+				}
+			}
+			slog.Warn("cron: agent not found, falling back to default",
+				"requested", id, "default", cfg.Agents.List[0].ID)
+		}
+		return cfg.Agents.List[0]
+	}
+
+	// buildCronAgentFn builds the closure cron jobs use to invoke the LLM.
+	// Shared by the static (config-defined) cron loop below and the dynamic
+	// (tool-scheduled) AgentFactory used by CronSchedulerAdapter.
+	buildCronAgentFn := func(agentCfg config.AgentConfig, jobName string) func(context.Context, string) (string, error) {
+		return func(ctx context.Context, prompt string) (string, error) {
+			pName, _ := llm.ParseProviderModel(agentCfg.Model)
+			p, ok := providers[pName]
+			if !ok {
+				return "", fmt.Errorf("provider %q not available for cron job %q on agent %q", pName, jobName, agentCfg.ID)
+			}
+			sess := session.NewSession(agentCfg.ID, "cron_"+jobName)
+			defer startupCompactionMgr.ForgetSession(sess)
+			cronToolReg := tools.NewRegistry()
+			tools.RegisterCoreToolsWithSearch(cronToolReg, agentCfg.Workspace, execPolicy, searchBackend)
+			if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
+				slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
+			}
+			tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
+			// Per-call cron tool with this agent's ID baked in so jobs that
+			// schedule MORE jobs from inside the loop run them under the
+			// same agent.
+			tools.RegisterCron(cronToolReg, agentCfg.ID, runtimeJobScheduler)
+			rt, err := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
+				Provider:     p,
+				Tools:        cronToolReg,
+				Session:      sess,
+				Compaction:   startupCompactionMgr,
+				IngestSource: "cron",
+			}, &agentCfg)
+			if err != nil {
+				return "", fmt.Errorf("build runtime for cron job %q on agent %q: %w", jobName, agentCfg.ID, err)
+			}
+			if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
+				factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+				cronToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
+			}
+			return rt.RunSync(ctx, prompt, nil)
+		}
+	}
+
 	// Start cron scheduler for agents with cron jobs
 	cronScheduler := cron.NewScheduler()
 	for _, agentCfg := range cfg.Agents.List {
 		for _, cronJob := range agentCfg.Cron {
 			providerName, _ := llm.ParseProviderModel(agentCfg.Model)
-			provider, ok := providers[providerName]
-			if !ok {
+			if _, ok := providers[providerName]; !ok {
 				continue
 			}
 			agentCfg := agentCfg
 			cronJob := cronJob
-			agentFn := func(ctx context.Context, prompt string) (string, error) {
-				sess := session.NewSession(agentCfg.ID, "cron_"+cronJob.Name)
-				defer startupCompactionMgr.ForgetSession(sess)
-				cronToolReg := tools.NewRegistry()
-				tools.RegisterCoreToolsWithSearch(cronToolReg, agentCfg.Workspace, execPolicy, searchBackend)
-				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
-					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
-				}
-				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
-				rt, err := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
-					Provider:     provider,
-					Tools:        cronToolReg,
-					Session:      sess,
-					Compaction:   startupCompactionMgr,
-					IngestSource: "cron",
-				}, &agentCfg)
-				if err != nil {
-					return "", fmt.Errorf("build runtime for cron job %q on agent %q: %w", cronJob.Name, agentCfg.ID, err)
-				}
-				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
-					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
-					cronToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
-				}
-				return rt.RunSync(ctx, prompt, nil)
-			}
 
 			cronScheduler.Add(cron.Job{
 				Name:     cronJob.Name,
+				AgentID:  agentCfg.ID,
 				Schedule: cronJob.Schedule,
 				Prompt:   cronJob.Prompt,
-				AgentFn:  agentFn,
+				AgentFn:  buildCronAgentFn(agentCfg, cronJob.Name),
 			})
 		}
 	}
 
 	cronAdapter := &CronSchedulerAdapter{
-		Scheduler: cronScheduler,
-		Ctx:       ctx,
-		JobsFile:  filepath.Join(dataDir, "cron-jobs.json"),
-		AgentFactory: func(jobName string) func(context.Context, string) (string, error) {
-			return func(ctx context.Context, prompt string) (string, error) {
-				defaultCfg := cfg.Agents.List[0]
-				pName, _ := llm.ParseProviderModel(defaultCfg.Model)
-				p, ok := providers[pName]
-				if !ok {
-					return "", fmt.Errorf("provider %q not available", pName)
-				}
-				cronSess := session.NewSession(defaultCfg.ID, "cron_"+jobName)
-				defer startupCompactionMgr.ForgetSession(cronSess)
-				cronToolReg := tools.NewRegistry()
-				tools.RegisterCoreToolsWithSearch(cronToolReg, defaultCfg.Workspace, execPolicy, searchBackend)
-				if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
-					slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
-				}
-				tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
-				rt, err := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
-					Provider:     p,
-					Tools:        cronToolReg,
-					Session:      cronSess,
-					Compaction:   startupCompactionMgr,
-					IngestSource: "cron",
-				}, &defaultCfg)
-				if err != nil {
-					return "", fmt.Errorf("build runtime for cron adapter job %q: %w", jobName, err)
-				}
-				if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
-					factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
-					cronToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
-				}
-				return rt.RunSync(ctx, prompt, nil)
-			}
+		Scheduler:      cronScheduler,
+		Ctx:            ctx,
+		JobsFile:       filepath.Join(dataDir, "cron-jobs.json"),
+		DefaultAgentID: cfg.Agents.List[0].ID,
+		AgentFactory: func(agentID, jobName string) func(context.Context, string) (string, error) {
+			return buildCronAgentFn(resolveAgentCfg(agentID), jobName)
 		},
 	}
-	tools.RegisterCron(toolReg, cronAdapter)
+	// Late-bind the scheduler reference used by buildCronAgentFn above so
+	// jobs scheduled from inside a cron run resolve to the same adapter.
+	runtimeJobScheduler = cronAdapter
 	wsHandler.SetJobScheduler(cronAdapter)
 
 	// Restore dynamic jobs persisted from a prior run. Static jobs from

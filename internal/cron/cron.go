@@ -18,6 +18,7 @@ type OutputFunc func(jobName, response string)
 // Job represents a scheduled task.
 type Job struct {
 	Name     string
+	AgentID  string        // agent this job runs as; empty = adapter falls back to default
 	Schedule string        // cron-like: "30m", "1h", "24h", or time.Duration parseable string
 	Prompt   string        // prompt to send to the agent
 	Paused   bool          // if true, the job is paused and not running

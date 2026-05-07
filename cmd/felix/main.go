@@ -452,6 +452,11 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 		return llm.NewProvider(pName, opts)
 	}
 
+	// Late-bound scheduler reference so subagent and cron-launched runs that
+	// themselves register the cron tool route new jobs back through the
+	// same adapter. nil-safe at first use; assigned below.
+	var runtimeJobScheduler tools.JobScheduler
+
 	// Subagent input builder used by both the cron-factory and interactive
 	// REPL TaskTool registrations. Builds a fresh tool registry + provider +
 	// in-memory session for whichever subagent the parent dispatches to.
@@ -466,6 +471,10 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
 		}
 		tools.RegisterSendMessage(reg, sendMsgConfigFn)
+		// Subagents that schedule cron jobs schedule them as themselves.
+		// runtimeJobScheduler is bound below; subagent builds happen at
+		// task-dispatch time, by which point it is non-nil.
+		tools.RegisterCron(reg, a.ID, runtimeJobScheduler)
 		return agent.RuntimeInputs{
 			Provider:     p,
 			Tools:        reg,
@@ -477,7 +486,9 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 
 	// Build an agent factory for dynamic cron jobs — each job gets its own
 	// session and runtime so it can actually execute the prompt via the LLM.
-	agentFactory := func(jobName string) func(context.Context, string) (string, error) {
+	// The CLI is single-agent, so the agentID parameter is ignored: every
+	// job runs as the chat agent.
+	agentFactory := func(_ /*agentID*/, jobName string) func(context.Context, string) (string, error) {
 		return func(ctx context.Context, prompt string) (string, error) {
 			// Use a fresh session for each cron run so history doesn't
 			// accumulate and consume tokens unboundedly.
@@ -487,6 +498,9 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 			if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 				return "", fmt.Errorf("register mcp tools for cron: %w", err)
 			}
+			// Per-call cron tool with this agent's ID so jobs scheduled
+			// from inside a cron run inherit the same identity.
+			tools.RegisterCron(cronToolReg, agentID, runtimeJobScheduler)
 			cronRT, _ := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
 				Provider:     provider,
 				Tools:        cronToolReg,
@@ -509,22 +523,28 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 		jobName := cronJob.Name
 		cronScheduler.Add(cron.Job{
 			Name:     cronJob.Name,
+			AgentID:  agentID,
 			Schedule: cronJob.Schedule,
 			Prompt:   jobPrompt,
-			AgentFn:  agentFactory(jobName),
+			AgentFn:  agentFactory(agentID, jobName),
 		})
 	}
 
-	// Register cron tool so the agent can dynamically schedule jobs.
-	// In chat mode, print cron job results to the terminal.
-	tools.RegisterCron(toolReg, &startup.CronSchedulerAdapter{
-		Scheduler:    cronScheduler,
-		Ctx:          ctx,
-		AgentFactory: agentFactory,
+	// Register cron tool on the chat REPL's tool registry. The CLI runs a
+	// single agent, so baking agentID directly into the tool is correct
+	// (and unlike the gateway, there's no concurrent-chat race to worry
+	// about — the REPL processes one turn at a time).
+	cronAdapter := &startup.CronSchedulerAdapter{
+		Scheduler:      cronScheduler,
+		Ctx:            ctx,
+		DefaultAgentID: agentID,
+		AgentFactory:   agentFactory,
 		OutputFn: func(jobName, response string) {
 			fmt.Printf("\n[cron: %s]\n%s\n\n> ", jobName, response)
 		},
-	})
+	}
+	runtimeJobScheduler = cronAdapter
+	tools.RegisterCron(toolReg, agentID, cronAdapter)
 
 	// Tool policy enforcement is now handled by PermissionChecker:
 	// FilterToolDefs hides denied tools from the model, and Check
