@@ -382,6 +382,7 @@ Built-in tools the agent can use:
 | `task` | Delegate a subtask to another configured agent |
 | `load_skill` | Load a single skill body on demand by name |
 | `load_memory` | Load a single memory entry body by id |
+| `memory` | Save, update, remove, list, or get memory entries — durable facts the agent should remember across sessions |
 
 Tool access is per-agent allow/deny, configurable from the Settings UI's Agents tab. **MCP-provided tools** are wrapped to the same `Tool` interface and gated by the same allow/deny mechanism — the LLM can't tell the difference.
 
@@ -572,7 +573,7 @@ The default install seeds `cortex`, `ffmpeg`, `imagemagick`, `pandoc`, and `pdft
 { "memory": { "enabled": true } }
 ```
 
-Memory entries are Markdown files in `~/.felix/memory/entries/`. The agent can create, update, and delete entries during conversations, and BM25 search surfaces relevant ones each turn. The model sees only the index in the system prompt; bodies are loaded via the `load_memory` tool on demand (same lazy-hydration pattern as skills).
+Memory entries are Markdown files in `~/.felix/memory/entries/`. The agent reads with `load_memory` (single entry by id) and writes with `memory` (`save`, `update`, `remove`, `list`, `get` actions). BM25 search surfaces relevant entries each turn; the model sees only the index in the system prompt and hydrates bodies on demand (same lazy pattern as skills).
 
 You can manually drop entries in too:
 

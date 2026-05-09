@@ -11,6 +11,7 @@ package tools
 
 import (
 	harnesstool "github.com/sausheong/harness/tool"
+	harnessmem "github.com/sausheong/harness/tool/memory"
 	bashtool "github.com/sausheong/harness/tools/bash"
 	browsertool "github.com/sausheong/harness/tools/browser"
 	filetool "github.com/sausheong/harness/tools/file"
@@ -113,4 +114,13 @@ func RegisterCoreToolsWithSearch(reg *Registry, workDir string, execPolicy *Exec
 // same agent that scheduled them.
 func RegisterCron(reg *Registry, agentID string, scheduler JobScheduler) {
 	reg.Register(&harnesstool.CronTool{AgentID: agentID, Scheduler: scheduler})
+}
+
+// RegisterMemoryTool registers the harness "memory" tool backed by the
+// given store. Pass an adapter from internal/memory.NewHarnessAdapter
+// to wire it onto Felix's existing markdown memory. Skip the call when
+// memory is disabled — the read-only "load_memory" tool still works
+// regardless.
+func RegisterMemoryTool(reg *Registry, store harnessmem.MemoryStore) {
+	reg.Register(&harnessmem.MemoryTool{Store: store})
 }

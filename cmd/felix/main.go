@@ -377,6 +377,9 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 		}
 	}
 	tools.RegisterSendMessage(toolReg, sendMsgConfigFn)
+	if memMgr != nil {
+		tools.RegisterMemoryTool(toolReg, memory.NewHarnessAdapter(memMgr))
+	}
 
 	// Connect to configured MCP servers and register their tools alongside core tools.
 	mcpServerCfgs, err := cfg.ResolveMCPServers()
@@ -471,6 +474,9 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
 		}
 		tools.RegisterSendMessage(reg, sendMsgConfigFn)
+		if memMgr != nil {
+			tools.RegisterMemoryTool(reg, memory.NewHarnessAdapter(memMgr))
+		}
 		// Subagents that schedule cron jobs schedule them as themselves.
 		// runtimeJobScheduler is bound below; subagent builds happen at
 		// task-dispatch time, by which point it is non-nil.
@@ -497,6 +503,9 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 			tools.RegisterCoreTools(cronToolReg, agentCfg.Workspace, execPolicy)
 			if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 				return "", fmt.Errorf("register mcp tools for cron: %w", err)
+			}
+			if memMgr != nil {
+				tools.RegisterMemoryTool(cronToolReg, memory.NewHarnessAdapter(memMgr))
 			}
 			// Per-call cron tool with this agent's ID so jobs scheduled
 			// from inside a cron run inherit the same identity.

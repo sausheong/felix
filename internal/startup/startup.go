@@ -546,6 +546,10 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		if err := memMgr.Load(); err != nil {
 			slog.Warn("failed to load memory", "error", err)
 		}
+		// Register the harness "memory" write tool backed by Felix's
+		// existing markdown store. The pre-existing read-only
+		// load_memory tool stays registered too — agents see both.
+		tools.RegisterMemoryTool(toolReg, memory.NewHarnessAdapter(memMgr))
 	}
 
 	// Init Cortex knowledge graph as a per-agent factory. Each chatting agent
@@ -699,6 +703,11 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
 		}
 		tools.RegisterSendMessage(reg, sendMsgConfigFn)
+		// Subagents share the parent's memory store so a save here is
+		// visible to the parent's next load_memory call.
+		if memMgr != nil {
+			tools.RegisterMemoryTool(reg, memory.NewHarnessAdapter(memMgr))
+		}
 		// Subagents that schedule cron jobs schedule them as themselves.
 		// runtimeJobScheduler is set below after the adapter exists; the
 		// subagent build is invoked at task-dispatch time, by which point
@@ -753,6 +762,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
 			}
 			tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
+			if memMgr != nil {
+				tools.RegisterMemoryTool(cronToolReg, memory.NewHarnessAdapter(memMgr))
+			}
 			// Per-call cron tool with this agent's ID baked in so jobs that
 			// schedule MORE jobs from inside the loop run them under the
 			// same agent.
