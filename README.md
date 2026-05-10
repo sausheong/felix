@@ -589,6 +589,16 @@ EOF
 
 If you also configure an `embeddingProvider` and `embeddingModel` under `memory`, vector search via `chromem-go` runs alongside BM25.
 
+### What you'll actually notice
+
+Day-to-day this is a quiet feature, not a flashy one. The thing you're most likely to feel is the agent surfacing something you mentioned in a previous session — "wait, how does it know I prefer X?" — without you having to repeat it. Tell it once "default to staging, never prod" and it sticks.
+
+Agent-written entries land in `~/.felix/memory/entries/` with the prefix `agent-<unix-ms>-<hex>` so you can tell them apart from your hand-written ones at a glance. They show up in the Settings UI's memory list alongside everything else, and you can prune the noisy ones the same way. There's no automatic pruning — over months of use, expect the list to grow; an occasional cleanup pass is worth doing.
+
+If you've configured an agent with an explicit `tools.allow` allowlist, you need to add `"memory"` to it for that agent to write anything. Most users don't have allowlists configured (empty allow = allow-all), so this only matters if you've locked things down.
+
+Memory writes complement, but don't replace, the Cortex knowledge graph. Cortex auto-extracts entities and relations from every chat turn (background facts you didn't think to save). Memory entries are intentional rules and notes (directives the agent should treat as ground truth). Both are surfaced into the prompt — Cortex via 800ms graph queries, memory via the BM25/vector index. Cron-launched runs only persist via memory writes; they intentionally don't ingest into Cortex.
+
 
 
 ## Local LLM (bundled Ollama)
