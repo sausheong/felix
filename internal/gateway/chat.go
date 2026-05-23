@@ -2723,14 +2723,6 @@ html.dark #stop-btn {
 			if (save && newTitle !== current) {
 				nameEl.textContent = newTitle || sessionKey;
 				nameEl.dataset.title = newTitle;
-				if (ws && ws.readyState === WebSocket.OPEN) {
-					ws.send(JSON.stringify({
-						jsonrpc: '2.0',
-						method: 'session.rename',
-						params: { agentId: agentSelect.value, sessionKey: sessionKey, title: newTitle },
-						id: 'session-rename-' + sessionKey
-					}));
-				}
 			}
 		}
 		input.addEventListener('keydown', function(ev) {
@@ -3360,38 +3352,6 @@ html.dark #stop-btn {
 						}
 					}
 					scrollToBottom();
-					// After rendering history into the transcript, ask the server if
-					// there is an in-flight background run for this session. If so,
-					// replay any events the client hasn't seen yet.
-					ws.send(JSON.stringify({
-						jsonrpc: '2.0',
-						method: 'chat.subscribe',
-						params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
-						id: 'subscribe'
-					}));
-					return;
-				}
-
-				// Handle chat.subscribe response: if there's an active run,
-				// flip the UI into "sending" state and kick off chat.replay
-				// to gap-fill any events we missed while disconnected.
-				if (resp.id === 'subscribe') {
-					var active = resp.result && resp.result.activeRun;
-					if (active && active.runID) {
-						sending = true;
-						updateSendBtn();
-						ws.send(JSON.stringify({
-							jsonrpc: '2.0',
-							method: 'chat.replay',
-							params: {
-								agentId: agentSelect.value,
-								sessionKey: sessionSelect.value,
-								runID: active.runID,
-								fromSeq: 0
-							},
-							id: 'replay-' + active.runID
-						}));
-					}
 					return;
 				}
 
