@@ -112,3 +112,63 @@ func TestIsInside(t *testing.T) {
 		t.Error("sibling dir should not be inside workspace")
 	}
 }
+
+func TestResolveAgentPath_SymlinkEscape(t *testing.T) {
+	ws := t.TempDir()
+	ws, _ = filepath.EvalSymlinks(ws)
+	outside := t.TempDir()
+	outside, _ = filepath.EvalSymlinks(outside)
+
+	// Create a symlink inside the workspace that points outside.
+	if err := os.Symlink(outside, filepath.Join(ws, "evil")); err != nil {
+		t.Skip("cannot create symlink:", err)
+	}
+	cfg := newTestConfig(t, "default", ws)
+
+	_, err := resolveAgentPath(cfg, "default", "evil")
+	if err == nil {
+		t.Error("expected error for symlink escaping workspace, got nil")
+	}
+}
+
+func TestEnsureWorkspace(t *testing.T) {
+	// Empty path is a no-op.
+	if err := ensureWorkspace(""); err != nil {
+		t.Errorf("empty path: unexpected error: %v", err)
+	}
+	// Non-existent path gets created.
+	dir := filepath.Join(t.TempDir(), "new", "nested")
+	if err := ensureWorkspace(dir); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Error("expected directory to be created")
+	}
+}
+
+func TestDiskUsageOK_Smoke(t *testing.T) {
+	dir := t.TempDir()
+	ok, err := diskUsageOK(dir, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The function must return a value without error; whether ok is true or
+	// false depends on actual disk usage on the test host (may be >80%).
+	_ = ok
+}
+
+func TestResolveAgentPath_NonExistentTarget(t *testing.T) {
+	ws := t.TempDir()
+	ws, _ = filepath.EvalSymlinks(ws)
+	cfg := newTestConfig(t, "default", ws)
+
+	// File does not exist yet — parent (workspace root) does.
+	got, err := resolveAgentPath(cfg, "default", "newfile.txt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join(ws, "newfile.txt")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

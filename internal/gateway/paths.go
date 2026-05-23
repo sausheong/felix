@@ -27,7 +27,7 @@ func resolveAgentPath(cfg *config.Config, agentID, rel string) (string, error) {
 		}
 	}
 	if workspace == "" {
-		return "", fmt.Errorf("unknown agent %q", agentID)
+		return "", fmt.Errorf("agent %q has no workspace configured", agentID)
 	}
 
 	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
