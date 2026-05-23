@@ -146,6 +146,19 @@ func TestEnsureWorkspace(t *testing.T) {
 	}
 }
 
+func TestResolvedWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	cfg := newTestConfig(t, "default", ws)
+	got := resolvedWorkspace(cfg, "default")
+	want, _ := filepath.EvalSymlinks(ws)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if resolvedWorkspace(cfg, "unknown") != "" {
+		t.Error("expected empty string for unknown agent")
+	}
+}
+
 func TestDiskUsageOK_Smoke(t *testing.T) {
 	dir := t.TempDir()
 	ok, err := diskUsageOK(dir, 0)

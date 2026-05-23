@@ -84,6 +84,20 @@ func agentWorkspace(cfg *config.Config, agentID string) string {
 	return ""
 }
 
+// resolvedWorkspace returns the symlink-resolved absolute path of the
+// agent's workspace, or "" if the agent is unknown or resolution fails.
+func resolvedWorkspace(cfg *config.Config, agentID string) string {
+	ws := agentWorkspace(cfg, agentID)
+	if ws == "" {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(ws)
+	if err != nil {
+		return ws // best-effort fallback
+	}
+	return resolved
+}
+
 // ensureWorkspace creates the workspace directory if it does not yet exist.
 // resolveAgentPath's EvalSymlinks call fails on a non-existent workspace,
 // producing a misleading error; calling this before resolveAgentPath fixes that.

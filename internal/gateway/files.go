@@ -349,7 +349,7 @@ func (h *FilesHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 		writeFilesError(w, http.StatusBadRequest, err)
 		return
 	}
-	if abs == agentWorkspace(h.cfgFunc(), agentID) {
+	if abs == resolvedWorkspace(h.cfgFunc(), agentID) {
 		writeFilesError(w, http.StatusBadRequest, &fileError{msg: "cannot delete workspace root"})
 		return
 	}
@@ -410,7 +410,7 @@ func (h *FilesHandlers) Move(w http.ResponseWriter, r *http.Request) {
 		writeFilesError(w, http.StatusBadRequest, err)
 		return
 	}
-	if src == agentWorkspace(h.cfgFunc(), body.Agent) {
+	if src == resolvedWorkspace(h.cfgFunc(), body.Agent) {
 		writeFilesError(w, http.StatusBadRequest, &fileError{msg: "cannot move workspace root"})
 		return
 	}
@@ -472,7 +472,7 @@ func (h *FilesHandlers) Rename(w http.ResponseWriter, r *http.Request) {
 		writeFilesError(w, http.StatusBadRequest, err)
 		return
 	}
-	if src == agentWorkspace(h.cfgFunc(), body.Agent) {
+	if src == resolvedWorkspace(h.cfgFunc(), body.Agent) {
 		writeFilesError(w, http.StatusBadRequest, &fileError{msg: "cannot rename workspace root"})
 		return
 	}
