@@ -175,6 +175,7 @@ func onReady() {
 			case err := <-gw.exitCh:
 				slog.Error("gateway subprocess exited unexpectedly", "error", err)
 				showError("Felix's gateway process stopped unexpectedly. Use Quit and relaunch.")
+				// Swap to a sentinel so the closed exitCh doesn't hot-loop in the select.
 				gw = &gateway{port: port, owned: false, exitCh: noExitCh()}
 			}
 		}
