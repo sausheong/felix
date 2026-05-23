@@ -3386,6 +3386,19 @@ html.dark #stop-btn {
 					sending = false;
 					updateSendBtn();
 					break;
+				case 'compaction.start':
+					if (!currentAssistant) {
+						currentAssistant = addAssistantMsg('');
+					}
+					appendToAssistant('\n*[Compacting context…]*\n');
+					break;
+				case 'compaction.done':
+					if (currentAssistant) {
+						appendToAssistant('\n*[Context compacted.]*\n');
+					}
+					break;
+				case 'compaction.skipped':
+					break;
 				case 'trace':
 					addTraceRow(r);
 					break;
@@ -3781,9 +3794,9 @@ html.dark #stop-btn {
 	function updateSendBtn() {
 		if (sending) {
 			sendBtn.style.display = 'none';
-			stopBtn.style.display = 'block';
+			stopBtn.style.display = 'flex';
 		} else {
-			sendBtn.style.display = 'block';
+			sendBtn.style.display = 'flex';
 			stopBtn.style.display = 'none';
 			sendBtn.disabled = !ws || ws.readyState !== WebSocket.OPEN;
 		}
