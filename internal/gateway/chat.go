@@ -2698,10 +2698,7 @@ html.dark #stop-btn {
 	}
 
 	// startSessionRename swaps the .ses-name span for an inline input.
-	// Enter and blur commit; Esc cancels. The optimistic UI swaps the
-	// span back immediately on commit and fires session.rename over the
-	// existing WS; if the server rejects, the WS response handler calls
-	// loadSessions() to drop the optimistic update.
+	// Enter and blur commit; Esc cancels. The label is updated locally only.
 	function startSessionRename(rowEl, nameEl, sessionKey) {
 		var current = nameEl.dataset.title || nameEl.textContent || '';
 		var input = document.createElement('input');
@@ -3316,21 +3313,6 @@ html.dark #stop-btn {
 
 				// Handle session.switch response
 				if (resp.id === 'session-switch') {
-					return;
-				}
-
-				// Handle session.rename response. The sidebar already
-				// reflects the new title optimistically, so on success
-				// there's nothing to do. On error (control char, length
-				// cap, missing session) refresh the list so the user
-				// sees the unmodified server-side title — but don't
-				// clobber an unrelated edit the user is currently
-				// typing in.
-				if (typeof resp.id === 'string' && resp.id.indexOf('session-rename-') === 0) {
-					if (resp.error) {
-						var activeEdit = sessionsList.querySelector('.sb-session-edit');
-						if (!activeEdit) loadSessions();
-					}
 					return;
 				}
 
