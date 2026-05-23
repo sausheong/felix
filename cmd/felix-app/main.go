@@ -151,19 +151,10 @@ func onReady() {
 	}
 	openURL(fmt.Sprintf("http://localhost:%d%s", port, landingPath))
 
-	mChat := systray.AddMenuItem("Chat", "Open chat in browser")
-	mJobs := systray.AddMenuItem("Jobs", "Open jobs in browser")
-	mLogs := systray.AddMenuItem("Logs", "Open logs in browser")
-	mSettings := systray.AddMenuItem("Settings", "Open settings in browser")
-	mRestart := systray.AddMenuItem("Restart", "Restart the gateway")
+	mChat := systray.AddMenuItem("Open Chat", "Open chat in browser")
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Shut down and exit")
 
-	// SIGTERM/SIGINT here are mostly for terminal-driven kills (e.g.
-	// `kill <pid>` from a debugging session). macOS quit-events don't
-	// reach this handler — they go through the systray library's
-	// Cocoa loop and end up in the mQuit case below. Either way the
-	// shutdownAndExit chain runs, sending SIGTERM to the subprocess.
 	quitCh := make(chan os.Signal, 1)
 	signal.Notify(quitCh, syscall.SIGTERM, syscall.SIGINT)
 
@@ -172,24 +163,6 @@ func onReady() {
 			select {
 			case <-mChat.ClickedCh:
 				openURL(fmt.Sprintf("http://localhost:%d/chat", port))
-			case <-mJobs.ClickedCh:
-				openURL(fmt.Sprintf("http://localhost:%d/jobs", port))
-			case <-mLogs.ClickedCh:
-				openURL(fmt.Sprintf("http://localhost:%d/logs", port))
-			case <-mSettings.ClickedCh:
-				openURL(fmt.Sprintf("http://localhost:%d/settings", port))
-			case <-mRestart.ClickedCh:
-				slog.Info("restart requested")
-				gw.stop()
-				newGw, err := startOrAttachGateway(ctx, logFile, 90*time.Second)
-				if err != nil {
-					slog.Error("failed to restart gateway", "error", err)
-					showError(fmt.Sprintf("Restart failed:\n\n%v", err))
-					continue
-				}
-				gw = newGw
-				port = newGw.port
-				slog.Info("gateway restarted", "port", port)
 			case <-mQuit.ClickedCh:
 				shutdownAndExit(gw, "menu Quit clicked")
 				return
@@ -200,15 +173,8 @@ func onReady() {
 				shutdownAndExit(gw, fmt.Sprintf("signal %s", sig))
 				return
 			case err := <-gw.exitCh:
-				// The subprocess exited unexpectedly (we did not call
-				// stop()). Log it loudly ONCE, surface the error to the
-				// user, and swap gw to a sentinel that uses noExitCh()
-				// so this case can never re-fire — without that swap,
-				// the closed exitCh would keep producing zero values
-				// and we'd hot-loop, spamming thousands of identical
-				// error lines per second into felix-app.log.
 				slog.Error("gateway subprocess exited unexpectedly", "error", err)
-				showError("Felix's gateway process stopped unexpectedly. Use the Restart menu to relaunch it.")
+				showError("Felix's gateway process stopped unexpectedly. Use Quit and relaunch.")
 				gw = &gateway{port: port, owned: false, exitCh: noExitCh()}
 			}
 		}
@@ -252,23 +218,5 @@ func openURL(url string) {
 	}
 	if err := cmd.Start(); err != nil {
 		slog.Error("failed to open URL", "url", url, "error", err)
-	}
-}
-
-func openFile(path string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", path)
-	case "linux":
-		cmd = exec.Command("xdg-open", path)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", "", path)
-	default:
-		slog.Warn("unsupported OS for opening file", "os", runtime.GOOS)
-		return
-	}
-	if err := cmd.Start(); err != nil {
-		slog.Error("failed to open file", "path", path, "error", err)
 	}
 }
