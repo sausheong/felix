@@ -840,6 +840,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 
 	// Start gateway HTTP server
 	port := cfg.Gateway.Port
+	filesHandlers := gateway.NewFilesHandlers(func() *config.Config { return cfg })
 	srv := gateway.NewServer(cfg.Gateway.Host, port, wsHandler, gateway.ServerOptions{
 		AuthToken:      cfg.Gateway.Auth.Token,
 		MetricsHandler: metrics.Handler(),
@@ -858,6 +859,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			return cfg
 		}),
 		LogBuffer: logBuf,
+		Files:     filesHandlers,
 	})
 
 	cleanup := func() {

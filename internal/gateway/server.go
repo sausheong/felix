@@ -25,6 +25,7 @@ type ServerOptions struct {
 	Memory         *MemoryHandlers   // optional /settings/api/memory* handlers
 	MCP            *MCPHandlers      // optional /api/mcp* handlers (re-auth)
 	LogBuffer      *LogBuffer        // optional log buffer for /logs
+	Files          *FilesHandlers    // optional /files/* handlers
 }
 
 // Server is the Felix gateway HTTP + WebSocket server.
@@ -125,6 +126,17 @@ func (s *Server) routes() {
 	if s.opts.LogBuffer != nil {
 		s.router.Get("/logs", NewLogsHandler(s.opts.LogBuffer))
 		s.router.Get("/logs/stream", NewLogsStreamHandler(s.opts.LogBuffer))
+	}
+
+	if s.opts.Files != nil {
+		s.router.Get("/files", NewFilesPageHandler())
+		s.router.Get("/files/list", s.opts.Files.List)
+		s.router.Get("/files/raw", s.opts.Files.Raw)
+		s.router.Post("/files/upload", s.opts.Files.Upload)
+		s.router.Delete("/files", s.opts.Files.Delete)
+		s.router.Post("/files/move", s.opts.Files.Move)
+		s.router.Post("/files/rename", s.opts.Files.Rename)
+		s.router.Post("/files/mkdir", s.opts.Files.MkDir)
 	}
 }
 
