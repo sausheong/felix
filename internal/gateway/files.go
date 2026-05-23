@@ -322,6 +322,7 @@ func (h *FilesHandlers) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if closeErr != nil {
+		_ = os.Remove(abs)
 		writeFilesError(w, http.StatusInternalServerError, closeErr)
 		return
 	}
@@ -346,6 +347,10 @@ func (h *FilesHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 	abs, err := resolveAgentPath(h.cfgFunc(), agentID, rel)
 	if err != nil {
 		writeFilesError(w, http.StatusBadRequest, err)
+		return
+	}
+	if abs == agentWorkspace(h.cfgFunc(), agentID) {
+		writeFilesError(w, http.StatusBadRequest, &fileError{msg: "cannot delete workspace root"})
 		return
 	}
 	info, err := os.Stat(abs)
@@ -405,6 +410,10 @@ func (h *FilesHandlers) Move(w http.ResponseWriter, r *http.Request) {
 		writeFilesError(w, http.StatusBadRequest, err)
 		return
 	}
+	if src == agentWorkspace(h.cfgFunc(), body.Agent) {
+		writeFilesError(w, http.StatusBadRequest, &fileError{msg: "cannot move workspace root"})
+		return
+	}
 	dst, err := resolveAgentPath(h.cfgFunc(), body.Agent, body.To)
 	if err != nil {
 		writeFilesError(w, http.StatusBadRequest, err)
@@ -461,6 +470,10 @@ func (h *FilesHandlers) Rename(w http.ResponseWriter, r *http.Request) {
 	src, err := resolveAgentPath(h.cfgFunc(), body.Agent, body.Path)
 	if err != nil {
 		writeFilesError(w, http.StatusBadRequest, err)
+		return
+	}
+	if src == agentWorkspace(h.cfgFunc(), body.Agent) {
+		writeFilesError(w, http.StatusBadRequest, &fileError{msg: "cannot rename workspace root"})
 		return
 	}
 	dstRel := path.Join(path.Dir(body.Path), body.NewName)

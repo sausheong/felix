@@ -181,3 +181,81 @@ func TestRename(t *testing.T) {
 		t.Error("renamed file should exist")
 	}
 }
+
+func TestRaw_ServesFile(t *testing.T) {
+	ws := t.TempDir()
+	ws, _ = filepath.EvalSymlinks(ws)
+	content := []byte("hello raw")
+	os.WriteFile(filepath.Join(ws, "data.txt"), content, 0o644)
+	h := newTestFilesHandlers(t, "default", ws)
+
+	req := httptest.NewRequest("GET", "/files/raw?agent=default&path=data.txt", nil)
+	rr := httptest.NewRecorder()
+	h.Raw(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Header().Get("Content-Disposition"), "inline") {
+		t.Errorf("expected inline disposition, got %q", rr.Header().Get("Content-Disposition"))
+	}
+	if !bytes.Equal(rr.Body.Bytes(), content) {
+		t.Errorf("body mismatch: got %q, want %q", rr.Body.Bytes(), content)
+	}
+}
+
+func TestRaw_Directory_Returns400(t *testing.T) {
+	ws := t.TempDir()
+	ws, _ = filepath.EvalSymlinks(ws)
+	os.MkdirAll(filepath.Join(ws, "subdir"), 0o755)
+	h := newTestFilesHandlers(t, "default", ws)
+
+	req := httptest.NewRequest("GET", "/files/raw?agent=default&path=subdir", nil)
+	rr := httptest.NewRecorder()
+	h.Raw(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for directory, got %d", rr.Code)
+	}
+}
+
+func TestMove_HappyPath(t *testing.T) {
+	ws := t.TempDir()
+	ws, _ = filepath.EvalSymlinks(ws)
+	os.WriteFile(filepath.Join(ws, "src.txt"), []byte("data"), 0o644)
+	h := newTestFilesHandlers(t, "default", ws)
+
+	body := `{"agent":"default","from":"src.txt","to":"dst.txt"}`
+	req := httptest.NewRequest("POST", "/files/move", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.Move(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("move got %d: %s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(ws, "src.txt")); !os.IsNotExist(err) {
+		t.Error("source should be gone after move")
+	}
+	if _, err := os.Stat(filepath.Join(ws, "dst.txt")); err != nil {
+		t.Error("destination should exist after move")
+	}
+}
+
+func TestMove_ConflictReturns409(t *testing.T) {
+	ws := t.TempDir()
+	ws, _ = filepath.EvalSymlinks(ws)
+	os.WriteFile(filepath.Join(ws, "src.txt"), []byte("a"), 0o644)
+	os.WriteFile(filepath.Join(ws, "dst.txt"), []byte("b"), 0o644)
+	h := newTestFilesHandlers(t, "default", ws)
+
+	body := `{"agent":"default","from":"src.txt","to":"dst.txt"}`
+	req := httptest.NewRequest("POST", "/files/move", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.Move(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rr.Code)
+	}
+}
