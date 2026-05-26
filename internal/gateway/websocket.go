@@ -447,15 +447,68 @@ func (h *WebSocketHandler) makeTraceMarkForwarder(conn *websocket.Conn, rpcID an
 	}
 }
 
-// handleChatAbort is a temporary stub. Task 3.4 will replace this with
-// a lookup against h.runs.GetBySession to cancel the matching run via
-// Run.CancelFn. activeRuns no longer exists, so for now we just
-// acknowledge — chatexec-owned runs keep streaming until they finish
-// naturally.
+// handleChatAbort cancels the in-flight run for (agentID, sessionKey)
+// by looking it up in h.runs and invoking its CancelFn, then finishing
+// it as cancelled with reason=user_abort. Subscribers see the terminal
+// Done event. Replies {aborted: true, runId} on success, {aborted:
+// false} when no run is active for the scope (not an error — pressing
+// abort with nothing to abort is success).
 func (h *WebSocketHandler) handleChatAbort(conn *websocket.Conn, req JSONRPCRequest) {
+	var params struct {
+		AgentID    string `json:"agentId"`
+		SessionKey string `json:"sessionKey"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "invalid params: "+err.Error())
+		return
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+
+	// Resolve session key: explicit param → per-conn active → "ws_default".
+	sessionKey := params.SessionKey
+	if sessionKey == "" {
+		h.mu.RLock()
+		if m, ok := h.activeSessionKeys[conn]; ok {
+			sessionKey = m[params.AgentID]
+		}
+		h.mu.RUnlock()
+	}
+	if sessionKey == "" {
+		sessionKey = "ws_default"
+	}
+
+	h.mu.RLock()
+	reg := h.runs
+	metrics := h.metrics
+	h.mu.RUnlock()
+
+	if reg == nil {
+		writeRPCError(conn, metrics, req.ID, -32000, "runs registry not configured")
+		return
+	}
+
+	run := reg.GetBySession(runs.SessionScope{AgentID: params.AgentID, SessionKey: sessionKey})
+	if run == nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Result:  map[string]any{"aborted": false},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	if run.CancelFn != nil {
+		run.CancelFn()
+	}
+	if err := run.Finish(runs.StatusCancelled, runs.ReasonUserAbort, ""); err != nil {
+		slog.Warn("handleChatAbort: run.Finish", "runId", run.ID, "agent", params.AgentID, "session", sessionKey, "error", err)
+	}
+
 	writeJSON(conn, JSONRPCResponse{
 		JSONRPC: "2.0",
-		Result:  map[string]any{"ok": true},
+		Result:  map[string]any{"aborted": true, "runId": run.ID},
 		ID:      req.ID,
 	})
 }
