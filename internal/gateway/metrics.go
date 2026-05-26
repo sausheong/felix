@@ -219,6 +219,10 @@ func (m *Metrics) Handler() http.HandlerFunc {
 		b.WriteString("# TYPE felix_ws_messages_total counter\n")
 		fmt.Fprintf(&b, "felix_ws_messages_total %d\n\n", m.wsMessagesTotal.Load())
 
+		b.WriteString("# HELP felix_chat_turns_total Total number of chat turns processed (chat.send invocations that reached chatexec.RunTurn).\n")
+		b.WriteString("# TYPE felix_chat_turns_total counter\n")
+		fmt.Fprintf(&b, "felix_chat_turns_total %d\n\n", m.chatTurnsTotal.Load())
+
 		b.WriteString("# HELP felix_tool_calls_total Total tool calls.\n")
 		b.WriteString("# TYPE felix_tool_calls_total counter\n")
 		fmt.Fprintf(&b, "felix_tool_calls_total %d\n\n", m.toolCallsTotal.Load())
