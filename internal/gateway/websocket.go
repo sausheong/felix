@@ -2,17 +2,16 @@ package gateway
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
-	"sort"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sausheong/cortex"
 	"github.com/sausheong/felix/internal/agent"
+	"github.com/sausheong/felix/internal/chatexec"
 	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/config"
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
@@ -55,7 +54,6 @@ type WebSocketHandler struct {
 	permission        tools.PermissionChecker // dispatch-time tool gate; nil → allow-all
 	subagentBuild     agent.SubagentBuildFn   // builds RuntimeInputs for subagent dispatch via task tool
 	calibratorStore   *tokens.CalibratorStore // per-session token-estimate calibration; cleared on session.clear
-	activeRuns        map[*websocket.Conn]context.CancelFunc
 	activeSessionKeys map[*websocket.Conn]map[string]string // conn → agentID → sessionKey
 	sessionsBaseDir   string                                // root of session storage; passed to constructor; used by handleChatReplay to read on-disk run logs
 	runs              *runs.Registry                        // durable in-flight run registry; nil until SetRunsRegistry; chat.send fails with RPC -32000 if still nil
@@ -79,7 +77,6 @@ func NewWebSocketHandler(
 		sessionStore:      sessionStore,
 		config:            cfg,
 		compactionProv:    compaction.NewProvider(cfg),
-		activeRuns:        make(map[*websocket.Conn]context.CancelFunc),
 		activeSessionKeys: make(map[*websocket.Conn]map[string]string),
 		sessionsBaseDir:   sessionsBaseDir,
 		upgrader: websocket.Upgrader{
@@ -241,12 +238,9 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("websocket client connected", "remote", r.RemoteAddr)
 	defer func() {
-		// Cancel any active run for this connection to prevent orphaned goroutines
+		// chatexec/runs.Registry owns the run lifecycle now — runs survive
+		// a conn disconnect. We just drop this conn's session-key view.
 		h.mu.Lock()
-		if cancel, ok := h.activeRuns[conn]; ok {
-			cancel()
-			delete(h.activeRuns, conn)
-		}
 		delete(h.activeSessionKeys, conn)
 		h.mu.Unlock()
 	}()
@@ -346,50 +340,30 @@ type chatSendParams struct {
 	SessionKey string `json:"sessionKey,omitempty"`
 }
 
+// handleChatSend drives a chat turn through chatexec.RunTurn. The new
+// flow: parse params → snapshot deps under RLock → kick off RunTurn on
+// a goroutine. chatexec owns the run lifecycle: it registers the run in
+// h.runs (which broadcasts run_started via BroadcastNewRun), drains
+// events to disk and to the wsSubscriber, and calls Finish on every
+// exit path. wsSubscriber.OnAttached fires the JSON-RPC response
+// carrying {runID} for this chat.send; OnEvent fires each agent event
+// as a chat.event-shaped JSON-RPC notification on this conn.
+//
+// The default session key remains "ws_default" to preserve on-disk
+// session JSONL files from felix's pre-port era (cloudcat uses
+// "default"; do NOT copy that part verbatim).
 func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCRequest) {
 	var params chatSendParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		writeJSON(conn, JSONRPCResponse{
-			JSONRPC: "2.0",
-			Error:   map[string]any{"code": -32602, "message": "Invalid params"},
-			ID:      req.ID,
-		})
+		writeRPCError(conn, h.metrics, req.ID, -32602, "invalid params: "+err.Error())
 		return
 	}
-
 	if params.AgentID == "" {
 		params.AgentID = "default"
 	}
 
-	h.mu.RLock()
-	agentCfg, ok := h.config.GetAgent(params.AgentID)
-	h.mu.RUnlock()
-
-	if !ok {
-		writeJSON(conn, JSONRPCResponse{
-			JSONRPC: "2.0",
-			Error:   map[string]any{"code": -32602, "message": "Unknown agent"},
-			ID:      req.ID,
-		})
-		return
-	}
-
-	// Resolve LLM provider — read under RLock so a concurrent UpdateProviders
-	// (triggered by a Settings save / config hot-reload) can't tear the map.
-	providerName, _ := llm.ParseProviderModel(agentCfg.Model)
-	h.mu.RLock()
-	provider, ok := h.providers[providerName]
-	h.mu.RUnlock()
-	if !ok {
-		writeJSON(conn, JSONRPCResponse{
-			JSONRPC: "2.0",
-			Error:   map[string]any{"code": -32603, "message": "LLM provider not configured: " + providerName},
-			ID:      req.ID,
-		})
-		return
-	}
-
-	// Load or create session — use explicit param, per-connection tracking, or default
+	// Resolve session key (caller-provided, per-conn active, or
+	// felix's pre-port default "ws_default" — NOT "default").
 	sessionKey := params.SessionKey
 	if sessionKey == "" {
 		h.mu.RLock()
@@ -401,106 +375,64 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	if sessionKey == "" {
 		sessionKey = "ws_default"
 	}
-	sess, err := h.sessionStore.Load(params.AgentID, sessionKey)
-	if err != nil {
-		writeJSON(conn, JSONRPCResponse{
-			JSONRPC: "2.0",
-			Error:   map[string]any{"code": -32603, "message": "Session error: " + err.Error()},
-			ID:      req.ID,
-		})
-		return
-	}
+	scope := runs.SessionScope{AgentID: params.AgentID, SessionKey: sessionKey}
 
-	// Tool policy enforcement is now handled by PermissionChecker:
-	// FilterToolDefs hides denied tools from the model, and Check
-	// short-circuits any deny attempts at dispatch time.
-	//
-	// We wrap the shared registry in a per-chat layer so the per-call task
-	// tool (which captures THIS chat's parent runtime) doesn't leak into
-	// other chats' tool definitions. The wrapper falls through to h.tools
-	// for everything else.
-	var executor tools.Executor = h.tools
-
-	// Run agent. Resolve cortex + compaction per agent so both use the same
-	// LLM as the chat itself (instead of mirroring whatever model the default
-	// agent happens to use at startup).
-	h.mu.RLock()
-	cxProv := h.cortexProvider
-	sk := h.skills
-	mem := h.memory
-	compProv := h.compactionProv
-	perm := h.permission
-	subagentBuild := h.subagentBuild
-	cfg := h.config
-	h.mu.RUnlock()
-	var cx *cortex.Cortex
-	if cxProv != nil {
-		var err error
-		if cx, err = cxProv.For(agentCfg.Model); err != nil {
-			slog.Warn("cortex resolve failed", "agent", agentCfg.ID, "model", agentCfg.Model, "error", err)
-		}
-	}
-	compactionMgr := compProv.For(agentCfg.Model)
-	// Session.ID is freshly generated on every Load (in-memory instance
-	// ID, not a persistent identifier). compactionMgr keys per-session
-	// locks/failures by that ID, so without ForgetSession at end of
-	// turn the locks map grows by one entry per chat.send forever.
-	defer compactionMgr.ForgetSession(sess)
-
-	runtimeDeps := agent.RuntimeDeps{
-		Skills:     sk,
-		Memory:     mem,
-		Permission: perm,
-		CortexFn:   func(_ string) *cortex.Cortex { return cx },
-		AgentLoop:  cfg.AgentLoop,
-		Config:     cfg,
-	}
-
-	rt, err := agent.BuildRuntimeForAgent(runtimeDeps, agent.RuntimeInputs{
-		Provider:   provider,
-		Tools:      executor,
-		Session:    sess,
-		Compaction: compactionMgr,
-	}, agentCfg)
-	if err != nil {
-		writeJSON(conn, JSONRPCResponse{
-			JSONRPC: "2.0",
-			Error:   map[string]any{"code": -32603, "message": "Build runtime failed: " + err.Error()},
-			ID:      req.ID,
-		})
-		return
-	}
-
-	// Per-chat tool overlay. Wires "task" (subagent dispatch — captures THIS
-	// rt as parent) and "cron" (captures THIS chat agent's ID so jobs the
-	// LLM schedules run as the same agent). Both must be per-chat: the
-	// shared h.tools registry would race-clobber across concurrent chats.
-	h.mu.RLock()
-	js := h.jobScheduler
-	h.mu.RUnlock()
-	overlay := &chatToolOverlay{base: h.tools}
-	if subagentBuild != nil && cfg != nil {
-		if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
-			factory := agent.MakeSubagentFactory(cfg, runtimeDeps, subagentBuild, rt)
-			overlay.task = tools.NewTaskTool(factory, rt.Depth, eligible)
-		}
-	}
-	if js != nil {
-		overlay.cron = &tools.CronTool{AgentID: agentCfg.ID, Scheduler: js}
-	}
-	if overlay.task != nil || overlay.cron != nil {
-		rt.Tools = overlay
-	}
-
-	runCtx, runCancel := context.WithCancel(context.Background())
-
-	// Performance trace — emits one slog.Info "perf" line per phase boundary
-	// (skills.match, llm.first_token, tool.exec, …) plus a final "perf summary".
-	// Live-forward each phase mark to the WebSocket as a JSON-RPC notification
-	// so the chat UI's trace panel can show phase timings as they happen.
-	trace := agent.NewTrace(agentCfg.ID, agentCfg.Model)
 	rpcID := req.ID
-	trace.SetOnMark(func(phase string, durMs, atMs int64, attrs []any) {
+
+	// Snapshot deps under RLock so a concurrent UpdateConfig /
+	// UpdateProviders / SetPermission can't tear references mid-call.
+	h.mu.RLock()
+	deps := chatexec.TurnDeps{
+		Runs:           h.runs,
+		Sessions:       h.sessionStore,
+		SessionsBase:   h.sessionsBaseDir,
+		Providers:      h.providers,
+		Tools:          h.tools,
+		Permission:     h.permission,
+		Skills:         h.skills,
+		Memory:         h.memory,
+		CompactionProv: h.compactionProv,
+		Config:         h.config,
+		SubagentBuild:  h.subagentBuild,
+		JobScheduler:   h.jobScheduler,
+		Metrics:        h.metrics,
+		ServerCtx:      h.serverCtx,
+		OnTraceMark:    h.makeTraceMarkForwarder(conn, rpcID),
+	}
+	if h.cortexProvider != nil {
+		// Nil-guard so deps.CortexProvider stays nil-safe when cortex
+		// is unconfigured (chatexec's nil-check is on the field, not
+		// the underlying value).
+		deps.CortexProvider = h.cortexProvider
+	}
+	metrics := h.metrics
+	h.mu.RUnlock()
+
+	if deps.Runs == nil {
+		writeRPCError(conn, metrics, rpcID, -32000, "runs registry not configured")
+		return
+	}
+
+	sub := &wsSubscriber{conn: conn, rpcID: rpcID}
+
+	go func() {
+		_, err := chatexec.RunTurn(context.Background(), deps, scope, params.Text, sub)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("chatexec.RunTurn", "agent", scope.AgentID, "session", scope.SessionKey, "error", err)
+			// chatexec wrote a terminal failure event via Finish, which the
+			// subscriber already saw. Surface an RPC error for completeness
+			// so clients that wired chat.send → callback can fail cleanly.
+			writeRPCError(conn, metrics, rpcID, -32603, err.Error())
+		}
+	}()
+}
+
+// makeTraceMarkForwarder returns a closure that mirrors agent trace
+// phase marks to the conn as JSON-RPC notifications shaped as the
+// existing felix wire format (matches the pre-refactor inline
+// SetOnMark callback at lines 498-510 of the prior websocket.go).
+func (h *WebSocketHandler) makeTraceMarkForwarder(conn *websocket.Conn, rpcID any) func(phase string, durMs, atMs int64, attrs []any) {
+	return func(phase string, durMs, atMs int64, attrs []any) {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
 			Result: map[string]any{
@@ -512,124 +444,85 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 			},
 			ID: rpcID,
 		})
-	})
-	trace.Mark("ws.received", "msg_chars", len(params.Text))
-	runCtx = agent.WithTrace(runCtx, trace)
-
-	// Track this run so chat.abort and disconnect can cancel it
-	h.mu.Lock()
-	h.activeRuns[conn] = runCancel
-	h.mu.Unlock()
-
-	events, err := rt.Run(runCtx, params.Text, nil)
-	if err != nil {
-		runCancel()
-		h.mu.Lock()
-		delete(h.activeRuns, conn)
-		h.mu.Unlock()
-		writeJSON(conn, JSONRPCResponse{
-			JSONRPC: "2.0",
-			Error:   map[string]any{"code": -32603, "message": err.Error()},
-			ID:      req.ID,
-		})
-		return
 	}
-
-	// Stream events in a goroutine so the WebSocket read loop stays free
-	// to process chat.abort messages.
-	go func() {
-		defer func() {
-			runCancel()
-			h.mu.Lock()
-			delete(h.activeRuns, conn)
-			h.mu.Unlock()
-		}()
-
-		for event := range events {
-			var result any
-			switch event.Type {
-			case agent.EventTextDelta:
-				result = map[string]any{"type": "text_delta", "text": event.Text}
-			case agent.EventToolCallStart:
-				result = map[string]any{"type": "tool_call_start", "tool": event.ToolCall.Name, "id": event.ToolCall.ID, "input": safeRawMessage(event.ToolCall.Input)}
-			case agent.EventToolResult:
-				r := map[string]any{"type": "tool_result", "tool": event.ToolCall.Name, "id": event.ToolCall.ID, "input": safeRawMessage(event.ToolCall.Input), "output": event.Result.Output, "error": event.Result.Error}
-				if id, ok := event.Result.Metadata["auth_required"].(string); ok && id != "" {
-					// Surface MCP re-auth signal to the chat client so it
-					// can render an inline "Re-authenticate" button bound
-					// to this server. See chat.go renderToolResult.
-					r["auth_required"] = id
-				}
-				if len(event.Result.Images) > 0 {
-					var imgs []map[string]string
-					for _, img := range event.Result.Images {
-						imgs = append(imgs, map[string]string{
-							"mimeType": img.MimeType,
-							"data":     base64.StdEncoding.EncodeToString(img.Data),
-						})
-					}
-					r["images"] = imgs
-				}
-				result = r
-			case agent.EventCompactionStart:
-				result = map[string]any{"type": "compaction.start"}
-			case agent.EventCompactionDone:
-				if event.Compaction != nil {
-					result = map[string]any{
-						"type":           "compaction.done",
-						"turnsCompacted": event.Compaction.TurnsCompacted,
-						"durationMs":     event.Compaction.DurationMs,
-					}
-				}
-			case agent.EventCompactionSkipped:
-				if event.Compaction != nil {
-					result = map[string]any{
-						"type":    "compaction.skipped",
-						"reason":  string(event.Compaction.Reason),
-						"skipped": event.Compaction.Skipped,
-					}
-				}
-			case agent.EventDone:
-				done := map[string]any{"type": "done"}
-				if event.Usage != nil {
-					done["usage"] = map[string]any{
-						"input_tokens":                event.Usage.InputTokens,
-						"output_tokens":               event.Usage.OutputTokens,
-						"cache_creation_input_tokens": event.Usage.CacheCreationInputTokens,
-						"cache_read_input_tokens":     event.Usage.CacheReadInputTokens,
-					}
-					done["context_window"] = tokens.ContextWindowFor(agentCfg.Model, agentCfg.ContextWindow)
-					done["model"] = agentCfg.Model
-				}
-				result = done
-			case agent.EventError:
-				result = map[string]any{"type": "error", "message": event.Error.Error()}
-			case agent.EventAborted:
-				result = map[string]any{"type": "aborted"}
-			}
-			writeJSON(conn, JSONRPCResponse{
-				JSONRPC: "2.0",
-				Result:  result,
-				ID:      req.ID,
-			})
-		}
-	}()
 }
 
+// handleChatAbort is a temporary stub. Task 3.4 will replace this with
+// a lookup against h.runs.GetBySession to cancel the matching run via
+// Run.CancelFn. activeRuns no longer exists, so for now we just
+// acknowledge — chatexec-owned runs keep streaming until they finish
+// naturally.
 func (h *WebSocketHandler) handleChatAbort(conn *websocket.Conn, req JSONRPCRequest) {
-	h.mu.RLock()
-	cancel, ok := h.activeRuns[conn]
-	h.mu.RUnlock()
-
-	if ok {
-		cancel()
-	}
-
 	writeJSON(conn, JSONRPCResponse{
 		JSONRPC: "2.0",
 		Result:  map[string]any{"ok": true},
 		ID:      req.ID,
 	})
+}
+
+// wsSubscriber adapts chatexec.Subscriber → WebSocket JSON-RPC
+// notifications on a single conn. OnEvent runs eventToResult on each
+// event so live and (future) replay paths produce identical wire shapes.
+type wsSubscriber struct {
+	conn  *websocket.Conn
+	rpcID any
+}
+
+// OnAttached writes the JSON-RPC response carrying {runID} so the
+// client can track which run it's already receiving live events for.
+// This is the response to the originating chat.send.
+func (s *wsSubscriber) OnAttached(runID string) {
+	writeJSON(s.conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result:  map[string]any{"type": "run_attached", "runID": runID},
+		ID:      s.rpcID,
+	})
+}
+
+// OnEvent renders a chatexec run event as a JSON-RPC message on the
+// conn. Uses the shared eventToResult transformer so the wire shape
+// matches what (future) chat.replay will emit for the same on-disk event.
+func (s *wsSubscriber) OnEvent(e runs.Event) {
+	res := eventToResult(e)
+	if res == nil {
+		return
+	}
+	writeJSON(s.conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result:  res,
+		ID:      s.rpcID,
+	})
+}
+
+// eventToResult turns a runs.Event into the JSON shape the chat client
+// renders. For non-terminal events the agent's original map (with
+// "type", "text", etc.) is reconstructed by unmarshalling Payload —
+// that payload was produced by chatexec.buildAgentEventResult at write
+// time. The terminal EventTypeDone written by Run.Finish is rendered
+// as a synthesized "run_terminal" map so clients can distinguish
+// "agent said done" (with usage) from "run closed for reason X".
+//
+// Returns nil when the payload fails to decode; the caller skips the
+// event in that case rather than emitting a broken notification.
+func eventToResult(e runs.Event) map[string]any {
+	if e.Type == runs.EventTypeDone {
+		return map[string]any{
+			"type":          "run_terminal",
+			"status":        string(e.Status),
+			"reason":        string(e.Reason),
+			"superseded_by": e.SupersededBy,
+			"error":         e.Error,
+		}
+	}
+	if len(e.Payload) == 0 {
+		return map[string]any{"type": string(e.Type)}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(e.Payload, &m); err != nil {
+		slog.Warn("eventToResult: unmarshal payload", "type", e.Type, "error", err)
+		return nil
+	}
+	return m
 }
 
 type chatCompactParams struct {
@@ -1354,97 +1247,10 @@ func releaseConnMutex(conn *websocket.Conn) {
 	connWriteMutexes.Delete(conn)
 }
 
-// chatToolOverlay wraps the shared tools.Registry and adds per-chat tool
-// instances on top. Per-chat overlay is required for tools that must
-// capture state from THIS chat's runtime — registering on the shared
-// registry would either race-clobber other chats or cross-wire that state.
+// chatToolOverlay was the per-chat wrapper around tools.Registry that
+// injected the "task" and "cron" tools. chatexec/overlay.go now owns
+// that responsibility — see chatexec.RunTurn for the call site.
 //
-// Currently overlaid:
-//   - "task": captures the chat's parent Runtime so subagents can be
-//     dispatched with the right depth/lineage. Optional (nil when no
-//     subagents are eligible).
-//   - "cron": captures the chat agent's ID so jobs the LLM schedules run
-//     as the agent that scheduled them. Optional (nil when there's no
-//     job scheduler wired).
-//
-// The overlay is read-through for every tool name not in its overlay set.
-type chatToolOverlay struct {
-	base *tools.Registry
-	task *tools.TaskTool // optional
-	cron *tools.CronTool // optional
-}
-
-func (e *chatToolOverlay) Execute(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
-	if e.task != nil && name == e.task.Name() {
-		return e.task.Execute(ctx, input)
-	}
-	if e.cron != nil && name == e.cron.Name() {
-		return e.cron.Execute(ctx, input)
-	}
-	return e.base.Execute(ctx, name, input)
-}
-
-func (e *chatToolOverlay) ToolDefs() []llm.ToolDef {
-	defs := e.base.ToolDefs()
-	// Drop any name we override so the per-chat version wins. The shared
-	// registry no longer holds "cron" in production wiring (startup.go
-	// stopped registering it globally), but a stale def would still break
-	// prompt-cache stability if we duplicated it.
-	if e.cron != nil {
-		filtered := defs[:0]
-		for _, d := range defs {
-			if d.Name != e.cron.Name() {
-				filtered = append(filtered, d)
-			}
-		}
-		defs = filtered
-		defs = append(defs, llm.ToolDef{
-			Name:        e.cron.Name(),
-			Description: e.cron.Description(),
-			Parameters:  e.cron.Parameters(),
-		})
-	}
-	if e.task != nil {
-		defs = append(defs, llm.ToolDef{
-			Name:        e.task.Name(),
-			Description: e.task.Description(),
-			Parameters:  e.task.Parameters(),
-		})
-	}
-	// Re-sort to keep prompt-cache-stable ordering — see Registry.ToolDefs.
-	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
-	return defs
-}
-
-func (e *chatToolOverlay) Names() []string {
-	names := e.base.Names()
-	if e.cron != nil {
-		filtered := names[:0]
-		for _, n := range names {
-			if n != e.cron.Name() {
-				filtered = append(filtered, n)
-			}
-		}
-		names = filtered
-		names = append(names, e.cron.Name())
-	}
-	if e.task != nil {
-		names = append(names, e.task.Name())
-	}
-	sort.Strings(names)
-	return names
-}
-
-func (e *chatToolOverlay) Get(name string) (tools.Tool, bool) {
-	if e.task != nil && name == e.task.Name() {
-		return e.task, true
-	}
-	if e.cron != nil && name == e.cron.Name() {
-		return e.cron, true
-	}
-	return e.base.Get(name)
-}
-
 // safeRawMessage returns the input json.RawMessage when it is
 // non-empty and parses as valid JSON, and `nil` (which marshals to
 // `null`) otherwise. The encoding/json marshaler refuses to emit a
