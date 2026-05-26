@@ -50,6 +50,8 @@ Felix.app
 !howtouse.md
 !internal/skill/bundled/**/*.md
 !skills/**/*.md
+!docs/superpowers/specs/**/*.md
+!docs/superpowers/plans/**/*.md
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Local secrets / experiments / scratchpad scripts that have shown up before
