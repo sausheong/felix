@@ -299,6 +299,8 @@ func (h *WebSocketHandler) dispatch(conn *websocket.Conn, req JSONRPCRequest) {
 		h.handleChatSend(conn, req)
 	case "chat.abort":
 		h.handleChatAbort(conn, req)
+	case "chat.subscribe":
+		h.handleChatSubscribe(conn, req)
 	case "chat.compact":
 		h.handleChatCompact(conn, req)
 	case "agent.status":
@@ -511,6 +513,94 @@ func (h *WebSocketHandler) handleChatAbort(conn *websocket.Conn, req JSONRPCRequ
 		Result:  map[string]any{"aborted": true, "runId": run.ID},
 		ID:      req.ID,
 	})
+}
+
+// handleChatSubscribe attaches conn to the in-flight run for scope.
+// Returns past events (seq > fromSeq) in the RPC response; live events
+// arrive as chat.event notifications until Finish closes the channel.
+//
+// Default session-key fallback matches handleChatSend / handleChatAbort:
+// explicit → activeSessionKeys[conn][agentID] → "ws_default".
+func (h *WebSocketHandler) handleChatSubscribe(conn *websocket.Conn, req JSONRPCRequest) {
+	var params struct {
+		AgentID    string `json:"agentId"`
+		SessionKey string `json:"sessionKey"`
+		FromSeq    int64  `json:"fromSeq"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "invalid params: "+err.Error())
+		return
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+	if params.SessionKey == "" {
+		h.mu.RLock()
+		if m, ok := h.activeSessionKeys[conn]; ok {
+			params.SessionKey = m[params.AgentID]
+		}
+		h.mu.RUnlock()
+		if params.SessionKey == "" {
+			params.SessionKey = "ws_default"
+		}
+	}
+
+	h.mu.RLock()
+	reg := h.runs
+	metrics := h.metrics
+	h.mu.RUnlock()
+	if reg == nil {
+		writeRPCError(conn, metrics, req.ID, -32000, "runs registry not configured")
+		return
+	}
+
+	run := reg.GetBySession(runs.SessionScope{AgentID: params.AgentID, SessionKey: params.SessionKey})
+	if run == nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Result:  map[string]any{"active": false},
+			ID:      req.ID,
+		})
+		return
+	}
+
+	past, live, lastSeq, err := run.Subscribe(conn, params.FromSeq)
+	if err != nil {
+		writeRPCError(conn, metrics, req.ID, -32000, "subscribe: "+err.Error())
+		return
+	}
+
+	pastJSON := make([]map[string]any, 0, len(past))
+	for _, e := range past {
+		pastJSON = append(pastJSON, eventToResult(e))
+	}
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result: map[string]any{
+			"active":  true,
+			"runId":   run.ID,
+			"lastSeq": lastSeq,
+			"past":    pastJSON,
+		},
+		ID: req.ID,
+	})
+
+	go forwardEvents(conn, live)
+}
+
+// forwardEvents drains live events to conn until the channel closes
+// (Unsubscribe, Finish, or fan-out drop). Each event is written as a
+// chat.event JSON-RPC notification using eventToResult so the wire
+// shape matches the past-event payloads emitted in the subscribe
+// response.
+func forwardEvents(conn *websocket.Conn, ch <-chan runs.Event) {
+	for e := range ch {
+		writeJSON(conn, map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "chat.event",
+			"params":  eventToResult(e),
+		})
+	}
 }
 
 // wsSubscriber adapts chatexec.Subscriber → WebSocket JSON-RPC
