@@ -201,3 +201,15 @@ func TestRunTurn_TraceMarkForwarded(t *testing.T) {
 		t.Fatalf("expected a chat./ws. trace mark, got: %v", marks)
 	}
 }
+
+// TestRunTurn_NilRunsRegistry covers the ErrRunsRegistryMissing error
+// path: RunTurn must refuse to start a turn when deps.Runs is nil,
+// since there's nowhere to record the run.
+func TestRunTurn_NilRunsRegistry(t *testing.T) {
+	deps, scope := newTestDeps(t, "B", "fake", "ok")
+	deps.Runs = nil
+	_, err := RunTurn(context.Background(), deps, scope, "hello", nil)
+	if !errors.Is(err, ErrRunsRegistryMissing) {
+		t.Fatalf("want ErrRunsRegistryMissing, got %v", err)
+	}
+}
