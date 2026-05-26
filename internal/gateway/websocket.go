@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -301,6 +302,8 @@ func (h *WebSocketHandler) dispatch(conn *websocket.Conn, req JSONRPCRequest) {
 		h.handleChatAbort(conn, req)
 	case "chat.subscribe":
 		h.handleChatSubscribe(conn, req)
+	case "chat.replay":
+		h.handleChatReplay(conn, req)
 	case "chat.compact":
 		h.handleChatCompact(conn, req)
 	case "agent.status":
@@ -666,6 +669,65 @@ func eventToResult(e runs.Event) map[string]any {
 		return nil
 	}
 	return m
+}
+
+// handleChatReplay reads events with seq > fromSeq from the on-disk
+// log file for the given run. Works for both in-flight and finished
+// runs. Does not attach a live subscription — use chat.subscribe for
+// that flow.
+func (h *WebSocketHandler) handleChatReplay(conn *websocket.Conn, req JSONRPCRequest) {
+	var params struct {
+		AgentID    string `json:"agentId"`
+		SessionKey string `json:"sessionKey"`
+		RunID      string `json:"runId"`
+		FromSeq    int64  `json:"fromSeq"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "invalid params: "+err.Error())
+		return
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+	if params.SessionKey == "" {
+		h.mu.RLock()
+		if m, ok := h.activeSessionKeys[conn]; ok {
+			params.SessionKey = m[params.AgentID]
+		}
+		h.mu.RUnlock()
+		if params.SessionKey == "" {
+			params.SessionKey = "ws_default"
+		}
+	}
+	if params.RunID == "" {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "runId is required")
+		return
+	}
+
+	h.mu.RLock()
+	sessionsBase := h.sessionsBaseDir
+	metrics := h.metrics
+	h.mu.RUnlock()
+
+	logPath := filepath.Join(sessionsBase, params.AgentID, params.SessionKey+".runs", params.RunID+".jsonl")
+	past, err := runs.ReadLog(logPath, params.FromSeq)
+	if err != nil {
+		writeRPCError(conn, metrics, req.ID, -32000, "replay: "+err.Error())
+		return
+	}
+
+	pastJSON := make([]map[string]any, 0, len(past))
+	for _, e := range past {
+		pastJSON = append(pastJSON, eventToResult(e))
+	}
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result: map[string]any{
+			"runId": params.RunID,
+			"past":  pastJSON,
+		},
+		ID: req.ID,
+	})
 }
 
 type chatCompactParams struct {
