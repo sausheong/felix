@@ -21,9 +21,10 @@ func newTestServer(t *testing.T) *Server {
 	cfg := config.DefaultConfig()
 	providers := map[string]llm.LLMProvider{}
 	reg := tools.NewRegistry()
-	store := session.NewStore(t.TempDir())
+	sessionsDir := t.TempDir()
+	store := session.NewStore(sessionsDir)
 
-	wsHandler := NewWebSocketHandler(providers, reg, store, cfg)
+	wsHandler := NewWebSocketHandler(providers, reg, store, cfg, sessionsDir)
 	return NewServer("127.0.0.1", 0, wsHandler)
 }
 
@@ -89,8 +90,9 @@ func TestSkillRoutesMounted(t *testing.T) {
 	cfg := config.DefaultConfig()
 	providers := map[string]llm.LLMProvider{}
 	reg := tools.NewRegistry()
-	store := session.NewStore(t.TempDir())
-	wsHandler := NewWebSocketHandler(providers, reg, store, cfg)
+	sessionsDir := t.TempDir()
+	store := session.NewStore(sessionsDir)
+	wsHandler := NewWebSocketHandler(providers, reg, store, cfg, sessionsDir)
 
 	srv := NewServer("127.0.0.1", 0, wsHandler, ServerOptions{
 		Skills: NewSkillHandlers(loader, dir, []string{dir}),

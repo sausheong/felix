@@ -16,6 +16,7 @@ import (
 	"github.com/sausheong/felix/internal/compaction"
 	"github.com/sausheong/felix/internal/config"
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
+	"github.com/sausheong/felix/internal/gateway/runs"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/memory"
 	"github.com/sausheong/felix/internal/session"
@@ -56,6 +57,10 @@ type WebSocketHandler struct {
 	calibratorStore   *tokens.CalibratorStore // per-session token-estimate calibration; cleared on session.clear
 	activeRuns        map[*websocket.Conn]context.CancelFunc
 	activeSessionKeys map[*websocket.Conn]map[string]string // conn → agentID → sessionKey
+	sessionsBaseDir   string                                // root of session storage; passed to constructor; used by handleChatReplay to read on-disk run logs
+	runs              *runs.Registry                        // durable in-flight run registry; nil until SetRunsRegistry; chat.send fails with RPC -32000 if still nil
+	serverCtx         context.Context                       // process-wide ctx so runs unwind on shutdown; nil → falls back to context.Background; SetServerCtx wires it
+	metrics           *Metrics                              // optional; chat-turn and tool-call counters; SetMetrics wires it
 	upgrader          websocket.Upgrader
 	mu                sync.RWMutex
 }
@@ -66,6 +71,7 @@ func NewWebSocketHandler(
 	toolReg *tools.Registry,
 	sessionStore *session.Store,
 	cfg *config.Config,
+	sessionsBaseDir string,
 ) *WebSocketHandler {
 	return &WebSocketHandler{
 		providers:         providers,
@@ -75,6 +81,7 @@ func NewWebSocketHandler(
 		compactionProv:    compaction.NewProvider(cfg),
 		activeRuns:        make(map[*websocket.Conn]context.CancelFunc),
 		activeSessionKeys: make(map[*websocket.Conn]map[string]string),
+		sessionsBaseDir:   sessionsBaseDir,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: AllowedOrigins(nil), // default: localhost-only; overridden by SetOriginChecker
 		},
@@ -165,6 +172,59 @@ func (h *WebSocketHandler) SetSubagentBuilder(fn agent.SubagentBuildFn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.subagentBuild = fn
+}
+
+// SetRunsRegistry installs the durable in-flight run registry. chat.send
+// fails with RPC -32000 until this is set.
+func (h *WebSocketHandler) SetRunsRegistry(reg *runs.Registry) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.runs = reg
+}
+
+// SetServerCtx wires the process-wide server context so chat runs unwind
+// when the gateway shuts down. nil → run handlers fall back to
+// context.Background.
+func (h *WebSocketHandler) SetServerCtx(ctx context.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.serverCtx = ctx
+}
+
+// SetMetrics installs the optional metrics collector. chatexec.RunTurn and
+// writeRPCError nil-guard before touching it.
+func (h *WebSocketHandler) SetMetrics(m *Metrics) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.metrics = m
+}
+
+// BroadcastNewRun is the runs.Registry.OnNewRun callback. For every open conn
+// currently viewing the same (agent, session) scope as the new run, push a
+// JSON-RPC notification "run_started" so the frontend can attach via
+// chat.replay/chat.subscribe.
+func (h *WebSocketHandler) BroadcastNewRun(scope runs.SessionScope, run *runs.Run) {
+	h.mu.RLock()
+	conns := make([]*websocket.Conn, 0)
+	for conn, viewMap := range h.activeSessionKeys {
+		if viewMap[scope.AgentID] == scope.SessionKey {
+			conns = append(conns, conn)
+		}
+	}
+	h.mu.RUnlock()
+
+	notif := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "run_started",
+		"params": map[string]any{
+			"runId":      run.ID,
+			"agentId":    scope.AgentID,
+			"sessionKey": scope.SessionKey,
+		},
+	}
+	for _, c := range conns {
+		writeJSON(c, notif)
+	}
 }
 
 // Handle upgrades an HTTP connection to WebSocket and processes messages.
@@ -1271,6 +1331,20 @@ func writeJSON(conn *websocket.Conn, v any) {
 	if err := conn.WriteJSON(v); err != nil {
 		slog.Error("websocket write error", "error", err)
 	}
+}
+
+// writeRPCError writes a JSON-RPC 2.0 error response for the given request ID.
+// Mirrors the inline error-construction pattern used elsewhere in this file.
+// metrics may be nil; when non-nil, IncErrors is bumped.
+func writeRPCError(conn *websocket.Conn, metrics *Metrics, rpcID any, code int, message string) {
+	if metrics != nil {
+		metrics.IncErrors()
+	}
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Error:   map[string]any{"code": code, "message": message},
+		ID:      rpcID,
+	})
 }
 
 // releaseConnMutex drops the per-connection write mutex from the

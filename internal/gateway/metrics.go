@@ -27,6 +27,7 @@ type Metrics struct {
 	toolCallsTotal  atomic.Int64
 	llmCallsTotal   atomic.Int64
 	errorsTotal     atomic.Int64
+	chatTurnsTotal  atomic.Int64
 	startTime       time.Time
 
 	toolCounts map[string]*atomic.Int64
@@ -40,6 +41,7 @@ type Metrics struct {
 	otelToolCalls  metric.Int64Counter
 	otelLLMCalls   metric.Int64Counter
 	otelErrors     metric.Int64Counter
+	otelChatTurns  metric.Int64Counter
 }
 
 // NewMetrics creates a metrics collector with no OTel mirroring.
@@ -92,6 +94,11 @@ func NewMetricsWithMeter(meter metric.Meter) *Metrics {
 		metric.WithDescription("Error events."))
 	if err != nil {
 		slog.Warn("otel: failed to register felix.errors", "error", err)
+	}
+	m.otelChatTurns, err = meter.Int64Counter("felix.chat.turns",
+		metric.WithDescription("Chat turns processed by the gateway."))
+	if err != nil {
+		slog.Warn("otel: failed to register felix.chat.turns", "error", err)
 	}
 	// Observable gauge for uptime — read on every collection cycle.
 	if _, err := meter.Float64ObservableGauge("felix.uptime.seconds",
@@ -177,6 +184,15 @@ func (m *Metrics) IncErrors() {
 	m.errorsTotal.Add(1)
 	if m.otelErrors != nil {
 		m.otelErrors.Add(context.Background(), 1)
+	}
+}
+
+// IncChatTurns increments the chat turn counter. One increment per
+// chat.send dispatch in chatexec.RunTurn.
+func (m *Metrics) IncChatTurns() {
+	m.chatTurnsTotal.Add(1)
+	if m.otelChatTurns != nil {
+		m.otelChatTurns.Add(context.Background(), 1)
 	}
 }
 

@@ -447,7 +447,8 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 
 	// Init components
 	providers := InitProviders(cfg)
-	sessionStore := session.NewStore(filepath.Join(dataDir, "sessions"))
+	sessionsDir := filepath.Join(dataDir, "sessions")
+	sessionStore := session.NewStore(sessionsDir)
 
 	// Reap orphan spill directories from previous crashed runs / deleted
 	// sessions. Best-effort: errors are logged but do not block startup.
@@ -613,7 +614,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	calibratorStore := tokens.NewCalibratorStore(filepath.Join(dataDir, "calibrators"))
 
 	// Init WebSocket handler
-	wsHandler := gateway.NewWebSocketHandler(providers, toolReg, sessionStore, cfg)
+	wsHandler := gateway.NewWebSocketHandler(providers, toolReg, sessionStore, cfg, sessionsDir)
 	wsHandler.SetSkills(skillLoader)
 	wsHandler.SetMemory(memMgr)
 	wsHandler.SetCortexProvider(cxProvider)
