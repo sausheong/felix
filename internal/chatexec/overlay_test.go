@@ -106,3 +106,56 @@ func TestOverlay_GetFallsThroughToBase(t *testing.T) {
 		t.Fatal("Get(missing) returned ok=true, want false")
 	}
 }
+
+// TestOverlay_CronDedupsInToolDefs verifies that when Base already
+// exports a "cron" tool and the overlay also has Cron set, ToolDefs
+// returns exactly one cron entry (the overlay's), preserving prompt
+// cache stability. Cloudcat covered this incidentally via SendToAgent
+// dedup tests, which were dropped in the felix port.
+func TestOverlay_CronDedupsInToolDefs(t *testing.T) {
+	cron := &tools.CronTool{}
+	overlay := &ChatToolOverlay{
+		Base: stubBase{defs: []llm.ToolDef{
+			{Name: "cron", Description: "stale base cron"},
+			{Name: "read_file"},
+		}},
+		Cron: cron,
+	}
+	defs := overlay.ToolDefs()
+	want := []string{"cron", "read_file"}
+	if len(defs) != len(want) {
+		t.Fatalf("len(defs) = %d, want %d (%v)", len(defs), len(want), defs)
+	}
+	for i, d := range defs {
+		if d.Name != want[i] {
+			t.Fatalf("defs[%d] = %q, want %q", i, d.Name, want[i])
+		}
+	}
+	// The cron entry must be the overlay's, not Base's stale def.
+	if defs[0].Description == "stale base cron" {
+		t.Fatal("ToolDefs returned Base's stale cron def, expected overlay's to win")
+	}
+	if defs[0].Description != cron.Description() {
+		t.Fatalf("cron Description = %q, want overlay's %q", defs[0].Description, cron.Description())
+	}
+}
+
+// TestOverlay_CronDedupsInNames verifies the same dedup in Names():
+// when Base lists "cron" and the overlay also has Cron set, Names
+// returns exactly one "cron" (alphabetically sorted with the rest).
+func TestOverlay_CronDedupsInNames(t *testing.T) {
+	overlay := &ChatToolOverlay{
+		Base: stubBase{names: []string{"cron", "read_file"}},
+		Cron: &tools.CronTool{},
+	}
+	names := overlay.Names()
+	want := []string{"cron", "read_file"}
+	if len(names) != len(want) {
+		t.Fatalf("len(names) = %d, want %d (%v)", len(names), len(want), names)
+	}
+	for i, n := range names {
+		if n != want[i] {
+			t.Fatalf("names[%d] = %q, want %q", i, n, want[i])
+		}
+	}
+}
