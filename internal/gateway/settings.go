@@ -267,7 +267,7 @@ const settingsHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Settings · CloudCat</title>
+<title>Settings · Felix</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <style>
 /* === Custom Properties === */
@@ -759,13 +759,12 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 	<span id="save-dirty-indicator" class="dirty-indicator" hidden>Unsaved changes</span>
 	<button class="btn-primary" id="save-btn" disabled>Save</button>
 </div>
-<!-- Hamburger kept hidden so existing JS handlers don't crash; chat
-     shell provides cross-page nav when this is embedded. Recreate
-     stays accessible via the existing data-action plumbing. -->
+<!-- Hamburger kept hidden so existing JS handlers don't crash; the
+     chat sidebar shell provides cross-page nav when this page is
+     embedded in it. -->
 <button id="hamburger-btn" hidden></button>
 <div id="hamburger-menu" hidden>
 	<button class="menu-item" data-action="theme" id="menu-theme" hidden></button>
-	<button class="menu-item menu-danger" data-action="recreate" hidden>Recreate container</button>
 </div>
 <main>
 <div class="container">
@@ -886,8 +885,7 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 		if (!item) return; // anchor links (Chat/Jobs/Logs) just navigate
 		closeMenu();
 		switch (item.dataset.action) {
-		case 'theme':    toggleTheme(); break;
-		case 'recreate': doRecreate(); break;
+		case 'theme': toggleTheme(); break;
 		}
 	});
 
@@ -899,33 +897,11 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 			document.documentElement.classList.remove('dark');
 		}
 		if (menuTheme) menuTheme.textContent = (mode === 'dark') ? 'Light theme' : 'Dark theme';
-		localStorage.setItem('cloudcat-theme', mode);
+		localStorage.setItem('felix-theme', mode);
 	}
-	setTheme(localStorage.getItem('cloudcat-theme') || 'light');
+	setTheme(localStorage.getItem('felix-theme') || 'light');
 	function toggleTheme() {
 		setTheme(document.documentElement.classList.contains('dark') ? 'light' : 'dark');
-	}
-
-	// === Recreate container ===
-	function doRecreate() {
-		if (!window.confirm('Recreate the cloudcat container?\n\n' +
-			'This re-reads /etc/cloudcat/.env. The container will be ' +
-			'killed and started fresh — expect ~10–15s downtime.\n\n' +
-			'Use this after changing API keys or other env values.')) return;
-		showStatus('Recreate signal sent; container will restart shortly…', false);
-		fetch('/admin/recreate', { method: 'POST' })
-			.then(function(r) {
-				if (!r.ok) {
-					return r.text().then(function(t) {
-						throw new Error('HTTP ' + r.status + ': ' + t);
-					});
-				}
-				// Container killed + recreated by systemd (~8–12s typical).
-				setTimeout(function() { location.reload(); }, 15000);
-			})
-			.catch(function(e) {
-				showStatus('Recreate failed: ' + e.message, true);
-			});
 	}
 
 	// === Tab switching ===
@@ -1016,7 +992,6 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 		renderMemory();
 	}
 
-	// (Models tab removed — Cloudcat does not bundle Ollama.)
 	// fmtBytes is shared by Skills (size column) and Memory (entry bytes).
 	function fmtBytes(n) {
 		if (!n || n < 0) return '';
