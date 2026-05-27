@@ -3,9 +3,7 @@ package cortex
 import (
 	"testing"
 
-	"github.com/sausheong/cortex/connector/conversation"
 	"github.com/sausheong/felix/internal/config"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestResolveCortexModelMirrorsAgentWhenEmpty(t *testing.T) {
@@ -47,80 +45,5 @@ func TestResolveCortexModelMirrorsWhenPartial(t *testing.T) {
 	provider, model := resolveCortexModel(cfg, "local/gemma4:latest")
 	if provider != "local" || model != "gemma4:latest" {
 		t.Errorf("partial config should mirror chat agent; got (%q, %q)", provider, model)
-	}
-}
-
-// msgs is a helper that builds a []conversation.Message from alternating role/content pairs.
-func msgs(pairs ...string) []conversation.Message {
-	out := make([]conversation.Message, 0, len(pairs)/2)
-	for i := 0; i+1 < len(pairs); i += 2 {
-		out = append(out, conversation.Message{Role: pairs[i], Content: pairs[i+1]})
-	}
-	return out
-}
-
-func TestShouldIngestNilAndEmpty(t *testing.T) {
-	assert.False(t, ShouldIngest(nil))
-	assert.False(t, ShouldIngest([]conversation.Message{}))
-}
-
-func TestShouldIngestTrivialUserMessage(t *testing.T) {
-	thread := msgs("user", "ok", "assistant", "Understood, got it, no problem at all.")
-	assert.False(t, ShouldIngest(thread))
-}
-
-func TestShouldIngestTooShort(t *testing.T) {
-	thread := msgs("user", "hi there", "assistant", "Hello!")
-	assert.False(t, ShouldIngest(thread))
-}
-
-func TestShouldIngestNoAssistantMessage(t *testing.T) {
-	// Only a user message — no assistant reply yet
-	thread := msgs("user", "What are the main principles of software architecture and design patterns?")
-	assert.False(t, ShouldIngest(thread))
-}
-
-func TestShouldIngestValidTwoMessage(t *testing.T) {
-	thread := msgs(
-		"user", "What are the main principles of clean code architecture, and how do they apply when building maintainable Go services?",
-		"assistant", "Clean code follows separation of concerns, single responsibility, and dependency inversion. In Go, prefer small interfaces consumed where they're used, keep packages focused, and avoid premature abstraction.",
-	)
-	assert.True(t, ShouldIngest(thread))
-}
-
-func TestShouldIngestValidWithToolCalls(t *testing.T) {
-	thread := msgs(
-		"user", "What files are in the project root and what does the layout tell us about the architecture?",
-		"assistant", "[tool: bash]\n{\"command\":\"ls -la\"}",
-		"user", "main.go\ngo.mod\nREADME.md\ninternal/\ncmd/\npkg/\nMakefile",
-		"assistant", "The project contains main.go, go.mod, README.md, plus the internal/, cmd/, and pkg/ directories. This is a standard Go layout: cmd/ holds entry points, internal/ holds private packages, and pkg/ exposes public APIs.",
-	)
-	assert.True(t, ShouldIngest(thread))
-}
-
-func TestShouldIngestTrivialCaseInsensitive(t *testing.T) {
-	thread := msgs("user", "THANKS", "assistant", "You are welcome! Glad I could help with that.")
-	assert.False(t, ShouldIngest(thread))
-}
-
-func TestShouldRecall(t *testing.T) {
-	cases := []struct {
-		msg  string
-		want bool
-	}{
-		{"", false},
-		{"   ", false},
-		{"ok", false},
-		{"thanks", false},
-		{"Thanks", false},
-		{"hi", false},
-		{"yes", false},
-		{"hello world", false},                                                     // 11 chars, below threshold
-		{"what about Hormuz?", true},                                                // 18 chars, substantive
-		{"Tell me about the project structure for the new microservice we discussed", true},
-	}
-	for _, tc := range cases {
-		got := ShouldRecall(tc.msg)
-		assert.Equal(t, tc.want, got, "msg=%q", tc.msg)
 	}
 }

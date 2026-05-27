@@ -15,14 +15,10 @@
 package agent
 
 import (
-	"context"
 	"fmt"
-	"log/slog"
 	"strings"
-	"sync"
 
 	"github.com/sausheong/cortex"
-	conv "github.com/sausheong/cortex/connector/conversation"
 	hrt "github.com/sausheong/harness/runtime"
 	"github.com/sausheong/harness/tool"
 
@@ -125,15 +121,6 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 	if deps.Memory != nil {
 		hdeps.Memory = memoryProviderAdapter{m: deps.Memory}
 	}
-	if deps.CortexFn != nil {
-		hdeps.KGFn = func(model string) hrt.KnowledgeGraph {
-			cx := deps.CortexFn(model)
-			if cx == nil {
-				return nil
-			}
-			return &cortexKGAdapter{cx: cx}
-		}
-	}
 
 	spec := hrt.AgentSpec{
 		ID:            a.ID,
@@ -204,15 +191,6 @@ func MakeSubagentFactory(cfg *config.Config, deps RuntimeDeps, buildInputs Subag
 	if deps.Memory != nil {
 		hdeps.Memory = memoryProviderAdapter{m: deps.Memory}
 	}
-	if deps.CortexFn != nil {
-		hdeps.KGFn = func(model string) hrt.KnowledgeGraph {
-			cx := deps.CortexFn(model)
-			if cx == nil {
-				return nil
-			}
-			return &cortexKGAdapter{cx: cx}
-		}
-	}
 
 	return hrt.MakeSubagentFactory(resolve, hdeps, hbuild, parent)
 }
@@ -240,48 +218,6 @@ func (a memoryProviderAdapter) Get(id string) (string, bool) {
 		return "", false
 	}
 	return e.Content, true
-}
-
-// cortexKGAdapter implements harness/runtime.KnowledgeGraph by delegating
-// to Felix's cortex helpers (cortexadapter.ShouldRecall, FormatResults,
-// IngestThreadAsync).
-//
-// Concurrency: a per-Run mutex serializes the cortex thread that the
-// runtime accumulates and hands to Ingest at end of run; this adapter
-// itself is stateless aside from the *cortex.Cortex pointer.
-type cortexKGAdapter struct {
-	cx *cortex.Cortex
-	mu sync.Mutex
-}
-
-func (k *cortexKGAdapter) ShouldRecall(query string) bool {
-	return cortexadapter.ShouldRecall(query)
-}
-
-func (k *cortexKGAdapter) Recall(ctx context.Context, query string) string {
-	k.mu.Lock()
-	cx := k.cx
-	k.mu.Unlock()
-	results, err := cx.Recall(ctx, query, cortex.WithLimit(5))
-	if err != nil {
-		slog.Debug("cortex recall error", "error", err)
-		return ""
-	}
-	// CortexHint is now baked into the static system prompt via
-	// cortexStaticHint(); per-turn we only ship the formatted results
-	// (which include their own "## Cortex Knowledge Graph" header).
-	return cortexadapter.FormatResults(results)
-}
-
-func (k *cortexKGAdapter) Ingest(ctx context.Context, thread []hrt.Message) {
-	if len(thread) <= 1 {
-		return
-	}
-	convThread := make([]conv.Message, 0, len(thread))
-	for _, m := range thread {
-		convThread = append(convThread, conv.Message{Role: m.Role, Content: m.Content})
-	}
-	cortexadapter.IngestThreadAsync(ctx, k.cx, convThread)
 }
 
 // --- Felix-side prompt composition (was BuildConfigSummary, LoadAgentMemoryFiles) ---

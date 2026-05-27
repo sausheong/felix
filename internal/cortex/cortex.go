@@ -4,18 +4,15 @@
 package cortex
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"math"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	goopenai "github.com/sashabaranov/go-openai"
 	"github.com/sausheong/cortex"
-	"github.com/sausheong/cortex/connector/conversation"
 	"github.com/sausheong/cortex/extractor/deterministic"
 	"github.com/sausheong/cortex/extractor/hybrid"
 	"github.com/sausheong/cortex/extractor/llmext"
@@ -26,33 +23,14 @@ import (
 	localpkg "github.com/sausheong/felix/internal/local"
 )
 
-// ingestWG tracks in-flight background ingest goroutines.
-// Call Drain() before closing the Cortex database to ensure all writes complete.
-var ingestWG sync.WaitGroup
-
-// IngestThreadAsync queues a conversation thread for background ingestion into
-// the Cortex knowledge graph. Call Drain() before closing the database to
-// ensure all queued writes complete.
-//
-// Filters trivial threads BEFORE spawning the goroutine. Without this,
-// every chat turn that doesn't pass ShouldIngest still allocates a
-// goroutine, takes the WaitGroup hop, and re-runs the same check inside
-// IngestThread before bailing. Skipping early saves the allocation +
-// scheduling cost on every "ok"/"thanks"/short reply turn.
-func IngestThreadAsync(ctx context.Context, cx *cortex.Cortex, thread []conversation.Message) {
-	if !ShouldIngest(thread) {
-		return
-	}
-	ingestWG.Go(func() {
-		IngestThread(ctx, cx, thread)
-	})
-}
-
-// Drain waits for all in-flight IngestThreadAsync calls to complete.
-// Call this before closing the Cortex database (cx.Close()).
-func Drain() {
-	ingestWG.Wait()
-}
+// Drain is a no-op kept as a stable shutdown hook for callers that
+// historically waited on background cortex ingest goroutines. The auto-
+// ingest path was removed when the four explicit cortex tools (recall,
+// remember, find_entities, get_relationships) replaced it; cortex now
+// only writes synchronously from inside tool.Execute calls, so there is
+// nothing to wait for. Kept (rather than deleted) so startup/cleanup
+// wiring does not need touching.
+func Drain() {}
 
 // resolveCortexModel chooses the (provider, model) for a given chat agent.
 // If cfg.Provider AND cfg.LLMModel are both set, that's a hard pin and is
@@ -223,139 +201,11 @@ func (p *Provider) build(provider, model string) (*cortex.Cortex, error) {
 	return cx, nil
 }
 
-// minIngestLen is the minimum combined length of user+assistant text
-// required to trigger ingestion. Short exchanges (one-line acknowledgements,
-// "OK", "thanks", brief confirmations) are skipped because they cost an
-// embed call apiece without producing recall-worthy content. Bumped from
-// 100 → 300 after observing low-value ingests crowding the graph.
-const minIngestLen = 300
-
-// minRecallLen is the minimum trimmed user message length to trigger Cortex
-// recall. Short messages either are trivial phrases (filtered separately) or
-// don't carry enough context for a useful semantic match.
-const minRecallLen = 12
-
-// maxIngestLen caps the total characters per ingest. nomic-embed-text has
-// an 8192-token context window (~30 KB chars). We reject larger threads
-// to avoid the "input length exceeds the context length" embed error and
-// to bound the time the embedder is tied up.
-const maxIngestLen = 28000
-
-// ingestTimeout is the hard cap on a single IngestThread call. Async, so
-// it doesn't block the user — but it does need to be long enough for an
-// LLM-backed extractor to finish. Sonnet/GPT-class extraction over a multi-
-// chunk thread can take 30–60 s; bumped from 30s after seeing repeated
-// "ingest timed out" warnings against anthropic-mirrored cortex.
-const ingestTimeout = 90 * time.Second
-
-// trivialPhrases are exact-match messages (lowercased) that are never
-// worth ingesting regardless of length.
-var trivialPhrases = map[string]bool{
-	"ok":           true,
-	"okay":         true,
-	"thanks":       true,
-	"thank you":    true,
-	"yes":          true,
-	"no":           true,
-	"sure":         true,
-	"got it":       true,
-	"understood":   true,
-	"hi":           true,
-	"hello":        true,
-	"hey":          true,
-	"bye":          true,
-	"goodbye":      true,
-	"good morning": true,
-	"good night":   true,
-}
-
-// ShouldRecall returns true if the user message is substantial enough to
-// be worth a Cortex recall. Trivial phrases ("ok", "thanks", greetings) and
-// very short messages are skipped so they don't cost an embed call apiece.
-// Symmetric to ShouldIngest on the write side.
-func ShouldRecall(userMsg string) bool {
-	trimmed := strings.TrimSpace(userMsg)
-	if trimmed == "" {
-		return false
-	}
-	if trivialPhrases[strings.ToLower(trimmed)] {
-		return false
-	}
-	if len(trimmed) < minRecallLen {
-		return false
-	}
-	return true
-}
-
-// ShouldIngest returns true if the conversation thread contains enough
-// substance to be worth storing in the knowledge graph, but isn't so large
-// that the embedder would reject it.
-func ShouldIngest(thread []conversation.Message) bool {
-	if len(thread) == 0 {
-		return false
-	}
-	// Skip if the first user message is a trivial phrase.
-	if thread[0].Role == "user" && trivialPhrases[strings.ToLower(strings.TrimSpace(thread[0].Content))] {
-		return false
-	}
-	// Require at least one assistant message and enough combined content.
-	total := 0
-	hasAssistant := false
-	for _, m := range thread {
-		total += len(strings.TrimSpace(m.Content))
-		if m.Role == "assistant" {
-			hasAssistant = true
-		}
-	}
-	if !hasAssistant || total < minIngestLen {
-		return false
-	}
-	if total > maxIngestLen {
-		slog.Debug("cortex: skipping oversized thread", "chars", total, "cap", maxIngestLen)
-		return false
-	}
-	return true
-}
-
-// IngestThread feeds a completed conversation thread into the Cortex knowledge
-// graph. The thread should contain all messages for the exchange: user message,
-// tool calls (as assistant messages), tool results (as user messages), and the
-// final assistant reply. It skips trivial, short, or oversized threads.
-// A hard ingestTimeout caps each call so a stuck extractor or embedder
-// can't tie up Ollama capacity indefinitely. It runs synchronously;
-// callers should run it in a goroutine if they don't want to block.
-func IngestThread(ctx context.Context, cx *cortex.Cortex, thread []conversation.Message) {
-	if !ShouldIngest(thread) {
-		slog.Debug("cortex: skipping ingest (trivial, too small, or too large)", "len", len(thread))
-		return
-	}
-	ingestCtx, cancel := context.WithTimeout(ctx, ingestTimeout)
-	defer cancel()
-	start := time.Now()
-	conn := conversation.New()
-	if err := conn.Ingest(ingestCtx, cx, thread); err != nil {
-		if ingestCtx.Err() == context.DeadlineExceeded {
-			slog.Warn("cortex: thread ingest timed out", "after_ms", time.Since(start).Milliseconds(), "cap_ms", ingestTimeout.Milliseconds())
-		} else {
-			slog.Warn("cortex: thread ingest failed", "error", err, "dur_ms", time.Since(start).Milliseconds())
-		}
-	}
-}
-
 // CortexHint is injected into the system prompt when Cortex is enabled so the
 // agent knows it has a persistent knowledge graph backing its memory.
 const CortexHint = `
 
-You have access to Cortex, a persistent knowledge graph that automatically stores and retrieves knowledge across conversations. Cortex extracts entities (people, organizations, places, concepts), relationships between them, and factual memories from every conversation.
-
-How Cortex works for you:
-- AUTOMATIC STORAGE: After each conversation turn, entities, relationships, and facts are automatically extracted and stored. You do not need to do anything to save knowledge.
-- AUTOMATIC RETRIEVAL: Before each response, Cortex searches its knowledge graph for information relevant to the user's message. Results appear below under "Cortex Knowledge Graph".
-- CORTEX FIRST — ALWAYS: Before using any tool (web_fetch, web_search, bash, read_file, or any other), check whether the "Cortex Knowledge Graph" section below already contains the answer. Only reach for a tool if Cortex does not have sufficient information.
-- USE THE CONTEXT: When Cortex results appear, incorporate that knowledge naturally into your response. Reference what you know about people, organizations, past conversations, and relationships.
-- CONNECT THE DOTS: If a user mentions a person or topic that Cortex has data on, proactively surface relevant connections and context — don't wait to be asked.
-- ACKNOWLEDGE MEMORY: When you use Cortex knowledge, you can say things like "From our previous conversations..." or "I recall that..." to indicate you remember.
-- WEIGH CONFIDENCE: Results may include a "conf: N%" tag indicating how confident Cortex is in the extracted fact. Treat high-confidence items (≥80%) as reliable; treat low-confidence items as hints worth verifying before relying on them.`
+You have access to cortex, my persistent memory. At the start of every conversation, call recall with keywords from my first message to check for relevant context. When I tell you something you should remember about me, my projects, my preferences, or my decisions, call remember. Use find_entities and get_relationships when I ask about people, projects, or how things connect.`
 
 // FormatResults formats Cortex recall results for injection into the agent
 // system prompt, similar to memory.FormatForPrompt.
