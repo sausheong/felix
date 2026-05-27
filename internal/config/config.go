@@ -41,6 +41,12 @@ type Config struct {
 	// UI's save-config endpoint can write back to disk WITHOUT persisting the
 	// runtime-only augmentation. Not JSON-serialized.
 	mcpAutoAddedNames []string
+
+	// cortexAutoAddedNames is the parallel snapshot for ApplyCortexToolNames-
+	// ToAllowlists / StripCortexAutoAdded. Kept separate from
+	// mcpAutoAddedNames so a cortex-toggle change in the UI does not strip
+	// names the MCP path added (and vice versa). Not JSON-serialized.
+	cortexAutoAddedNames []string
 }
 
 // TelegramConfig enables outbound Telegram messages via the send_message tool's
@@ -1173,6 +1179,69 @@ func (c *Config) hasSubagentLocked() bool {
 func (c *Config) StripMCPAutoAdded(other *Config) {
 	c.mu.RLock()
 	names := c.mcpAutoAddedNames
+	c.mu.RUnlock()
+	if len(names) == 0 {
+		return
+	}
+	nameSet := make(map[string]bool, len(names))
+	for _, n := range names {
+		nameSet[n] = true
+	}
+	for i := range other.Agents.List {
+		allow := other.Agents.List[i].Tools.Allow
+		if len(allow) == 0 {
+			continue
+		}
+		kept := make([]string, 0, len(allow))
+		for _, n := range allow {
+			if !nameSet[n] {
+				kept = append(kept, n)
+			}
+		}
+		other.Agents.List[i].Tools.Allow = kept
+	}
+}
+
+// ApplyCortexToolNamesToAllowlists augments each configured agent's
+// Tools.Allow list with the supplied cortex tool names (recall,
+// remember, find_entities, get_relationships). Same semantics as
+// ApplyMCPToolNamesToAllowlists — agents with an empty Allow list are
+// left alone (empty = allow all), duplicates are skipped, the mutation
+// is in-memory only. Tracked in cortexAutoAddedNames so
+// StripCortexAutoAdded can undo it on UI save.
+func (c *Config) ApplyCortexToolNamesToAllowlists(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.Agents.List {
+		agent := &c.Agents.List[i]
+		if len(agent.Tools.Allow) == 0 {
+			continue // empty Allow = allow all; no augmentation needed
+		}
+		existing := make(map[string]bool, len(agent.Tools.Allow))
+		for _, n := range agent.Tools.Allow {
+			existing[n] = true
+		}
+		for _, n := range names {
+			if !existing[n] {
+				agent.Tools.Allow = append(agent.Tools.Allow, n)
+				existing[n] = true
+			}
+		}
+	}
+	c.cortexAutoAddedNames = append(c.cortexAutoAddedNames[:0], names...)
+}
+
+// StripCortexAutoAdded removes from `other`'s agent allowlists any tool
+// names that were auto-added to THIS Config by ApplyCortexToolNames-
+// ToAllowlists. Parallel to StripMCPAutoAdded; the UI's SaveConfig
+// handler calls both before persisting to disk so runtime-only
+// augmentations are not written back to felix.json5.
+func (c *Config) StripCortexAutoAdded(other *Config) {
+	c.mu.RLock()
+	names := c.cortexAutoAddedNames
 	c.mu.RUnlock()
 	if len(names) == 0 {
 		return

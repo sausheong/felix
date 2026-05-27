@@ -154,6 +154,14 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 			// Copy path from current config so Save writes to the right file.
 			newCfg.SetPath(cfg.Path())
 
+			// Strip runtime-only auto-added tool names (MCP + cortex) from
+			// the on-disk write so user-edited allowlists do not accumulate
+			// ghost entries when those subsystems are later disabled.
+			// In-memory cfg is unaffected; UpdateFrom below re-syncs from
+			// newCfg, and the next startup re-applies the auto-add.
+			cfg.StripMCPAutoAdded(&newCfg)
+			cfg.StripCortexAutoAdded(&newCfg)
+
 			if err := newCfg.Save(); err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)

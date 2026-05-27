@@ -399,6 +399,11 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 	}
 	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
 	cfg.ApplyTaskToolToAllowlists()
+	if cfg.Cortex.Enabled {
+		cfg.ApplyCortexToolNamesToAllowlists([]string{
+			"recall", "remember", "find_entities", "get_relationships",
+		})
+	}
 
 	// Build a single PermissionChecker covering every agent in cfg. Same
 	// checker, different agent IDs per Runtime — StaticChecker keys on

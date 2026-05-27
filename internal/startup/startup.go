@@ -518,6 +518,14 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	}
 	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
 	cfg.ApplyTaskToolToAllowlists()
+	// Auto-add cortex tool names to every agent's allowlist when cortex is
+	// enabled, so users don't have to list recall/remember/find_entities/
+	// get_relationships on each agent manually. Mirrors the MCP auto-add.
+	if cfg.Cortex.Enabled {
+		cfg.ApplyCortexToolNamesToAllowlists([]string{
+			"recall", "remember", "find_entities", "get_relationships",
+		})
+	}
 
 	// Build a single PermissionChecker covering every agent in cfg. Same
 	// checker, different agent IDs per Runtime — StaticChecker keys on
