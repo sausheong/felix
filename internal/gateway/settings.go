@@ -6,12 +6,65 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
+
 	"sort"
 
 	"github.com/sausheong/felix/internal/config"
 	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/tools"
 )
+
+// redactedSentinel is the literal value rendered in place of a secret in
+// API responses. Inlined here (rather than living in internal/config) so
+// the settings.go port stays self-contained. The client recognises it as
+// "this slot has a stored value; leaving it as the sentinel on PUT
+// preserves it".
+const redactedSentinel = "***redacted***"
+
+// secretEnvKeyPattern matches env-var KEYs whose values must never be
+// returned to the client. Case-insensitive against any of: secret, key,
+// token, password, passwd, pwd, credential, bearer — matched at the END
+// of the key name only. Non-anchored (no underscore requirement) so
+// APITOKEN / OPENAIAPIKEY / GITHUBTOKEN are caught.
+var secretEnvKeyPattern = regexp.MustCompile(`(?i)(secret|key|token|password|passwd|pwd|credential|bearer)$`)
+
+// redactSecretEnvMap returns a NEW map with secret-keyed values replaced
+// by redactedSentinel. Input is not mutated.
+func redactSecretEnvMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if secretEnvKeyPattern.MatchString(k) {
+			out[k] = redactedSentinel
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// unredactEnvMap merges incoming over current with sentinel-preserving
+// semantics: any incoming value equal to redactedSentinel is replaced by
+// the corresponding current value (or dropped if current has none).
+func unredactEnvMap(incoming, current map[string]string) map[string]string {
+	if incoming == nil {
+		return nil
+	}
+	out := make(map[string]string, len(incoming))
+	for k, v := range incoming {
+		if v == redactedSentinel {
+			if existing, ok := current[k]; ok {
+				out[k] = existing
+			}
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
 
 // SettingsHandlers holds the HTTP handlers for the settings page and config API.
 type SettingsHandlers struct {
@@ -23,8 +76,9 @@ type SettingsHandlers struct {
 }
 
 // BootstrapSnapshotter is the subset of *local.Tracker the handler needs.
-// Defined as an interface so callers may pass nil (no-op handler) and tests
-// can inject fakes.
+// Defined as an interface so callers may pass nil (no-op handler) and
+// tests can inject fakes. Felix's production implementation is the
+// bundled-Ollama Tracker in internal/local.
 type BootstrapSnapshotter interface {
 	Snapshot() local.BootstrapSnapshot
 }
@@ -42,7 +96,25 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 
 		GetConfig: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			data, err := json.MarshalIndent(cfg, "", "  ")
+
+			// Deep-copy then redact: the on-disk / in-memory cfg keeps
+			// real secrets, but the JSON we ship to the client masks
+			// every secret-keyed env value. The clone uses
+			// marshal+unmarshal to avoid hand-coding every nested
+			// struct's pointer/map semantics.
+			raw, err := json.Marshal(cfg)
+			if err != nil {
+				http.Error(w, `{"error":"marshal config"}`, http.StatusInternalServerError)
+				return
+			}
+			var clone config.Config
+			if err := json.Unmarshal(raw, &clone); err != nil {
+				http.Error(w, `{"error":"clone config"}`, http.StatusInternalServerError)
+				return
+			}
+			redactConfigSecrets(&clone)
+
+			data, err := json.MarshalIndent(&clone, "", "  ")
 			if err != nil {
 				http.Error(w, `{"error":"marshal config"}`, http.StatusInternalServerError)
 				return
@@ -65,6 +137,13 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 				return
 			}
 
+			// Sentinel-preserves-existing for secret-keyed env values.
+			// Walks incoming MCP env maps and substitutes any
+			// ***redacted*** value with the matching value from the
+			// current in-memory cfg. Clients GET → edit → PUT and
+			// never need to know any secret they didn't type.
+			restoreSecretEnvs(&newCfg, cfg)
+
 			if err := newCfg.Validate(); err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
@@ -74,11 +153,6 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 
 			// Copy path from current config so Save writes to the right file.
 			newCfg.SetPath(cfg.Path())
-
-			// Strip MCP tool names that were auto-added to agent allowlists at
-			// startup so they don't get baked into the on-disk config (which
-			// would leave ghost entries when MCP servers are later removed).
-			cfg.StripMCPAutoAdded(&newCfg)
 
 			if err := newCfg.Save(); err != nil {
 				w.Header().Set("Content-Type", "application/json")
@@ -149,39 +223,83 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 	}
 }
 
+// redactConfigSecrets mutates cfg in place: every env map under
+// mcp_servers[].stdio.env has its secret-keyed values replaced with
+// config.RedactedSentinel. Future expansion (when added): OTel
+// headers, HTTP MCP transport headers — the helper structure is
+// ready for additional secret-bearing fields without touching the
+// HTTP handler.
+func redactConfigSecrets(cfg *config.Config) {
+	for i := range cfg.MCPServers {
+		s := &cfg.MCPServers[i]
+		if s.Stdio != nil && s.Stdio.Env != nil {
+			s.Stdio.Env = redactSecretEnvMap(s.Stdio.Env)
+		}
+	}
+}
+
+// restoreSecretEnvs walks incoming's MCP env maps and replaces every
+// RedactedSentinel value with the matching value from current. Keys
+// present in incoming but missing from current pass through unchanged
+// (they were genuinely new entries); keys present in current but
+// missing from incoming are dropped (user deleted them from the form).
+func restoreSecretEnvs(incoming, current *config.Config) {
+	curByID := make(map[string]*config.MCPServerConfig, len(current.MCPServers))
+	for i := range current.MCPServers {
+		curByID[current.MCPServers[i].ID] = &current.MCPServers[i]
+	}
+	for i := range incoming.MCPServers {
+		s := &incoming.MCPServers[i]
+		if s.Stdio == nil || s.Stdio.Env == nil {
+			continue
+		}
+		cur := curByID[s.ID]
+		var curEnv map[string]string
+		if cur != nil && cur.Stdio != nil {
+			curEnv = cur.Stdio.Env
+		}
+		s.Stdio.Env = unredactEnvMap(s.Stdio.Env, curEnv)
+	}
+}
+
 const settingsHTML = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Felix Settings</title>
+<title>Settings · CloudCat</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <style>
 /* === Custom Properties === */
+/* Palette mirrors chat.go: cream + forest-green OKLCH, light by default. */
 :root {
-	--color-primary: #2563eb;
-	--color-primary-hover: #1d4ed8;
-	--color-bg: #f8fafc;
-	--color-surface: #ffffff;
-	--color-text: #1e293b;
-	--color-text-muted: #64748b;
-	--color-border: #e2e8f0;
-	--color-error: #dc2626;
-	--color-success: #16a34a;
+	--color-primary: oklch(0.55 0.13 162);
+	--color-primary-hover: oklch(0.48 0.13 162);
+	--color-bg: oklch(0.985 0.005 95);
+	--color-surface: oklch(0.99 0.005 95);
+	--color-bg-soft: oklch(0.97 0.005 95);
+	--color-text: oklch(0.22 0.01 95);
+	--color-text-muted: oklch(0.5 0.01 95);
+	--color-border: oklch(0.9 0.008 95);
+	--color-error: oklch(0.55 0.18 27);
+	--color-success: oklch(0.55 0.13 162);
 	--radius: 8px;
-	--shadow: 0 1px 3px rgba(0,0,0,0.1);
-	--shadow-md: 0 4px 6px rgba(0,0,0,0.1);
+	--shadow: 0 1px 3px oklch(0 0 0 / 0.06);
+	--shadow-md: 0 4px 12px oklch(0 0 0 / 0.08);
 }
 html.dark {
-	--color-primary: #3b82f6;
-	--color-primary-hover: #60a5fa;
-	--color-bg: #0f172a;
-	--color-surface: #1e293b;
-	--color-text: #e2e8f0;
-	--color-text-muted: #94a3b8;
-	--color-border: #334155;
-	--color-error: #ef4444;
-	--color-success: #22c55e;
+	--color-primary: oklch(0.78 0.13 162);
+	--color-primary-hover: oklch(0.7 0.13 162);
+	--color-bg: oklch(0.18 0.01 162);
+	--color-surface: oklch(0.21 0.01 162);
+	--color-bg-soft: oklch(0.25 0.01 162);
+	--color-text: oklch(0.92 0.005 95);
+	--color-text-muted: oklch(0.68 0.01 95);
+	--color-border: oklch(0.32 0.015 162);
+	--color-error: oklch(0.72 0.18 27);
+	--color-success: oklch(0.78 0.13 162);
+	--shadow: 0 1px 3px oklch(0 0 0 / 0.3);
+	--shadow-md: 0 4px 12px oklch(0 0 0 / 0.35);
 }
 
 /* === Reset === */
@@ -206,12 +324,78 @@ body {
 	position: sticky;
 	top: 0;
 	z-index: 10;
+	/* sticky already creates a positioning context for the absolute menu */
 }
-#header h1 { font-size: 1.1rem; font-weight: 700; color: var(--color-text); }
+#header { padding: 0.95rem 1.5rem; }
+#header h1 { font-size: 1.05rem; font-weight: 600; color: var(--color-text); }
 .spacer { margin-left: auto; }
+#hamburger-btn {
+	background: none;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius);
+	padding: 0.25rem 0.5rem;
+	cursor: pointer;
+	font-size: 1.1rem;
+	line-height: 1;
+	color: var(--color-text);
+	transition: border-color 0.2s, color 0.2s;
+}
+#hamburger-btn:hover, #hamburger-btn[aria-expanded="true"] { border-color: var(--color-primary); color: var(--color-primary); }
+#hamburger-menu {
+	position: absolute;
+	top: 3rem;
+	left: 1.5rem;
+	z-index: 100;
+	min-width: 14rem;
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius);
+	box-shadow: var(--shadow);
+	padding: 0.35rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.1rem;
+}
+#hamburger-menu[hidden] { display: none; }
+.menu-item {
+	display: block;
+	width: 100%;
+	text-align: left;
+	background: none;
+	border: none;
+	color: var(--color-text);
+	font: inherit;
+	font-size: 0.85rem;
+	padding: 0.5rem 0.65rem;
+	border-radius: 5px;
+	cursor: pointer;
+	text-decoration: none;
+	transition: background 0.15s, color 0.15s;
+}
+.menu-item:hover, .menu-item:focus { background: var(--color-bg-soft); color: var(--color-primary); outline: none; }
+.menu-item.menu-danger { color: var(--color-error); }
+.menu-item.menu-danger:hover { background: var(--color-error); color: #fff; }
+.menu-icon {
+	display: inline-block;
+	width: 1.5em;
+	text-align: center;
+	margin-right: 0.5rem;
+	opacity: 0.85;
+}
+.menu-sep {
+	margin: 0.25rem 0;
+	border: none;
+	border-top: 1px solid var(--color-border);
+}
 #status-msg { font-size: 0.85rem; }
 #status-msg.success { color: var(--color-success); }
 #status-msg.error { color: var(--color-error); }
+.dirty-indicator {
+	color: var(--color-warning, oklch(0.6 0.16 65));
+	font-size: 0.8rem;
+	margin-right: 0.6rem;
+	font-weight: 500;
+}
 
 /* === Buttons === */
 .btn-primary {
@@ -229,6 +413,21 @@ body {
 }
 .btn-primary:hover { background: var(--color-primary-hover); }
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-danger {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.45rem 0.85rem;
+	background: var(--color-surface);
+	color: var(--color-error);
+	border: 1px solid var(--color-error);
+	border-radius: var(--radius);
+	font-size: 0.875rem;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s;
+}
+.btn-danger:hover { background: var(--color-error); color: #fff; }
+.btn-danger:disabled { opacity: 0.5; cursor: wait; }
 .btn-icon {
 	background: var(--color-surface);
 	border: 1px solid var(--color-border);
@@ -243,49 +442,84 @@ body {
 .btn-icon:hover { border-color: var(--color-primary); }
 
 /* === Main Layout === */
-main { padding: 2rem 0 4rem; }
-.container { max-width: 960px; margin: 0 auto; padding: 0 1.5rem; }
+main { padding: 1.25rem 1.5rem 2.5rem; }
+.container { width: 100%; }
 
-/* === Settings Card === */
+/* === Settings shell — page-level, not a card === */
 .settings-wide {
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius);
-	padding: 2rem;
-	box-shadow: var(--shadow-md);
+	background: transparent;
+	border: 0;
+	border-radius: 0;
+	padding: 0;
+	box-shadow: none;
 }
 
-/* === Finger Tabs === */
+/* === Side-nav layout (replaces top finger-tabs) === */
+.settings-shell {
+	display: flex;
+	gap: 1.5rem;
+	align-items: flex-start;
+}
 .finger-tabs {
 	display: flex;
-	gap: 0;
-	border-bottom: 2px solid var(--color-border);
-	margin-bottom: 1.75rem;
-	overflow-x: auto;
-	scrollbar-width: none;
-	-ms-overflow-style: none;
+	flex-direction: column;
+	gap: 0.15rem;
+	width: 200px;
+	flex-shrink: 0;
+	padding: 0.5rem 0;
 }
-.finger-tabs::-webkit-scrollbar { display: none; }
 .finger-tab {
-	padding: 0.6rem 1.25rem;
+	display: flex;
+	align-items: center;
+	gap: 0.65rem;
+	padding: 0.55rem 0.85rem;
 	font-size: 0.9rem;
 	font-weight: 500;
-	color: var(--color-text-muted);
+	color: var(--color-text);
 	cursor: pointer;
 	border: none;
 	background: none;
-	border-bottom: 2px solid transparent;
-	margin-bottom: -2px;
+	border-radius: 8px;
+	text-align: left;
 	white-space: nowrap;
-	transition: color 0.15s, border-color 0.15s;
+	transition: background 0.12s, color 0.12s;
+	font-family: inherit;
 }
-.finger-tab:hover { color: var(--color-text); }
+.finger-tab:hover { background: var(--color-bg-soft); }
 .finger-tab.active {
+	background: color-mix(in oklch, var(--color-primary) 14%, transparent);
 	color: var(--color-primary);
-	border-bottom-color: var(--color-primary);
+	font-weight: 600;
 }
-.finger-panel { display: none; }
+.finger-tab .ft-icon {
+	width: 18px; height: 18px;
+	stroke: currentColor; fill: none;
+	stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+	flex-shrink: 0;
+	color: var(--color-text-muted);
+}
+.finger-tab.active .ft-icon, .finger-tab:hover .ft-icon { color: var(--color-primary); }
+.finger-panels { flex: 1; min-width: 0; }
+.finger-panel {
+	display: none;
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius);
+	padding: 1.75rem 2rem;
+}
 .finger-panel.active { display: block; }
+@media (max-width: 720px) {
+	.settings-shell { flex-direction: column; gap: 0.75rem; }
+	.finger-tabs {
+		flex-direction: row;
+		width: 100%;
+		overflow-x: auto;
+		padding: 0;
+		scrollbar-width: none;
+	}
+	.finger-tabs::-webkit-scrollbar { display: none; }
+	.finger-tab { flex-shrink: 0; }
+}
 
 /* === Form Groups (label above input) === */
 .form-group { margin-bottom: 1rem; }
@@ -299,6 +533,8 @@ main { padding: 2rem 0 4rem; }
 .form-group input[type="text"],
 .form-group input[type="password"],
 .form-group input[type="number"],
+.form-group input[type="url"],
+.form-group input[type="email"],
 .form-group select,
 .form-group textarea {
 	width: 100%;
@@ -306,17 +542,33 @@ main { padding: 2rem 0 4rem; }
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius);
 	font-size: 0.9rem;
-	background: var(--color-surface);
+	line-height: 1.4;
+	background: var(--color-bg);
 	color: var(--color-text);
 	font-family: inherit;
+	box-sizing: border-box;
 	transition: border-color 0.15s, box-shadow 0.15s;
+}
+/* Strip native chrome from <select> so its rendered height matches
+   <input>; provide our own chevron via background-image. Without this,
+   macOS Safari renders the select shorter than equivalently-padded
+   inputs in the same row. */
+.form-group select {
+	appearance: none;
+	-webkit-appearance: none;
+	-moz-appearance: none;
+	background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+	background-repeat: no-repeat;
+	background-position: right 0.65rem center;
+	background-size: 12px 12px;
+	padding-right: 2rem;
 }
 .form-group input:focus,
 .form-group select:focus,
 .form-group textarea:focus {
 	outline: none;
 	border-color: var(--color-primary);
-	box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
+	box-shadow: 0 0 0 3px rgba(22,219,170,0.15);
 }
 .form-group textarea {
 	min-height: 80px;
@@ -324,9 +576,6 @@ main { padding: 2rem 0 4rem; }
 	font-family: "SF Mono", "Fira Code", monospace;
 	font-size: 0.85rem;
 }
-html.dark .form-group input,
-html.dark .form-group select,
-html.dark .form-group textarea { background: #0f172a; }
 
 /* === 2-column Row === */
 .form-row {
@@ -399,11 +648,41 @@ html.dark .form-group textarea { background: #0f172a; }
 	padding: 1rem 1rem 0.25rem;
 	position: relative;
 }
+.field-error {
+	color: var(--color-error);
+	font-size: 0.75rem;
+	margin-top: 0.2rem;
+	min-height: 1.1em;
+}
+.field-with-error input,
+.field-with-error select,
+.field-with-error textarea {
+	border-color: var(--color-error);
+}
 .dynamic-item-title {
 	font-weight: 600;
 	font-size: 0.9rem;
 	color: var(--color-text);
 	margin-bottom: 0.75rem;
+}
+.inline-filter {
+	width: 100%;
+	padding: 0.4rem 0.6rem;
+	margin: 0 0 0.6rem;
+	font-size: 0.85rem;
+	background: var(--color-bg);
+	border: 1px solid var(--color-border);
+	border-radius: 6px;
+	color: var(--color-text);
+	box-sizing: border-box;
+}
+.inline-filter:focus { border-color: var(--color-primary); outline: none; }
+.dynamic-item-new {
+	animation: dynamic-item-flash 1.2s ease-out;
+}
+@keyframes dynamic-item-flash {
+	0%   { background: color-mix(in oklch, var(--color-primary) 35%, transparent); }
+	100% { background: transparent; }
 }
 .remove-btn {
 	position: absolute;
@@ -459,55 +738,89 @@ html.dark .form-group textarea { background: #0f172a; }
 }
 .error-state {
 	padding: 1rem;
-	background: #fee2e2;
+	background: #450a0a;
 	color: var(--color-error);
 	border-radius: var(--radius);
 }
-html.dark .error-state { background: #450a0a; }
+.error-state { background: color-mix(in oklch, var(--color-error) 14%, transparent); }
 
 /* === Responsive === */
 @media (max-width: 600px) {
 	.form-row { grid-template-columns: 1fr; }
 	.finger-tab { padding: 0.5rem 0.75rem; font-size: 0.8rem; }
-	.settings-wide { padding: 1rem; }
 }
 </style>
 </head>
 <body>
 <div id="header">
-	<h1>Felix Settings</h1>
+	<h1>Settings</h1>
 	<span class="spacer"></span>
 	<span id="status-msg"></span>
+	<span id="save-dirty-indicator" class="dirty-indicator" hidden>Unsaved changes</span>
 	<button class="btn-primary" id="save-btn" disabled>Save</button>
-	<button class="btn-icon" id="theme-btn" title="Toggle light/dark mode">&#9790;</button>
+</div>
+<!-- Hamburger kept hidden so existing JS handlers don't crash; chat
+     shell provides cross-page nav when this is embedded. Recreate
+     stays accessible via the existing data-action plumbing. -->
+<button id="hamburger-btn" hidden></button>
+<div id="hamburger-menu" hidden>
+	<button class="menu-item" data-action="theme" id="menu-theme" hidden></button>
+	<button class="menu-item menu-danger" data-action="recreate" hidden>Recreate container</button>
 </div>
 <main>
 <div class="container">
 	<div id="loading" class="loading-state">Loading configuration&#8230;</div>
 	<div id="settings-root" style="display:none">
-		<div class="settings-wide">
-			<div class="finger-tabs" id="tabs">
-				<button class="finger-tab active" data-tab="agents">Agents</button>
-				<button class="finger-tab" data-tab="providers">Providers</button>
-				<button class="finger-tab" data-tab="models">Models</button>
-				<button class="finger-tab" data-tab="intelligence">Intelligence</button>
-				<button class="finger-tab" data-tab="security">Security</button>
-				<button class="finger-tab" data-tab="messaging">Messaging</button>
-				<button class="finger-tab" data-tab="mcp">MCP</button>
-				<button class="finger-tab" data-tab="gateway">Gateway</button>
-				<button class="finger-tab" data-tab="skills">Skills</button>
-				<button class="finger-tab" data-tab="memory">Memory</button>
+		<div class="settings-wide settings-shell">
+			<nav class="finger-tabs" id="tabs">
+				<button class="finger-tab active" data-tab="agents">
+					<svg class="ft-icon" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg>
+					Agents
+				</button>
+				<button class="finger-tab" data-tab="providers">
+					<svg class="ft-icon" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6"/></svg>
+					Providers
+				</button>
+				<button class="finger-tab" data-tab="models">
+					<svg class="ft-icon" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+					Models
+				</button>
+				<button class="finger-tab" data-tab="intelligence">
+					<svg class="ft-icon" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>
+					Memory
+				</button>
+				<button class="finger-tab" data-tab="security">
+					<svg class="ft-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+					Security
+				</button>
+				<button class="finger-tab" data-tab="messaging">
+					<svg class="ft-icon" viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg>
+					Messaging
+				</button>
+				<button class="finger-tab" data-tab="mcp">
+					<svg class="ft-icon" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="6" rx="1"/><rect x="2" y="15" width="20" height="6" rx="1"/><path d="M6 6h.01M6 18h.01"/></svg>
+					MCP
+				</button>
+				<button class="finger-tab" data-tab="gateway">
+					<svg class="ft-icon" viewBox="0 0 24 24"><path d="M3 13h3l2-7 4 14 3-10 2 6h4"/></svg>
+					OpenTelemetry
+				</button>
+				<button class="finger-tab" data-tab="skills">
+					<svg class="ft-icon" viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2zM22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+					Skills
+				</button>
+			</nav>
+			<div class="finger-panels">
+				<div class="finger-panel active" id="panel-agents"></div>
+				<div class="finger-panel" id="panel-providers"></div>
+				<div class="finger-panel" id="panel-models"></div>
+				<div class="finger-panel" id="panel-intelligence"></div>
+				<div class="finger-panel" id="panel-security"></div>
+				<div class="finger-panel" id="panel-messaging"></div>
+				<div class="finger-panel" id="panel-mcp"></div>
+				<div class="finger-panel" id="panel-gateway"></div>
+				<div class="finger-panel" id="panel-skills"></div>
 			</div>
-			<div class="finger-panel active" id="panel-agents"></div>
-			<div class="finger-panel" id="panel-providers"></div>
-			<div class="finger-panel" id="panel-models"></div>
-			<div class="finger-panel" id="panel-intelligence"></div>
-			<div class="finger-panel" id="panel-security"></div>
-			<div class="finger-panel" id="panel-messaging"></div>
-			<div class="finger-panel" id="panel-mcp"></div>
-			<div class="finger-panel" id="panel-gateway"></div>
-			<div class="finger-panel" id="panel-skills"></div>
-			<div class="finger-panel" id="panel-memory"></div>
 		</div>
 	</div>
 </div>
@@ -517,27 +830,103 @@ html.dark .error-state { background: #450a0a; }
 (function() {
 	var saveBtn = document.getElementById('save-btn');
 	var statusMsg = document.getElementById('status-msg');
-	var themeBtn = document.getElementById('theme-btn');
+	var hamburgerBtn = document.getElementById('hamburger-btn');
+	var hamburgerMenu = document.getElementById('hamburger-menu');
+	var menuTheme = document.getElementById('menu-theme');
 	var loading = document.getElementById('loading');
 	var settingsRoot = document.getElementById('settings-root');
 	var cfg = null;
 	var availableTools = []; // [{name, description}], populated from /settings/api/tools
 
-	// === Theme ===
+	// Dirty-state tracking: any input/change inside settingsRoot flips the
+	// dirty flag and reveals the "Unsaved changes" indicator next to Save.
+	// beforeunload guards against accidental nav-away. Cleared on successful
+	// save. wireDirtyTracking is called once after render() in the initial
+	// load .then(), so the listeners fire only after the form is hydrated
+	// (the render() pass itself programmatically populates inputs, which
+	// would otherwise look like dirty edits).
+	var dirtyIndicator = document.getElementById('save-dirty-indicator');
+	var isDirty = false;
+	function setDirty(v) {
+		if (isDirty === v) return;
+		isDirty = v;
+		if (dirtyIndicator) dirtyIndicator.hidden = !v;
+	}
+	function wireDirtyTracking() {
+		settingsRoot.addEventListener('input', function() { setDirty(true); });
+		settingsRoot.addEventListener('change', function() { setDirty(true); });
+	}
+	window.addEventListener('beforeunload', function(e) {
+		if (!isDirty) return;
+		e.preventDefault();
+		e.returnValue = '';
+	});
+
+	// === Hamburger menu: open/close + action dispatch ===
+	function openMenu() {
+		hamburgerMenu.hidden = false;
+		hamburgerBtn.setAttribute('aria-expanded', 'true');
+	}
+	function closeMenu() {
+		hamburgerMenu.hidden = true;
+		hamburgerBtn.setAttribute('aria-expanded', 'false');
+	}
+	function toggleMenu() { hamburgerMenu.hidden ? openMenu() : closeMenu(); }
+	hamburgerBtn.addEventListener('click', function(e) { e.stopPropagation(); toggleMenu(); });
+	document.addEventListener('click', function(e) {
+		if (!hamburgerMenu.hidden && !hamburgerMenu.contains(e.target) && e.target !== hamburgerBtn) {
+			closeMenu();
+		}
+	});
+	document.addEventListener('keydown', function(e) {
+		if (e.key === 'Escape' && !hamburgerMenu.hidden) closeMenu();
+	});
+	hamburgerMenu.addEventListener('click', function(e) {
+		var item = e.target.closest('[data-action]');
+		if (!item) return; // anchor links (Chat/Jobs/Logs) just navigate
+		closeMenu();
+		switch (item.dataset.action) {
+		case 'theme':    toggleTheme(); break;
+		case 'recreate': doRecreate(); break;
+		}
+	});
+
+	// === Theme — menu label shows what clicking will switch TO ===
 	function setTheme(mode) {
 		if (mode === 'dark') {
 			document.documentElement.classList.add('dark');
-			themeBtn.innerHTML = '&#9728;';
 		} else {
 			document.documentElement.classList.remove('dark');
-			themeBtn.innerHTML = '&#9790;';
 		}
-		localStorage.setItem('felix-theme', mode);
+		if (menuTheme) menuTheme.textContent = (mode === 'dark') ? 'Light theme' : 'Dark theme';
+		localStorage.setItem('cloudcat-theme', mode);
 	}
-	setTheme(localStorage.getItem('felix-theme') || 'light');
-	themeBtn.addEventListener('click', function() {
+	setTheme(localStorage.getItem('cloudcat-theme') || 'light');
+	function toggleTheme() {
 		setTheme(document.documentElement.classList.contains('dark') ? 'light' : 'dark');
-	});
+	}
+
+	// === Recreate container ===
+	function doRecreate() {
+		if (!window.confirm('Recreate the cloudcat container?\n\n' +
+			'This re-reads /etc/cloudcat/.env. The container will be ' +
+			'killed and started fresh — expect ~10–15s downtime.\n\n' +
+			'Use this after changing API keys or other env values.')) return;
+		showStatus('Recreate signal sent; container will restart shortly…', false);
+		fetch('/admin/recreate', { method: 'POST' })
+			.then(function(r) {
+				if (!r.ok) {
+					return r.text().then(function(t) {
+						throw new Error('HTTP ' + r.status + ': ' + t);
+					});
+				}
+				// Container killed + recreated by systemd (~8–12s typical).
+				setTimeout(function() { location.reload(); }, 15000);
+			})
+			.catch(function(e) {
+				showStatus('Recreate failed: ' + e.message, true);
+			});
+	}
 
 	// === Tab switching ===
 	var tabBtns = document.querySelectorAll('.finger-tab');
@@ -582,6 +971,7 @@ html.dark .error-state { background: #450a0a; }
 		loading.style.display = 'none';
 		settingsRoot.style.display = 'block';
 		render();
+		wireDirtyTracking();
 		saveBtn.disabled = false;
 	}).catch(function(err) {
 		loading.className = 'error-state';
@@ -601,6 +991,7 @@ html.dark .error-state { background: #450a0a; }
 			saveBtn.disabled = false;
 			if (res.data.ok) {
 				showStatus('Saved', false);
+				setDirty(false);
 			} else {
 				showStatus('Error: ' + (res.data.error || 'unknown'), true);
 			}
@@ -623,6 +1014,734 @@ html.dark .error-state { background: #450a0a; }
 		renderGateway();
 		renderSkills();
 		renderMemory();
+	}
+
+	// (Models tab removed — Cloudcat does not bundle Ollama.)
+	// fmtBytes is shared by Skills (size column) and Memory (entry bytes).
+	function fmtBytes(n) {
+		if (!n || n < 0) return '';
+		if (n < 1024) return n + ' B';
+		var u = ['KB','MB','GB','TB'];
+		var i = -1;
+		do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+		return n.toFixed(1) + ' ' + u[i];
+	}
+
+	// === Helper: toggle-group ===
+	function makeToggle(parent, label, checked, onChange) {
+		var g = document.createElement('div');
+		g.className = 'toggle-group';
+		var t = document.createElement('label');
+		t.className = 'toggle';
+		var inp = document.createElement('input');
+		inp.type = 'checkbox';
+		inp.checked = !!checked;
+		inp.addEventListener('change', function() { onChange(inp.checked); });
+		var sl = document.createElement('span');
+		sl.className = 'slider';
+		t.appendChild(inp);
+		t.appendChild(sl);
+		var lbl = document.createElement('span');
+		lbl.className = 'toggle-label';
+		lbl.textContent = label;
+		g.appendChild(t);
+		g.appendChild(lbl);
+		parent.appendChild(g);
+		return g;
+	}
+
+	// === Helper: form-group (label above input) ===
+	function makeField(parent, label, type, value, onChange) {
+		if (type === 'toggle') {
+			return makeToggle(parent, label, value, onChange);
+		}
+		var g = document.createElement('div');
+		g.className = 'form-group';
+		var l = document.createElement('label');
+		l.textContent = label;
+		g.appendChild(l);
+
+		if (type === 'select') {
+			var sel = document.createElement('select');
+			var opts = (value && value.options) ? value.options : [];
+			var cur = (value && value.value != null) ? value.value : '';
+			for (var i = 0; i < opts.length; i++) {
+				var opt = document.createElement('option');
+				var ov, ol;
+				if (opts[i] && typeof opts[i] === 'object') {
+					ov = opts[i].value; ol = opts[i].label || opts[i].value;
+				} else {
+					ov = opts[i]; ol = opts[i];
+				}
+				opt.value = ov;
+				opt.textContent = ol;
+				if (ov === cur) opt.selected = true;
+				sel.appendChild(opt);
+			}
+			sel.addEventListener('change', function() { onChange(sel.value); });
+			g.appendChild(sel);
+		} else if (type === 'textarea') {
+			var ta = document.createElement('textarea');
+			ta.value = value || '';
+			ta.addEventListener('input', function() { onChange(ta.value); });
+			g.appendChild(ta);
+		} else {
+			var inp = document.createElement('input');
+			inp.type = type || 'text';
+			inp.value = value != null ? value : '';
+			if (type === 'password') inp.placeholder = '(leave blank to keep)';
+			inp.addEventListener('input', function() {
+				onChange(type === 'number' ? (parseInt(inp.value, 10) || 0) : inp.value);
+			});
+			g.appendChild(inp);
+		}
+
+		parent.appendChild(g);
+		return g;
+	}
+
+	// validateField attaches a blur-time validator to a field built by
+	// makeField. validator(value) returns "" for valid or an error
+	// message string. The message renders into a .field-error sibling
+	// inside the field's wrapper; the wrapper gets .field-with-error
+	// toggled to colour the input border. Editing the field clears any
+	// stale error immediately; the validator re-runs on the next blur.
+	function validateField(fieldEl, validator) {
+		var input = fieldEl.querySelector('input,select,textarea');
+		if (!input) return;
+		var errEl = document.createElement('div');
+		errEl.className = 'field-error';
+		fieldEl.appendChild(errEl);
+		function check() {
+			var msg = validator(input.value) || '';
+			errEl.textContent = msg;
+			if (msg) {
+				fieldEl.classList.add('field-with-error');
+			} else {
+				fieldEl.classList.remove('field-with-error');
+			}
+		}
+		input.addEventListener('blur', check);
+		input.addEventListener('input', function() {
+			if (fieldEl.classList.contains('field-with-error')) {
+				fieldEl.classList.remove('field-with-error');
+				errEl.textContent = '';
+			}
+		});
+	}
+
+	// === Helper: read-only display field (no input — shows a value with id) ===
+	function makeReadOnlyField(parent, label, valueElemId, placeholder) {
+		var g = document.createElement('div');
+		g.className = 'form-group';
+		var l = document.createElement('label');
+		l.textContent = label;
+		g.appendChild(l);
+		var v = document.createElement('div');
+		v.id = valueElemId;
+		v.style.cssText = 'padding:0.5rem 0.75rem; border:1px solid var(--color-border); border-radius:var(--radius); background:var(--color-bg); font-size:0.9rem; font-family:inherit; color:var(--color-text-muted); user-select:text; min-height:1.2em; word-break:break-all;';
+		v.textContent = placeholder || '';
+		g.appendChild(v);
+		parent.appendChild(g);
+		return g;
+	}
+
+	// === Helper: tools checkbox grid for an agent ===
+	function makeToolsCheckboxes(parent, idx, agent) {
+		var g = document.createElement('div');
+		g.className = 'form-group';
+		var l = document.createElement('label');
+		l.textContent = 'Allowed Tools';
+		g.appendChild(l);
+
+		var toolsFilter = document.createElement('input');
+		toolsFilter.type = 'search';
+		toolsFilter.className = 'inline-filter';
+		toolsFilter.placeholder = 'Filter tools...';
+		toolsFilter.style.cssText = 'margin-bottom:0.4rem;';
+		g.appendChild(toolsFilter);
+
+		var allow = ((agent.tools || {}).allow || []).slice();
+		// Empty allow = allow all (matches Policy semantics). Render that as all-checked.
+		var allowAll = allow.length === 0;
+
+		if (availableTools.length === 0) {
+			toolsFilter.style.display = 'none';
+			var empty = document.createElement('div');
+			empty.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; padding:0.5rem 0;';
+			empty.textContent = 'No tools registered (or tools list endpoint unavailable).';
+			g.appendChild(empty);
+			parent.appendChild(g);
+			return g;
+		}
+
+		var grid = document.createElement('div');
+		grid.style.cssText = 'display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:0.4rem 0.75rem; padding:0.4rem 0;';
+
+		availableTools.forEach(function(t) {
+			var lbl = document.createElement('label');
+			lbl.style.cssText = 'display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; cursor:pointer;';
+			lbl.title = t.description || '';
+			var cb = document.createElement('input');
+			cb.type = 'checkbox';
+			cb.checked = allowAll || allow.indexOf(t.name) >= 0;
+			cb.addEventListener('change', function() {
+				if (!cfg.agents.list[idx].tools) cfg.agents.list[idx].tools = {};
+				var cur = (cfg.agents.list[idx].tools.allow || []).slice();
+				// If it was empty (allow-all), seed with the full list before mutating.
+				if (cur.length === 0) {
+					cur = availableTools.map(function(x) { return x.name; });
+				}
+				var pos = cur.indexOf(t.name);
+				if (cb.checked && pos < 0) cur.push(t.name);
+				if (!cb.checked && pos >= 0) cur.splice(pos, 1);
+				cfg.agents.list[idx].tools.allow = cur;
+			});
+			lbl.appendChild(cb);
+			var span = document.createElement('span');
+			span.textContent = t.name;
+			lbl.appendChild(span);
+			grid.appendChild(lbl);
+		});
+
+		g.appendChild(grid);
+
+		toolsFilter.addEventListener('input', function() {
+			var q = toolsFilter.value.toLowerCase();
+			var labels = grid.querySelectorAll('label');
+			for (var i = 0; i < labels.length; i++) {
+				var name = (labels[i].querySelector('span') || {}).textContent || '';
+				labels[i].style.display = (!q || name.toLowerCase().indexOf(q) !== -1) ? '' : 'none';
+			}
+		});
+
+		parent.appendChild(g);
+		return g;
+	}
+
+	// === Helper: 2-column row ===
+	function makeRow(parent) {
+		var row = document.createElement('div');
+		row.className = 'form-row';
+		parent.appendChild(row);
+		return row;
+	}
+
+	// === Helper: panel section with optional heading ===
+	function makeSection(panel, title) {
+		var sec = document.createElement('div');
+		sec.className = 'panel-section';
+		if (title) {
+			var h = document.createElement('h3');
+			h.textContent = title;
+			sec.appendChild(h);
+		}
+		panel.appendChild(sec);
+		return sec;
+	}
+
+	// === Helper: scroll into view + briefly flash the most-recently-added .dynamic-item ===
+	function focusAndFlashNewRow(listEl) {
+		requestAnimationFrame(function() {
+			var rows = listEl.querySelectorAll('.dynamic-item');
+			var lastRow = rows[rows.length - 1];
+			if (!lastRow) return;
+			lastRow.scrollIntoView({behavior: 'smooth', block: 'center'});
+			var input = lastRow.querySelector('input,select,textarea');
+			if (input) input.focus();
+			lastRow.classList.add('dynamic-item-new');
+			setTimeout(function() { lastRow.classList.remove('dynamic-item-new'); }, 1200);
+		});
+	}
+
+	// === Gateway Panel ===
+	// === Messaging Panel — outbound channels (Telegram today, more later) ===
+	function renderMessaging() {
+		var p = document.getElementById('panel-messaging');
+		p.innerHTML = '';
+
+		var tgSec = makeSection(p, 'Telegram (send-only)');
+
+		var help = document.createElement('p');
+		help.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; margin:0 0 0.75rem 0;';
+		help.innerHTML = 'Lets agents send messages to Telegram via the <code>send_message</code> tool (channel: telegram). ' +
+			'Send-only — Felix does not receive Telegram messages. ' +
+			'After saving, configuration is hot-reloaded — then add <code>send_message</code> to the allow list of any agent that should use it (Agents tab).';
+		tgSec.appendChild(help);
+
+		var setupHdr = document.createElement('div');
+		setupHdr.style.cssText = 'font-weight:600; font-size:0.85rem; margin:0.5rem 0 0.25rem 0;';
+		setupHdr.textContent = 'Setup';
+		tgSec.appendChild(setupHdr);
+
+		var setup = document.createElement('ol');
+		setup.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 1.25rem; padding:0; line-height:1.5;';
+		setup.innerHTML =
+			'<li>Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> (<code>/newbot</code>) and copy the token into Bot Token below.</li>' +
+			'<li>Get a recipient chat ID — three options:' +
+				'<ul style="margin:0.25rem 0 0.25rem 1.25rem; padding:0;">' +
+				'<li>Easiest: open Telegram, message <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a> — it replies with your numeric chat ID.</li>' +
+				'<li>Or: have the recipient message your bot at least once, then open <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> in a browser and copy <code>result[].message.chat.id</code>.</li>' +
+				'<li>Or: forward a message from the recipient to <a href="https://t.me/getidsbot" target="_blank" rel="noopener">@getidsbot</a>.</li>' +
+				'</ul></li>' +
+			'<li>Paste the chat ID into Default Chat ID below — the agent uses it whenever it omits an explicit recipient.</li>';
+		tgSec.appendChild(setup);
+
+		var caveat = document.createElement('p');
+		caveat.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 0; padding:0.5rem 0.75rem; background:var(--color-surface-muted, rgba(0,0,0,0.04)); border-radius:var(--radius);';
+		caveat.innerHTML =
+			'<strong>Important:</strong> a Telegram bot cannot send the first message to a personal user — the user must <code>/start</code> the bot (or send any message) at least once first. Otherwise Telegram returns "Forbidden: bot can\'t initiate conversation with a user." ' +
+			'Also: <code>@username</code> as a chat ID works only for <strong>public channels and supergroups</strong> the bot is in — not for personal users. For people, always use the numeric ID.';
+		tgSec.appendChild(caveat);
+
+		var tg = cfg.telegram || {};
+		makeField(tgSec, 'Enabled', 'toggle', !!tg.enabled, function(v) {
+			if (!cfg.telegram) cfg.telegram = {};
+			cfg.telegram.enabled = v;
+		});
+		makeField(tgSec, 'Bot Token', 'password', '', function(v) {
+			if (!v) return;
+			if (!cfg.telegram) cfg.telegram = {};
+			cfg.telegram.bot_token = v;
+		});
+		makeField(tgSec, 'Default Chat ID', 'text', tg.default_chat_id || '', function(v) {
+			if (!cfg.telegram) cfg.telegram = {};
+			cfg.telegram.default_chat_id = v;
+		});
+
+		var note = document.createElement('p');
+		note.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0.5rem 0 0 0;';
+		note.innerHTML = 'Default Chat ID is used when the agent omits <code>chat_id</code>. Personal users: positive numeric ID (e.g. <code>123456789</code>). Groups/supergroups: negative ID (e.g. <code>-1001234567890</code>). Public channels/supergroups only: <code>@channelname</code>.';
+		tgSec.appendChild(note);
+	}
+
+	function renderMCP() {
+		var p = document.getElementById('panel-mcp');
+		p.innerHTML = '';
+		var sec = makeSection(p, 'MCP Servers');
+
+		var help = document.createElement('p');
+		help.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; margin:0 0 0.5rem 0;';
+		help.innerHTML = 'Model Context Protocol servers Felix connects to at startup. ' +
+			'Each server\'s tools become available to agents alongside core tools (with the optional <code>tool_prefix</code> applied). ' +
+			'Two transports: <strong>HTTP</strong> (Streamable HTTP, e.g. AWS Bedrock AgentCore) and <strong>stdio</strong> ' +
+			'(spawn a local subprocess, e.g. <code>npx @modelcontextprotocol/server-github</code>).';
+		sec.appendChild(help);
+
+		var caveat = document.createElement('p');
+		caveat.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 0; padding:0.5rem 0.75rem; background:var(--color-surface-muted, rgba(0,0,0,0.04)); border-radius:var(--radius);';
+		caveat.innerHTML =
+			'<strong>Note:</strong> secrets (HTTP client secret, bearer token) are stored in <code>~/.felix/felix.json5</code> ' +
+			'alongside other secrets (<code>telegram.bot_token</code>, <code>providers.*.api_key</code>). MCP config changes ' +
+			'require a process restart — hot reload of MCP servers is not yet supported.';
+		sec.appendChild(caveat);
+
+		var servers = cfg.mcp_servers || [];
+		var list = document.createElement('div');
+		list.className = 'dynamic-list';
+		sec.appendChild(list);
+
+		// Migrate any legacy flat HTTP entries into the nested http block on
+		// first render. Invisible to the user; subsequent saves emit only the
+		// nested form. This is the user-initiated migration path — opening
+		// the Settings UI is itself the user action.
+		for (var mi = 0; mi < servers.length; mi++) {
+			var ms = servers[mi];
+			if (!ms.transport && (ms.url || (ms.auth && ms.auth.kind))) {
+				ms.transport = 'http';
+				ms.http = {url: ms.url || '', auth: ms.auth || {}};
+				delete ms.url;
+				delete ms.auth;
+			}
+		}
+
+		for (var i = 0; i < servers.length; i++) {
+			(function(idx) {
+				var s = servers[idx];
+				if (!s.transport) s.transport = 'http';
+				if (s.transport === 'http') {
+					if (!s.http) s.http = {url: '', auth: {kind: 'oauth2_client_credentials'}};
+					if (!s.http.auth) s.http.auth = {kind: 'oauth2_client_credentials'};
+				} else if (s.transport === 'stdio') {
+					if (!s.stdio) s.stdio = {command: '', args: [], env: {}};
+				}
+
+				var item = document.createElement('div');
+				item.className = 'dynamic-item';
+
+				var rm = document.createElement('button');
+				rm.className = 'remove-btn';
+				rm.innerHTML = '&times;';
+				rm.onclick = function() { cfg.mcp_servers.splice(idx, 1); render(); };
+				item.appendChild(rm);
+
+				var row1 = makeRow(item);
+				makeField(row1, 'ID', 'text', s.id || '', function(v) { cfg.mcp_servers[idx].id = v; });
+				makeField(row1, 'Tool Prefix', 'text', s.tool_prefix || '', function(v) { cfg.mcp_servers[idx].tool_prefix = v; });
+
+				makeField(item, 'Transport', 'select', {
+					value: s.transport,
+					options: [
+						{value: 'http', label: 'HTTP (Streamable)'},
+						{value: 'stdio', label: 'stdio (subprocess)'}
+					]
+				}, function(v) {
+					cfg.mcp_servers[idx].transport = v;
+					if (v === 'stdio' && !cfg.mcp_servers[idx].stdio) {
+						cfg.mcp_servers[idx].stdio = {command: '', args: [], env: {}};
+					}
+					if (v === 'http' && !cfg.mcp_servers[idx].http) {
+						cfg.mcp_servers[idx].http = {url: '', auth: {kind: 'oauth2_client_credentials'}};
+					}
+					render();
+				});
+
+				makeField(item, 'Enabled', 'toggle', !!s.enabled, function(v) { cfg.mcp_servers[idx].enabled = v; });
+				makeField(item, 'Parallel-safe', 'toggle', !!s.parallelSafe, function(v) { cfg.mcp_servers[idx].parallelSafe = v; });
+
+				if (s.transport === 'http') {
+					renderHTTPBlock(item, idx, s);
+				} else if (s.transport === 'stdio') {
+					renderStdioBlock(item, idx, s);
+				}
+
+				list.appendChild(item);
+			})(i);
+		}
+
+		var addBtn = document.createElement('button');
+		addBtn.className = 'add-btn';
+		addBtn.textContent = '+ Add MCP Server';
+		addBtn.onclick = function() {
+			if (!cfg.mcp_servers) cfg.mcp_servers = [];
+			cfg.mcp_servers.push({
+				id: '',
+				transport: 'http',
+				http: {
+					url: '',
+					auth: {
+						kind: 'oauth2_client_credentials',
+						token_url: '',
+						client_id: '',
+						client_secret: '',
+						scope: ''
+					}
+				},
+				enabled: true,
+				parallelSafe: false,
+				tool_prefix: ''
+			});
+			render();
+			focusAndFlashNewRow(list);
+		};
+		sec.appendChild(addBtn);
+	}
+
+	function renderHTTPBlock(item, idx, s) {
+		makeField(item, 'URL', 'text', s.http.url || '', function(v) { cfg.mcp_servers[idx].http.url = v; });
+
+		var authHdr = document.createElement('div');
+		authHdr.style.cssText = 'font-weight:600; font-size:0.85rem; margin:0.75rem 0 0.25rem 0;';
+		authHdr.textContent = 'Authentication';
+		item.appendChild(authHdr);
+
+		makeField(item, 'Auth Kind', 'select', {
+			value: s.http.auth.kind || 'oauth2_client_credentials',
+			options: [
+				{value: 'oauth2_client_credentials', label: 'OAuth2 Client Credentials (M2M)'},
+				{value: 'oauth2_authorization_code', label: 'OAuth2 Authorization Code + PKCE (interactive login)'},
+				{value: 'bearer', label: 'Bearer Token'},
+				{value: 'none', label: 'None'}
+			]
+		}, function(v) {
+			cfg.mcp_servers[idx].http.auth = {kind: v};
+			render();
+		});
+
+		var kind = s.http.auth.kind || 'oauth2_client_credentials';
+		if (kind === 'oauth2_client_credentials') {
+			makeField(item, 'Token URL', 'text', s.http.auth.token_url || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.token_url = v;
+			});
+			var row = makeRow(item);
+			makeField(row, 'Client ID', 'text', s.http.auth.client_id || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.client_id = v;
+			});
+			makeField(row, 'Scope', 'text', s.http.auth.scope || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.scope = v;
+			});
+			makeField(item, 'Client Secret', 'password', s.http.auth.client_secret || '', function(v) {
+				if (!v) return;
+				cfg.mcp_servers[idx].http.auth.client_secret = v;
+			});
+			var hint = document.createElement('p');
+			hint.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+			hint.innerHTML = 'Stored in <code>felix.json5</code>. To source from an env var instead, leave blank and set <code>auth.client_secret_env</code> in the JSON5 file.';
+			item.appendChild(hint);
+		} else if (kind === 'oauth2_authorization_code') {
+			makeField(item, 'Authorize URL', 'text', s.http.auth.auth_url || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.auth_url = v;
+			});
+			makeField(item, 'Token URL', 'text', s.http.auth.token_url || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.token_url = v;
+			});
+			var rowAC = makeRow(item);
+			makeField(rowAC, 'Client ID', 'text', s.http.auth.client_id || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.client_id = v;
+			});
+			makeField(rowAC, 'Scope', 'text', s.http.auth.scope || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.scope = v;
+			});
+			makeField(item, 'Redirect URI', 'text', s.http.auth.redirect_uri || '', function(v) {
+				cfg.mcp_servers[idx].http.auth.redirect_uri = v;
+			});
+			makeField(item, 'Client Secret', 'password', s.http.auth.client_secret || '', function(v) {
+				if (!v) return;
+				cfg.mcp_servers[idx].http.auth.client_secret = v;
+			});
+			var hintAC = document.createElement('p');
+			hintAC.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+			hintAC.innerHTML =
+				'Interactive OAuth login. Redirect URI must be a loopback URL like ' +
+				'<code>http://localhost:12341/callback</code> registered with the IdP. ' +
+				'Scope defaults to <code>openid offline_access</code> when blank (so refresh tokens work). ' +
+				'Some IdPs (Cognito) require a client secret even for PKCE clients; pure public clients can leave it blank. ' +
+				'After saving, run <code>felix mcp login ' + (s.id || '&lt;id&gt;') + '</code> in a terminal to complete the browser dance — ' +
+				'the gateway caches the token under <code>~/.felix/mcp-tokens/</code> and refreshes it silently after that. ' +
+				'A restart is required to pick up a freshly minted token.';
+			item.appendChild(hintAC);
+		} else if (kind === 'bearer') {
+			makeField(item, 'Bearer Token', 'password', s.http.auth.token || '', function(v) {
+				if (!v) return;
+				cfg.mcp_servers[idx].http.auth.token = v;
+			});
+			var hintB = document.createElement('p');
+			hintB.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+			hintB.innerHTML = 'Sent as <code>Authorization: Bearer &lt;token&gt;</code>. Stored in <code>felix.json5</code>; to source from an env var instead, leave blank and set <code>auth.token_env</code> in the JSON5 file.';
+			item.appendChild(hintB);
+		} else if (kind === 'none') {
+			var hintN = document.createElement('p');
+			hintN.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+			hintN.textContent = 'No Authorization header sent. Useful only for unauthenticated local HTTP MCP servers.';
+			item.appendChild(hintN);
+		}
+	}
+
+	function renderStdioBlock(item, idx, s) {
+		makeField(item, 'Command', 'text', s.stdio.command || '', function(v) {
+			cfg.mcp_servers[idx].stdio.command = v;
+		});
+
+		var argsTxt = (s.stdio.args || []).join('\n');
+		makeField(item, 'Arguments (one per line)', 'textarea', argsTxt, function(v) {
+			var lines = (v || '').split('\n').map(function(x) { return x.trim(); }).filter(function(x) { return x.length > 0; });
+			cfg.mcp_servers[idx].stdio.args = lines;
+		});
+
+		var envTxt = '';
+		if (s.stdio.env) {
+			var keys = Object.keys(s.stdio.env);
+			for (var k = 0; k < keys.length; k++) {
+				envTxt += keys[k] + '=' + s.stdio.env[keys[k]] + '\n';
+			}
+			envTxt = envTxt.replace(/\n$/, '');
+		}
+		makeField(item, 'Environment (KEY=VALUE per line; secrets shown as ***redacted*** — leave that to keep, replace to overwrite)', 'textarea', envTxt, function(v) {
+			var env = {};
+			var lines = (v || '').split('\n');
+			for (var li = 0; li < lines.length; li++) {
+				var line = lines[li].trim();
+				if (!line || line.charAt(0) === '#') continue;
+				var eq = line.indexOf('=');
+				if (eq < 0) continue;
+				env[line.slice(0, eq).trim()] = line.slice(eq + 1);
+			}
+			cfg.mcp_servers[idx].stdio.env = env;
+		});
+
+		var hintS = document.createElement('p');
+		hintS.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
+		hintS.innerHTML = 'The command is launched on Felix startup. Env vars are merged onto Felix\'s own environment (PATH inherited). Common examples: <code>npx -y @modelcontextprotocol/server-filesystem /tmp</code>, <code>uvx mcp-server-git</code>.';
+		item.appendChild(hintS);
+	}
+
+	function renderGateway() {
+		var p = document.getElementById('panel-gateway');
+		p.innerHTML = '';
+
+		// Host/Port/Auth Token/Reload Mode are operator-controlled and not
+		// safe for tenants to change at runtime, so they're omitted here.
+
+		// === OpenTelemetry ===
+		// Felix can additionally export traces, metrics, and logs to an
+		// OTLP/HTTP collector. Disabled by default. Standard OTEL_*
+		// environment variables (OTEL_EXPORTER_OTLP_ENDPOINT,
+		// OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_HEADERS, ...) override
+		// the values set here on the next process start. Settings here
+		// require a restart to take effect — OTel SDK providers can't
+		// safely swap mid-flight.
+		if (!cfg.otel) cfg.otel = {};
+		if (!cfg.otel.signals) cfg.otel.signals = {traces: true, metrics: true, logs: true};
+		var otelSec = makeSection(p, 'OpenTelemetry');
+		var otelNote = document.createElement('div');
+		otelNote.className = 'note';
+		otelNote.style.marginBottom = '8px';
+		otelNote.style.opacity = '0.75';
+		otelNote.textContent = 'Restart required to apply changes.';
+		otelSec.appendChild(otelNote);
+
+		makeField(otelSec, 'Enabled', 'toggle', !!cfg.otel.enabled, function(v) {
+			cfg.otel.enabled = v;
+		});
+		makeField(otelSec, 'Endpoint (full URL, e.g. http://collector:4318/)', 'text',
+			cfg.otel.endpoint || '', function(v) { cfg.otel.endpoint = v.trim(); });
+
+		var otelRow = makeRow(otelSec);
+		makeField(otelRow, 'Service Name', 'text', cfg.otel.serviceName || 'felix', function(v) {
+			cfg.otel.serviceName = v;
+		});
+		makeField(otelRow, 'Sample Ratio (0..1)', 'number',
+			cfg.otel.sampleRatio == null ? 1.0 : cfg.otel.sampleRatio,
+			function(v) { cfg.otel.sampleRatio = parseFloat(v) || 0; });
+
+		var sigRow = makeRow(otelSec);
+		makeField(sigRow, 'Traces', 'toggle', cfg.otel.signals.traces !== false, function(v) {
+			cfg.otel.signals.traces = v;
+		});
+		makeField(sigRow, 'Metrics', 'toggle', cfg.otel.signals.metrics !== false, function(v) {
+			cfg.otel.signals.metrics = v;
+		});
+		makeField(sigRow, 'Logs', 'toggle', cfg.otel.signals.logs !== false, function(v) {
+			cfg.otel.signals.logs = v;
+		});
+
+		// Headers — comma-separated key=value pairs. Round-trip in/out of
+		// the cfg.otel.headers map. Most users won't touch this.
+		var hdrLines = [];
+		if (cfg.otel.headers) {
+			for (var hk in cfg.otel.headers) {
+				if (Object.prototype.hasOwnProperty.call(cfg.otel.headers, hk)) {
+					hdrLines.push(hk + '=' + cfg.otel.headers[hk]);
+				}
+			}
+		}
+		makeField(otelSec, 'Headers (key=value, comma-separated; e.g. X-Scope-OrgID=tenant1)', 'text',
+			hdrLines.join(', '),
+			function(v) {
+				var out = {};
+				var parts = (v || '').split(',');
+				for (var pi = 0; pi < parts.length; pi++) {
+					var s = parts[pi].trim();
+					if (!s) continue;
+					var eq = s.indexOf('=');
+					if (eq < 0) continue;
+					out[s.substring(0, eq).trim()] = s.substring(eq + 1).trim();
+				}
+				cfg.otel.headers = out;
+			});
+	}
+
+	// === Providers Panel ===
+	function renderProviders() {
+		var p = document.getElementById('panel-providers');
+		p.innerHTML = '';
+		var sec = makeSection(p, null);
+		var providers = cfg.providers || {};
+		var names = Object.keys(providers);
+		var list = document.createElement('div');
+		list.className = 'dynamic-list';
+		sec.appendChild(list);
+
+		for (var i = 0; i < names.length; i++) {
+			(function(name) {
+				var prov = providers[name];
+				var item = document.createElement('div');
+				item.className = 'dynamic-item';
+
+				var title;
+				if (prov && prov._isNew) {
+					title = document.createElement('input');
+					title.className = 'provider-name dynamic-item-title';
+					title.type = 'text';
+					title.value = name;
+					title.placeholder = 'Provider name (e.g. anthropic, openai)';
+					title.addEventListener('blur', function() {
+						var newName = title.value.trim();
+						if (!newName || newName === name) return;
+						if (cfg.providers[newName]) {
+							title.classList.add('field-with-error');
+							return;
+						}
+						cfg.providers[newName] = cfg.providers[name];
+						delete cfg.providers[newName]._isNew;
+						delete cfg.providers[name];
+						render();
+					});
+				} else {
+					title = document.createElement('div');
+					title.className = 'dynamic-item-title';
+					title.textContent = name;
+				}
+				item.appendChild(title);
+
+				var rm = document.createElement('button');
+				rm.className = 'remove-btn';
+				rm.innerHTML = '&times;';
+				rm.onclick = function() { delete cfg.providers[name]; render(); };
+				item.appendChild(rm);
+
+				var row = makeRow(item);
+				// Kind dropdown is fixed-width (longest option is
+				// "openai-compatible"); the URL deserves the rest of
+				// the row. Default .form-row 1fr 1fr would clip the URL.
+				row.style.gridTemplateColumns = 'minmax(180px, 0.3fr) 1fr';
+				makeField(row, 'Kind', 'select', {
+					value: prov.kind || '',
+					options: [
+						{value: '', label: '(choose)'},
+						{value: 'anthropic', label: 'anthropic'},
+						{value: 'openai', label: 'openai'},
+						{value: 'openai-compatible', label: 'openai-compatible'},
+						{value: 'gemini', label: 'gemini'},
+						{value: 'qwen', label: 'qwen'},
+						{value: 'local', label: 'local'},
+					],
+				}, function(v) {
+					cfg.providers[name].kind = v;
+				});
+				var urlField = makeField(row, 'Base URL', 'text', prov.base_url || '', function(v) { cfg.providers[name].base_url = v; });
+				var urlInput = urlField.querySelector('input');
+				urlInput.setAttribute('type', 'url');
+				urlInput.setAttribute('inputmode', 'url');
+				validateField(urlField, function(v) {
+					v = (v || '').trim();
+					if (!v) return '';
+					var u;
+					try { u = new URL(v); } catch (e) { return 'Not a valid URL.'; }
+					if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+						return 'URL must use https:// (or http:// for local dev).';
+					}
+					return '';
+				});
+				makeField(item, 'API Key', 'password', '', function(v) { if (v) cfg.providers[name].api_key = v; });
+
+				list.appendChild(item);
+			})(names[i]);
+		}
+
+		var addBtn = document.createElement('button');
+		addBtn.className = 'add-btn';
+		addBtn.textContent = '+ Add Provider';
+		addBtn.onclick = function() {
+			if (!cfg.providers) cfg.providers = {};
+			var i = 1;
+			while (cfg.providers['new-provider-' + i]) i++;
+			var placeholder = 'new-provider-' + i;
+			cfg.providers[placeholder] = {kind: '', api_key: '', base_url: '', _isNew: true};
+			render();
+			focusAndFlashNewRow(list);
+		};
+		sec.appendChild(addBtn);
 	}
 
 	// === Models tab — talks directly to bundled Ollama via providers.local.base_url ===
@@ -914,627 +2033,6 @@ html.dark .error-state { background: #450a0a; }
 		});
 	}
 
-	// === Helper: toggle-group ===
-	function makeToggle(parent, label, checked, onChange) {
-		var g = document.createElement('div');
-		g.className = 'toggle-group';
-		var t = document.createElement('label');
-		t.className = 'toggle';
-		var inp = document.createElement('input');
-		inp.type = 'checkbox';
-		inp.checked = !!checked;
-		inp.addEventListener('change', function() { onChange(inp.checked); });
-		var sl = document.createElement('span');
-		sl.className = 'slider';
-		t.appendChild(inp);
-		t.appendChild(sl);
-		var lbl = document.createElement('span');
-		lbl.className = 'toggle-label';
-		lbl.textContent = label;
-		g.appendChild(t);
-		g.appendChild(lbl);
-		parent.appendChild(g);
-		return g;
-	}
-
-	// === Helper: form-group (label above input) ===
-	function makeField(parent, label, type, value, onChange) {
-		if (type === 'toggle') {
-			return makeToggle(parent, label, value, onChange);
-		}
-		var g = document.createElement('div');
-		g.className = 'form-group';
-		var l = document.createElement('label');
-		l.textContent = label;
-		g.appendChild(l);
-
-		if (type === 'select') {
-			var sel = document.createElement('select');
-			var opts = (value && value.options) ? value.options : [];
-			var cur = (value && value.value != null) ? value.value : '';
-			for (var i = 0; i < opts.length; i++) {
-				var opt = document.createElement('option');
-				var ov, ol;
-				if (opts[i] && typeof opts[i] === 'object') {
-					ov = opts[i].value; ol = opts[i].label || opts[i].value;
-				} else {
-					ov = opts[i]; ol = opts[i];
-				}
-				opt.value = ov;
-				opt.textContent = ol;
-				if (ov === cur) opt.selected = true;
-				sel.appendChild(opt);
-			}
-			sel.addEventListener('change', function() { onChange(sel.value); });
-			g.appendChild(sel);
-		} else if (type === 'textarea') {
-			var ta = document.createElement('textarea');
-			ta.value = value || '';
-			ta.addEventListener('input', function() { onChange(ta.value); });
-			g.appendChild(ta);
-		} else {
-			var inp = document.createElement('input');
-			inp.type = type || 'text';
-			inp.value = value != null ? value : '';
-			if (type === 'password') inp.placeholder = '(leave blank to keep)';
-			inp.addEventListener('input', function() {
-				onChange(type === 'number' ? (parseInt(inp.value, 10) || 0) : inp.value);
-			});
-			g.appendChild(inp);
-		}
-
-		parent.appendChild(g);
-		return g;
-	}
-
-	// === Helper: read-only display field (no input — shows a value with id) ===
-	function makeReadOnlyField(parent, label, valueElemId, placeholder) {
-		var g = document.createElement('div');
-		g.className = 'form-group';
-		var l = document.createElement('label');
-		l.textContent = label;
-		g.appendChild(l);
-		var v = document.createElement('div');
-		v.id = valueElemId;
-		v.style.cssText = 'padding:0.5rem 0.75rem; border:1px solid var(--color-border); border-radius:var(--radius); background:var(--color-bg); font-size:0.9rem; font-family:inherit; color:var(--color-text-muted); user-select:text; min-height:1.2em; word-break:break-all;';
-		v.textContent = placeholder || '';
-		g.appendChild(v);
-		parent.appendChild(g);
-		return g;
-	}
-
-	// === Helper: tools checkbox grid for an agent ===
-	function makeToolsCheckboxes(parent, idx, agent) {
-		var g = document.createElement('div');
-		g.className = 'form-group';
-		var l = document.createElement('label');
-		l.textContent = 'Allowed Tools';
-		g.appendChild(l);
-
-		var allow = ((agent.tools || {}).allow || []).slice();
-		// Empty allow = allow all (matches Policy semantics). Render that as all-checked.
-		var allowAll = allow.length === 0;
-
-		if (availableTools.length === 0) {
-			var empty = document.createElement('div');
-			empty.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; padding:0.5rem 0;';
-			empty.textContent = 'No tools registered (or tools list endpoint unavailable).';
-			g.appendChild(empty);
-			parent.appendChild(g);
-			return g;
-		}
-
-		var grid = document.createElement('div');
-		grid.style.cssText = 'display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:0.4rem 0.75rem; padding:0.4rem 0;';
-
-		availableTools.forEach(function(t) {
-			var lbl = document.createElement('label');
-			lbl.style.cssText = 'display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; cursor:pointer;';
-			lbl.title = t.description || '';
-			var cb = document.createElement('input');
-			cb.type = 'checkbox';
-			cb.checked = allowAll || allow.indexOf(t.name) >= 0;
-			cb.addEventListener('change', function() {
-				if (!cfg.agents.list[idx].tools) cfg.agents.list[idx].tools = {};
-				var cur = (cfg.agents.list[idx].tools.allow || []).slice();
-				// If it was empty (allow-all), seed with the full list before mutating.
-				if (cur.length === 0) {
-					cur = availableTools.map(function(x) { return x.name; });
-				}
-				var pos = cur.indexOf(t.name);
-				if (cb.checked && pos < 0) cur.push(t.name);
-				if (!cb.checked && pos >= 0) cur.splice(pos, 1);
-				cfg.agents.list[idx].tools.allow = cur;
-			});
-			lbl.appendChild(cb);
-			var span = document.createElement('span');
-			span.textContent = t.name;
-			lbl.appendChild(span);
-			grid.appendChild(lbl);
-		});
-
-		g.appendChild(grid);
-		parent.appendChild(g);
-		return g;
-	}
-
-	// === Helper: 2-column row ===
-	function makeRow(parent) {
-		var row = document.createElement('div');
-		row.className = 'form-row';
-		parent.appendChild(row);
-		return row;
-	}
-
-	// === Helper: panel section with optional heading ===
-	function makeSection(panel, title) {
-		var sec = document.createElement('div');
-		sec.className = 'panel-section';
-		if (title) {
-			var h = document.createElement('h3');
-			h.textContent = title;
-			sec.appendChild(h);
-		}
-		panel.appendChild(sec);
-		return sec;
-	}
-
-	// === Gateway Panel ===
-	// === Messaging Panel — outbound channels (Telegram today, more later) ===
-	function renderMessaging() {
-		var p = document.getElementById('panel-messaging');
-		p.innerHTML = '';
-
-		var tgSec = makeSection(p, 'Telegram (send-only)');
-
-		var help = document.createElement('p');
-		help.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; margin:0 0 0.75rem 0;';
-		help.innerHTML = 'Lets agents send messages to Telegram via the <code>send_message</code> tool (channel: telegram). ' +
-			'Send-only — Felix does not receive Telegram messages. ' +
-			'After saving, configuration is hot-reloaded — then add <code>send_message</code> to the allow list of any agent that should use it (Agents tab).';
-		tgSec.appendChild(help);
-
-		var setupHdr = document.createElement('div');
-		setupHdr.style.cssText = 'font-weight:600; font-size:0.85rem; margin:0.5rem 0 0.25rem 0;';
-		setupHdr.textContent = 'Setup';
-		tgSec.appendChild(setupHdr);
-
-		var setup = document.createElement('ol');
-		setup.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 1.25rem; padding:0; line-height:1.5;';
-		setup.innerHTML =
-			'<li>Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> (<code>/newbot</code>) and copy the token into Bot Token below.</li>' +
-			'<li>Get a recipient chat ID — three options:' +
-				'<ul style="margin:0.25rem 0 0.25rem 1.25rem; padding:0;">' +
-				'<li>Easiest: open Telegram, message <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a> — it replies with your numeric chat ID.</li>' +
-				'<li>Or: have the recipient message your bot at least once, then open <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> in a browser and copy <code>result[].message.chat.id</code>.</li>' +
-				'<li>Or: forward a message from the recipient to <a href="https://t.me/getidsbot" target="_blank" rel="noopener">@getidsbot</a>.</li>' +
-				'</ul></li>' +
-			'<li>Paste the chat ID into Default Chat ID below — the agent uses it whenever it omits an explicit recipient.</li>';
-		tgSec.appendChild(setup);
-
-		var caveat = document.createElement('p');
-		caveat.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 0; padding:0.5rem 0.75rem; background:var(--color-surface-muted, rgba(0,0,0,0.04)); border-radius:var(--radius);';
-		caveat.innerHTML =
-			'<strong>Important:</strong> a Telegram bot cannot send the first message to a personal user — the user must <code>/start</code> the bot (or send any message) at least once first. Otherwise Telegram returns "Forbidden: bot can\'t initiate conversation with a user." ' +
-			'Also: <code>@username</code> as a chat ID works only for <strong>public channels and supergroups</strong> the bot is in — not for personal users. For people, always use the numeric ID.';
-		tgSec.appendChild(caveat);
-
-		var tg = cfg.telegram || {};
-		makeField(tgSec, 'Enabled', 'toggle', !!tg.enabled, function(v) {
-			if (!cfg.telegram) cfg.telegram = {};
-			cfg.telegram.enabled = v;
-		});
-		makeField(tgSec, 'Bot Token', 'password', '', function(v) {
-			if (!v) return;
-			if (!cfg.telegram) cfg.telegram = {};
-			cfg.telegram.bot_token = v;
-		});
-		makeField(tgSec, 'Default Chat ID', 'text', tg.default_chat_id || '', function(v) {
-			if (!cfg.telegram) cfg.telegram = {};
-			cfg.telegram.default_chat_id = v;
-		});
-
-		var note = document.createElement('p');
-		note.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0.5rem 0 0 0;';
-		note.innerHTML = 'Default Chat ID is used when the agent omits <code>chat_id</code>. Personal users: positive numeric ID (e.g. <code>123456789</code>). Groups/supergroups: negative ID (e.g. <code>-1001234567890</code>). Public channels/supergroups only: <code>@channelname</code>.';
-		tgSec.appendChild(note);
-	}
-
-	function renderMCP() {
-		var p = document.getElementById('panel-mcp');
-		p.innerHTML = '';
-		var sec = makeSection(p, 'MCP Servers');
-
-		var help = document.createElement('p');
-		help.style.cssText = 'color:var(--color-text-muted); font-size:0.85rem; margin:0 0 0.5rem 0;';
-		help.innerHTML = 'Model Context Protocol servers Felix connects to at startup. ' +
-			'Each server\'s tools become available to agents alongside core tools (with the optional <code>tool_prefix</code> applied). ' +
-			'Two transports: <strong>HTTP</strong> (Streamable HTTP, e.g. AWS Bedrock AgentCore) and <strong>stdio</strong> ' +
-			'(spawn a local subprocess, e.g. <code>npx @modelcontextprotocol/server-github</code>).';
-		sec.appendChild(help);
-
-		var caveat = document.createElement('p');
-		caveat.style.cssText = 'color:var(--color-text-muted); font-size:0.8rem; margin:0 0 0.75rem 0; padding:0.5rem 0.75rem; background:var(--color-surface-muted, rgba(0,0,0,0.04)); border-radius:var(--radius);';
-		caveat.innerHTML =
-			'<strong>Note:</strong> secrets (HTTP client secret, bearer token) are stored in <code>~/.felix/felix.json5</code> ' +
-			'alongside other secrets (<code>telegram.bot_token</code>, <code>providers.*.api_key</code>). MCP config changes ' +
-			'require a process restart — hot reload of MCP servers is not yet supported.';
-		sec.appendChild(caveat);
-
-		var servers = cfg.mcp_servers || [];
-		var list = document.createElement('div');
-		list.className = 'dynamic-list';
-		sec.appendChild(list);
-
-		// Migrate any legacy flat HTTP entries into the nested http block on
-		// first render. Invisible to the user; subsequent saves emit only the
-		// nested form. This is the user-initiated migration path — opening
-		// the Settings UI is itself the user action.
-		for (var mi = 0; mi < servers.length; mi++) {
-			var ms = servers[mi];
-			if (!ms.transport && (ms.url || (ms.auth && ms.auth.kind))) {
-				ms.transport = 'http';
-				ms.http = {url: ms.url || '', auth: ms.auth || {}};
-				delete ms.url;
-				delete ms.auth;
-			}
-		}
-
-		for (var i = 0; i < servers.length; i++) {
-			(function(idx) {
-				var s = servers[idx];
-				if (!s.transport) s.transport = 'http';
-				if (s.transport === 'http') {
-					if (!s.http) s.http = {url: '', auth: {kind: 'oauth2_client_credentials'}};
-					if (!s.http.auth) s.http.auth = {kind: 'oauth2_client_credentials'};
-				} else if (s.transport === 'stdio') {
-					if (!s.stdio) s.stdio = {command: '', args: [], env: {}};
-				}
-
-				var item = document.createElement('div');
-				item.className = 'dynamic-item';
-
-				var rm = document.createElement('button');
-				rm.className = 'remove-btn';
-				rm.innerHTML = '&times;';
-				rm.onclick = function() { cfg.mcp_servers.splice(idx, 1); render(); };
-				item.appendChild(rm);
-
-				var row1 = makeRow(item);
-				makeField(row1, 'ID', 'text', s.id || '', function(v) { cfg.mcp_servers[idx].id = v; });
-				makeField(row1, 'Tool Prefix', 'text', s.tool_prefix || '', function(v) { cfg.mcp_servers[idx].tool_prefix = v; });
-
-				makeField(item, 'Transport', 'select', {
-					value: s.transport,
-					options: [
-						{value: 'http', label: 'HTTP (Streamable)'},
-						{value: 'stdio', label: 'stdio (subprocess)'}
-					]
-				}, function(v) {
-					cfg.mcp_servers[idx].transport = v;
-					if (v === 'stdio' && !cfg.mcp_servers[idx].stdio) {
-						cfg.mcp_servers[idx].stdio = {command: '', args: [], env: {}};
-					}
-					if (v === 'http' && !cfg.mcp_servers[idx].http) {
-						cfg.mcp_servers[idx].http = {url: '', auth: {kind: 'oauth2_client_credentials'}};
-					}
-					render();
-				});
-
-				makeField(item, 'Enabled', 'toggle', !!s.enabled, function(v) { cfg.mcp_servers[idx].enabled = v; });
-				makeField(item, 'Parallel-safe', 'toggle', !!s.parallelSafe, function(v) { cfg.mcp_servers[idx].parallelSafe = v; });
-
-				if (s.transport === 'http') {
-					renderHTTPBlock(item, idx, s);
-				} else if (s.transport === 'stdio') {
-					renderStdioBlock(item, idx, s);
-				}
-
-				list.appendChild(item);
-			})(i);
-		}
-
-		var addBtn = document.createElement('button');
-		addBtn.className = 'add-btn';
-		addBtn.textContent = '+ Add MCP Server';
-		addBtn.onclick = function() {
-			if (!cfg.mcp_servers) cfg.mcp_servers = [];
-			cfg.mcp_servers.push({
-				id: '',
-				transport: 'http',
-				http: {
-					url: '',
-					auth: {
-						kind: 'oauth2_client_credentials',
-						token_url: '',
-						client_id: '',
-						client_secret: '',
-						scope: ''
-					}
-				},
-				enabled: true,
-				parallelSafe: false,
-				tool_prefix: ''
-			});
-			render();
-		};
-		sec.appendChild(addBtn);
-	}
-
-	function renderHTTPBlock(item, idx, s) {
-		makeField(item, 'URL', 'text', s.http.url || '', function(v) { cfg.mcp_servers[idx].http.url = v; });
-
-		var authHdr = document.createElement('div');
-		authHdr.style.cssText = 'font-weight:600; font-size:0.85rem; margin:0.75rem 0 0.25rem 0;';
-		authHdr.textContent = 'Authentication';
-		item.appendChild(authHdr);
-
-		makeField(item, 'Auth Kind', 'select', {
-			value: s.http.auth.kind || 'oauth2_client_credentials',
-			options: [
-				{value: 'oauth2_client_credentials', label: 'OAuth2 Client Credentials (M2M)'},
-				{value: 'oauth2_authorization_code', label: 'OAuth2 Authorization Code + PKCE (interactive login)'},
-				{value: 'bearer', label: 'Bearer Token'},
-				{value: 'none', label: 'None'}
-			]
-		}, function(v) {
-			cfg.mcp_servers[idx].http.auth = {kind: v};
-			render();
-		});
-
-		var kind = s.http.auth.kind || 'oauth2_client_credentials';
-		if (kind === 'oauth2_client_credentials') {
-			makeField(item, 'Token URL', 'text', s.http.auth.token_url || '', function(v) {
-				cfg.mcp_servers[idx].http.auth.token_url = v;
-			});
-			var row = makeRow(item);
-			makeField(row, 'Client ID', 'text', s.http.auth.client_id || '', function(v) {
-				cfg.mcp_servers[idx].http.auth.client_id = v;
-			});
-			makeField(row, 'Scope', 'text', s.http.auth.scope || '', function(v) {
-				cfg.mcp_servers[idx].http.auth.scope = v;
-			});
-			makeField(item, 'Client Secret', 'password', s.http.auth.client_secret || '', function(v) {
-				if (!v) return;
-				cfg.mcp_servers[idx].http.auth.client_secret = v;
-			});
-			var hint = document.createElement('p');
-			hint.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
-			hint.innerHTML = 'Stored in <code>felix.json5</code>. To source from an env var instead, leave blank and set <code>auth.client_secret_env</code> in the JSON5 file.';
-			item.appendChild(hint);
-		} else if (kind === 'oauth2_authorization_code') {
-			makeField(item, 'Authorize URL', 'text', s.http.auth.auth_url || '', function(v) {
-				cfg.mcp_servers[idx].http.auth.auth_url = v;
-			});
-			makeField(item, 'Token URL', 'text', s.http.auth.token_url || '', function(v) {
-				cfg.mcp_servers[idx].http.auth.token_url = v;
-			});
-			var rowAC = makeRow(item);
-			makeField(rowAC, 'Client ID', 'text', s.http.auth.client_id || '', function(v) {
-				cfg.mcp_servers[idx].http.auth.client_id = v;
-			});
-			makeField(rowAC, 'Scope', 'text', s.http.auth.scope || '', function(v) {
-				cfg.mcp_servers[idx].http.auth.scope = v;
-			});
-			makeField(item, 'Redirect URI', 'text', s.http.auth.redirect_uri || '', function(v) {
-				cfg.mcp_servers[idx].http.auth.redirect_uri = v;
-			});
-			makeField(item, 'Client Secret', 'password', s.http.auth.client_secret || '', function(v) {
-				if (!v) return;
-				cfg.mcp_servers[idx].http.auth.client_secret = v;
-			});
-			var hintAC = document.createElement('p');
-			hintAC.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
-			hintAC.innerHTML =
-				'Interactive OAuth login. Redirect URI must be a loopback URL like ' +
-				'<code>http://localhost:12341/callback</code> registered with the IdP. ' +
-				'Scope defaults to <code>openid offline_access</code> when blank (so refresh tokens work). ' +
-				'Some IdPs (Cognito) require a client secret even for PKCE clients; pure public clients can leave it blank. ' +
-				'After saving, run <code>felix mcp login ' + (s.id || '&lt;id&gt;') + '</code> in a terminal to complete the browser dance — ' +
-				'the gateway caches the token under <code>~/.felix/mcp-tokens/</code> and refreshes it silently after that. ' +
-				'A restart is required to pick up a freshly minted token.';
-			item.appendChild(hintAC);
-		} else if (kind === 'bearer') {
-			makeField(item, 'Bearer Token', 'password', s.http.auth.token || '', function(v) {
-				if (!v) return;
-				cfg.mcp_servers[idx].http.auth.token = v;
-			});
-			var hintB = document.createElement('p');
-			hintB.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
-			hintB.innerHTML = 'Sent as <code>Authorization: Bearer &lt;token&gt;</code>. Stored in <code>felix.json5</code>; to source from an env var instead, leave blank and set <code>auth.token_env</code> in the JSON5 file.';
-			item.appendChild(hintB);
-		} else if (kind === 'none') {
-			var hintN = document.createElement('p');
-			hintN.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
-			hintN.textContent = 'No Authorization header sent. Useful only for unauthenticated local HTTP MCP servers.';
-			item.appendChild(hintN);
-		}
-	}
-
-	function renderStdioBlock(item, idx, s) {
-		makeField(item, 'Command', 'text', s.stdio.command || '', function(v) {
-			cfg.mcp_servers[idx].stdio.command = v;
-		});
-
-		var argsTxt = (s.stdio.args || []).join('\n');
-		makeField(item, 'Arguments (one per line)', 'textarea', argsTxt, function(v) {
-			var lines = (v || '').split('\n').map(function(x) { return x.trim(); }).filter(function(x) { return x.length > 0; });
-			cfg.mcp_servers[idx].stdio.args = lines;
-		});
-
-		var envTxt = '';
-		if (s.stdio.env) {
-			var keys = Object.keys(s.stdio.env);
-			for (var k = 0; k < keys.length; k++) {
-				envTxt += keys[k] + '=' + s.stdio.env[keys[k]] + '\n';
-			}
-			envTxt = envTxt.replace(/\n$/, '');
-		}
-		makeField(item, 'Environment (KEY=VALUE per line)', 'textarea', envTxt, function(v) {
-			var env = {};
-			var lines = (v || '').split('\n');
-			for (var li = 0; li < lines.length; li++) {
-				var line = lines[li].trim();
-				if (!line || line.charAt(0) === '#') continue;
-				var eq = line.indexOf('=');
-				if (eq < 0) continue;
-				env[line.slice(0, eq).trim()] = line.slice(eq + 1);
-			}
-			cfg.mcp_servers[idx].stdio.env = env;
-		});
-
-		var hintS = document.createElement('p');
-		hintS.style.cssText = 'color:var(--color-text-muted); font-size:0.75rem; margin:0.25rem 0 0 0;';
-		hintS.innerHTML = 'The command is launched on Felix startup. Env vars are merged onto Felix\'s own environment (PATH inherited). Common examples: <code>npx -y @modelcontextprotocol/server-filesystem /tmp</code>, <code>uvx mcp-server-git</code>.';
-		item.appendChild(hintS);
-	}
-
-	function renderGateway() {
-		var p = document.getElementById('panel-gateway');
-		p.innerHTML = '';
-		var sec = makeSection(p, null);
-		var gw = cfg.gateway || {};
-		var row = makeRow(sec);
-		makeField(row, 'Host', 'text', gw.host || '', function(v) {
-			if (!cfg.gateway) cfg.gateway = {};
-			cfg.gateway.host = v;
-		});
-		makeField(row, 'Port', 'number', gw.port || 18789, function(v) {
-			if (!cfg.gateway) cfg.gateway = {};
-			cfg.gateway.port = v;
-		});
-		makeField(sec, 'Auth Token', 'text', (gw.auth || {}).token || '', function(v) {
-			if (!cfg.gateway) cfg.gateway = {};
-			if (!cfg.gateway.auth) cfg.gateway.auth = {};
-			cfg.gateway.auth.token = v;
-		});
-		makeField(sec, 'Reload Mode', 'select', {
-			value: (gw.reload || {}).mode || 'hybrid',
-			options: ['hybrid', 'manual', 'auto-restart']
-		}, function(v) {
-			if (!cfg.gateway) cfg.gateway = {};
-			if (!cfg.gateway.reload) cfg.gateway.reload = {};
-			cfg.gateway.reload.mode = v;
-		});
-
-		// === OpenTelemetry ===
-		// Felix can additionally export traces, metrics, and logs to an
-		// OTLP/HTTP collector. Disabled by default. Standard OTEL_*
-		// environment variables (OTEL_EXPORTER_OTLP_ENDPOINT,
-		// OTEL_SERVICE_NAME, OTEL_EXPORTER_OTLP_HEADERS, ...) override
-		// the values set here on the next process start. Settings here
-		// require a restart to take effect — OTel SDK providers can't
-		// safely swap mid-flight.
-		if (!cfg.otel) cfg.otel = {};
-		if (!cfg.otel.signals) cfg.otel.signals = {traces: true, metrics: true, logs: true};
-		var otelSec = makeSection(p, 'OpenTelemetry');
-		var otelNote = document.createElement('div');
-		otelNote.className = 'note';
-		otelNote.style.marginBottom = '8px';
-		otelNote.style.opacity = '0.75';
-		otelNote.textContent = 'Restart required to apply changes.';
-		otelSec.appendChild(otelNote);
-
-		makeField(otelSec, 'Enabled', 'toggle', !!cfg.otel.enabled, function(v) {
-			cfg.otel.enabled = v;
-		});
-		makeField(otelSec, 'Endpoint (full URL, e.g. http://collector:4318/)', 'text',
-			cfg.otel.endpoint || '', function(v) { cfg.otel.endpoint = v.trim(); });
-
-		var otelRow = makeRow(otelSec);
-		makeField(otelRow, 'Service Name', 'text', cfg.otel.serviceName || 'felix', function(v) {
-			cfg.otel.serviceName = v;
-		});
-		makeField(otelRow, 'Sample Ratio (0..1)', 'number',
-			cfg.otel.sampleRatio == null ? 1.0 : cfg.otel.sampleRatio,
-			function(v) { cfg.otel.sampleRatio = parseFloat(v) || 0; });
-
-		var sigRow = makeRow(otelSec);
-		makeField(sigRow, 'Traces', 'toggle', cfg.otel.signals.traces !== false, function(v) {
-			cfg.otel.signals.traces = v;
-		});
-		makeField(sigRow, 'Metrics', 'toggle', cfg.otel.signals.metrics !== false, function(v) {
-			cfg.otel.signals.metrics = v;
-		});
-		makeField(sigRow, 'Logs', 'toggle', cfg.otel.signals.logs !== false, function(v) {
-			cfg.otel.signals.logs = v;
-		});
-
-		// Headers — comma-separated key=value pairs. Round-trip in/out of
-		// the cfg.otel.headers map. Most users won't touch this.
-		var hdrLines = [];
-		if (cfg.otel.headers) {
-			for (var hk in cfg.otel.headers) {
-				if (Object.prototype.hasOwnProperty.call(cfg.otel.headers, hk)) {
-					hdrLines.push(hk + '=' + cfg.otel.headers[hk]);
-				}
-			}
-		}
-		makeField(otelSec, 'Headers (key=value, comma-separated; e.g. X-Scope-OrgID=tenant1)', 'text',
-			hdrLines.join(', '),
-			function(v) {
-				var out = {};
-				var parts = (v || '').split(',');
-				for (var pi = 0; pi < parts.length; pi++) {
-					var s = parts[pi].trim();
-					if (!s) continue;
-					var eq = s.indexOf('=');
-					if (eq < 0) continue;
-					out[s.substring(0, eq).trim()] = s.substring(eq + 1).trim();
-				}
-				cfg.otel.headers = out;
-			});
-	}
-
-	// === Providers Panel ===
-	function renderProviders() {
-		var p = document.getElementById('panel-providers');
-		p.innerHTML = '';
-		var sec = makeSection(p, null);
-		var providers = cfg.providers || {};
-		var names = Object.keys(providers);
-		var list = document.createElement('div');
-		list.className = 'dynamic-list';
-		sec.appendChild(list);
-
-		for (var i = 0; i < names.length; i++) {
-			(function(name) {
-				var prov = providers[name];
-				var item = document.createElement('div');
-				item.className = 'dynamic-item';
-
-				var title = document.createElement('div');
-				title.className = 'dynamic-item-title';
-				title.textContent = name;
-				item.appendChild(title);
-
-				var rm = document.createElement('button');
-				rm.className = 'remove-btn';
-				rm.innerHTML = '&times;';
-				rm.onclick = function() { delete cfg.providers[name]; render(); };
-				item.appendChild(rm);
-
-				var row = makeRow(item);
-				makeField(row, 'Kind', 'text', prov.kind || '', function(v) { cfg.providers[name].kind = v; });
-				makeField(row, 'Base URL', 'text', prov.base_url || '', function(v) { cfg.providers[name].base_url = v; });
-				makeField(item, 'API Key', 'password', '', function(v) { if (v) cfg.providers[name].api_key = v; });
-
-				list.appendChild(item);
-			})(names[i]);
-		}
-
-		var addBtn = document.createElement('button');
-		addBtn.className = 'add-btn';
-		addBtn.textContent = '+ Add Provider';
-		addBtn.onclick = function() {
-			var name = prompt('Provider name (e.g. openai, anthropic, ollama):');
-			if (!name) return;
-			if (!cfg.providers) cfg.providers = {};
-			cfg.providers[name] = {kind: '', api_key: '', base_url: ''};
-			render();
-		};
-		sec.appendChild(addBtn);
-	}
 
 	// === Agents Panel ===
 	function renderAgents() {
@@ -1559,8 +2057,29 @@ html.dark .error-state { background: #450a0a; }
 				item.appendChild(rm);
 
 				var row1 = makeRow(item);
-				makeField(row1, 'ID', 'text', a.id || '', function(v) { cfg.agents.list[idx].id = v; });
-				makeField(row1, 'Name', 'text', a.name || '', function(v) { cfg.agents.list[idx].name = v; });
+				var idField = makeField(row1, 'ID', 'text', a.id || '', function(v) { cfg.agents.list[idx].id = v; });
+				(function(idx) {
+					var inp = idField.querySelector('input');
+					inp.setAttribute('pattern', '[a-zA-Z0-9._-]+');
+					inp.setAttribute('required', '');
+					validateField(idField, function(v) {
+						v = (v || '').trim();
+						if (!v) return 'ID is required.';
+						if (!/^[a-zA-Z0-9._-]+$/.test(v)) return 'ID may contain letters, digits, dot, dash, underscore.';
+						for (var j = 0; j < (cfg.agents.list || []).length; j++) {
+							if (j === idx) continue;
+							if ((cfg.agents.list[j].id || '').trim() === v) return 'Duplicate ID — must be unique.';
+						}
+						return '';
+					});
+				})(idx);
+
+				var nameField = makeField(row1, 'Name', 'text', a.name || '', function(v) { cfg.agents.list[idx].name = v; });
+				nameField.querySelector('input').setAttribute('maxlength', '200');
+				validateField(nameField, function(v) {
+					if ((v || '').length > 200) return 'Name must be 200 characters or fewer.';
+					return '';
+				});
 
 				var row2 = makeRow(item);
 				makeField(row2, 'Model', 'text', a.model || '', function(v) { cfg.agents.list[idx].model = v; });
@@ -1569,9 +2088,6 @@ html.dark .error-state { background: #450a0a; }
 				var row2b = makeRow(item);
 				makeField(row2b, 'Context Window (0 = auto-detect)', 'number', a.contextWindow || 0, function(v) {
 					cfg.agents.list[idx].contextWindow = v;
-				});
-				makeField(row2b, 'Fallback Model', 'text', a.fallbackModel || '', function(v) {
-					cfg.agents.list[idx].fallbackModel = v;
 				});
 
 				var row2bb = makeRow(item);
@@ -1637,6 +2153,7 @@ html.dark .error-state { background: #450a0a; }
 			if (!cfg.agents.list) cfg.agents.list = [];
 			cfg.agents.list.push({id: '', name: '', model: '', tools: {allow: []}});
 			render();
+			focusAndFlashNewRow(list);
 		};
 		sec.appendChild(addBtn);
 	}
@@ -1722,6 +2239,14 @@ html.dark .error-state { background: #450a0a; }
 		makeField(alRow, 'Max Agent Depth (0 = default 3)', 'number',
 			al.maxAgentDepth || 0,
 			function(v) { cfg.agentLoop.maxAgentDepth = v; });
+
+		// Memory Entries — folded in below Agent Loop. Was a top-level
+		// tab; the CRUD UI lives in renderMemoryEntries(), targeting a
+		// container appended here so it shares the Memory panel.
+		var meSec = makeSection(p, 'Memory Entries');
+		var meContainer = document.createElement('div');
+		meContainer.id = 'memory-entries-container';
+		meSec.appendChild(meContainer);
 	}
 
 	// === Security Panel ===
@@ -1765,6 +2290,7 @@ html.dark .error-state { background: #450a0a; }
 					'Files go to ~/.felix/skills/ and load on next chat turn.' +
 				'</span>' +
 			'</div>' +
+			'<input id="skills-filter" class="inline-filter" type="search" placeholder="Filter skills...">' +
 			'<div id="skills-list">Loading&#8230;</div>' +
 			'<div id="skill-view-panel" style="margin-top:1.5rem; display:none;">' +
 				'<h3 id="skill-view-name" style="margin-bottom:0.5rem;"></h3>' +
@@ -1801,7 +2327,7 @@ html.dark .error-state { background: #450a0a; }
 						rowStyle = 'color: var(--color-text-muted);';
 						note = ' <span title="missing: ' + escapeAttr((s.missing_bins || []).join(', ')) + '">&#9888; unavailable</span>';
 					}
-					html += '<tr style="' + rowStyle + '">' +
+					html += '<tr data-skill="' + escapeAttr(s.filename) + '" style="' + rowStyle + '">' +
 						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border);"><code>' + escapeHtml(s.filename) + '</code>' + note + '</td>' +
 						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border);">' + escapeHtml(s.description || '') + '</td>' +
 						'<td style="padding:0.5rem; border-bottom:1px solid var(--color-border); text-align:right; font-variant-numeric:tabular-nums;">' + fmtBytes(s.size_bytes) + '</td>' +
@@ -1819,6 +2345,17 @@ html.dark .error-state { background: #450a0a; }
 				listDiv.querySelectorAll('[data-skill-delete]').forEach(function(b) {
 					b.addEventListener('click', function() { deleteSkill(b.dataset.skillDelete); });
 				});
+				var skillsFilter = document.getElementById('skills-filter');
+				if (skillsFilter) {
+					skillsFilter.oninput = function() {
+						var q = skillsFilter.value.toLowerCase();
+						var rows = listDiv.querySelectorAll('tr[data-skill]');
+						for (var i = 0; i < rows.length; i++) {
+							var name = rows[i].dataset.skill || rows[i].textContent || '';
+							rows[i].style.display = (!q || name.toLowerCase().indexOf(q) !== -1) ? '' : 'none';
+						}
+					};
+				}
 			})
 			.catch(function(err) { showStatus('Skills load failed: ' + err.message, true); });
 	}
@@ -1899,7 +2436,8 @@ html.dark .error-state { background: #450a0a; }
 	var memoryEditing = null; // currently-editing id, or null when in list mode
 
 	function renderMemory() {
-		var panel = document.getElementById('panel-memory');
+		var panel = document.getElementById('memory-entries-container');
+		if (!panel) return; // Memory entries live inside the Memory (was Intelligence) panel.
 		panel.innerHTML =
 			'<div style="margin-bottom:1rem; display:flex; gap:0.75rem; align-items:center;">' +
 				'<button class="btn btn-primary" id="memory-new-btn">New entry</button>' +
@@ -1965,7 +2503,7 @@ html.dark .error-state { background: #450a0a; }
 			.catch(function(err) {
 				var msg = (err && err.toString) ? err.toString() : err;
 				document.getElementById('memory-list').innerHTML =
-					'<p style="color: var(--color-text-muted);">Memory is unavailable (' + escapeHtml(msg) + '). Enable it under Intelligence → Memory.</p>';
+					'<p style="color: var(--color-text-muted);">Memory is unavailable (' + escapeHtml(msg) + '). Enable it under the Memory section above.</p>';
 			});
 	}
 
