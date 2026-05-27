@@ -11,12 +11,14 @@ import (
 )
 
 // BuildTools returns the four cortex-backed tools wired against cx.
-// Returns nil when cx is nil so callers can pass through without a
-// per-call nil check.
+//
+// A nil cx is valid: the returned tools still expose Name / Description
+// / Parameters (so the shared toolReg can list them in the Settings UI
+// tool picker), but every Execute returns errCortexNotConfigured.
+// Real per-chat execution always goes through chatexec.ChatToolOverlay,
+// which holds a non-nil cortex per agent model and intercepts these
+// same names before the shared registry sees them.
 func BuildTools(cx *cortex.Cortex) []tool.Tool {
-	if cx == nil {
-		return nil
-	}
 	return []tool.Tool{
 		&RecallTool{cx: cx},
 		&RememberTool{cx: cx},
@@ -24,3 +26,9 @@ func BuildTools(cx *cortex.Cortex) []tool.Tool {
 		&GetRelationshipsTool{cx: cx},
 	}
 }
+
+// errCortexNotConfigured is the fallback Execute message when a cortex
+// tool is invoked without a wired cortex client. Only the shared
+// toolReg's no-cx variant should ever trigger this; the chat overlay
+// always supplies a real cx.
+const errCortexNotConfigured = "error: cortex not configured for this chat"

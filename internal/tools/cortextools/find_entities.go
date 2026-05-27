@@ -62,6 +62,9 @@ type findEntitiesInput struct {
 
 // Execute runs FindEntities and renders the results.
 func (t *FindEntitiesTool) Execute(ctx context.Context, input json.RawMessage) (tool.ToolResult, error) {
+	if t.cx == nil {
+		return tool.ToolResult{Output: errCortexNotConfigured}, nil
+	}
 	var in findEntitiesInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return tool.ToolResult{Output: fmt.Sprintf("error: invalid input: %v", err)}, nil

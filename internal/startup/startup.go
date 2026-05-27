@@ -562,6 +562,17 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		tools.RegisterMemoryTool(toolReg, memory.NewHarnessAdapter(memMgr))
 	}
 
+	// Register cortex tool DEFINITIONS on the shared registry (without a
+	// real *cortex.Cortex). They expose Name/Description/Parameters so
+	// the Settings UI's tool picker lists them and the auto-add to
+	// agent allowlists has a matching tool name to reference. Actual
+	// per-chat execution always overlays a real cortex via
+	// chatexec.ChatToolOverlay's Cortex slice, which intercepts these
+	// names before the shared registry sees them.
+	if cfg.Cortex.Enabled {
+		tools.RegisterCortexTools(toolReg, nil)
+	}
+
 	// Init Cortex knowledge graph as a per-agent factory. Each chatting agent
 	// gets its own *cortex.Cortex (cached) wired with the same provider/model
 	// it uses for chat, so cortex's LLM extraction stays consistent with the

@@ -63,6 +63,9 @@ type getRelationshipsInput struct {
 // API only supports type filters; GetRelationships itself returns edges
 // where entity_id appears as either source OR target.
 func (t *GetRelationshipsTool) Execute(ctx context.Context, input json.RawMessage) (tool.ToolResult, error) {
+	if t.cx == nil {
+		return tool.ToolResult{Output: errCortexNotConfigured}, nil
+	}
 	var in getRelationshipsInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return tool.ToolResult{Output: fmt.Sprintf("error: invalid input: %v", err)}, nil

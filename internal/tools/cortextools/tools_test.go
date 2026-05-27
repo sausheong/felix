@@ -51,9 +51,24 @@ func execJSON(t *testing.T, tl tool.Tool, args map[string]any) string {
 	return res.Output
 }
 
-func TestBuildTools_NilCortex(t *testing.T) {
-	if tools := cortextools.BuildTools(nil); tools != nil {
-		t.Fatalf("expected nil for nil cortex, got %d tools", len(tools))
+func TestBuildTools_NilCortex_ReturnsListingStubs(t *testing.T) {
+	// With nil cortex, BuildTools returns the same four tools so the
+	// shared registry can list them in the Settings UI. Each Execute
+	// returns the "cortex not configured" sentinel; Name/Description/
+	// Parameters work normally.
+	tools := cortextools.BuildTools(nil)
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 listing stubs, got %d", len(tools))
+	}
+	ctx := context.Background()
+	for _, tl := range tools {
+		out, err := tl.Execute(ctx, []byte(`{}`))
+		if err != nil {
+			t.Fatalf("%s.Execute returned error: %v", tl.Name(), err)
+		}
+		if !strings.HasPrefix(out.Output, "error: cortex not configured") {
+			t.Fatalf("%s.Execute output = %q, want 'cortex not configured' prefix", tl.Name(), out.Output)
+		}
 	}
 }
 

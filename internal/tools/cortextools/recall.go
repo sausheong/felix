@@ -58,6 +58,9 @@ type recallInput struct {
 
 // Execute runs a cortex Recall and renders the results.
 func (t *RecallTool) Execute(ctx context.Context, input json.RawMessage) (tool.ToolResult, error) {
+	if t.cx == nil {
+		return tool.ToolResult{Output: errCortexNotConfigured}, nil
+	}
 	var in recallInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return tool.ToolResult{Output: fmt.Sprintf("error: invalid input: %v", err)}, nil

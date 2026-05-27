@@ -55,6 +55,9 @@ type rememberInput struct {
 
 // Execute writes the content to the knowledge graph via cortex.Remember.
 func (t *RememberTool) Execute(ctx context.Context, input json.RawMessage) (tool.ToolResult, error) {
+	if t.cx == nil {
+		return tool.ToolResult{Output: errCortexNotConfigured}, nil
+	}
 	var in rememberInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return tool.ToolResult{Output: fmt.Sprintf("error: invalid input: %v", err)}, nil
