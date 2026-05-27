@@ -391,6 +391,13 @@ func (r *Run) Subscribe(conn *websocket.Conn, fromSeq int64) ([]Event, <-chan Ev
 		}
 	}
 
+	// Double-subscribe guard: if conn already has a subscriber on this run,
+	// close its channel so the orphaned forwardEvents goroutine exits.
+	// Otherwise the old goroutine blocks on a now-unreachable channel until
+	// Finish.
+	if old, ok := r.subscribers[conn]; ok {
+		close(old.ch)
+	}
 	r.subscribers[conn] = sub
 	return past, sub.ch, lastSeq, nil
 }
