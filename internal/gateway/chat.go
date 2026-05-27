@@ -3759,6 +3759,12 @@ html.dark #stop-btn {
 				// Handle chat.replay response (Wave 2). Result shape: { runId, past: [event] }.
 				if (typeof resp.id === 'string' && resp.id.indexOf('replay-') === 0) {
 					if (!replayState) return;
+					// Discard if user clicked a different run in the meantime —
+					// otherwise A's events would render under B's replayState.
+					var respRunId = resp.result && resp.result.runId;
+					if (respRunId && replayState.runId !== respRunId) {
+						return;
+					}
 					var past = (resp.result && Array.isArray(resp.result.past)) ? resp.result.past : [];
 					replayState.events = past;
 					renderReplayMode();
