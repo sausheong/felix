@@ -475,6 +475,67 @@ body {
 .session-row:hover .ses-clear, .session-row.active .ses-clear { opacity: 0.7; }
 .session-row .ses-clear:hover { opacity: 1; color: var(--error); background: color-mix(in oklch, var(--error) 12%%, transparent); }
 .session-row .ses-clear .icon { width: 14px; height: 14px; }
+
+/* Per-session chevron expands a sub-list of past runs (Wave 2). */
+.session-row .ses-chevron {
+	width: 14px; height: 14px; flex-shrink: 0;
+	cursor: pointer; opacity: 0.5;
+	transition: transform 0.15s, opacity 0.15s;
+}
+.session-row .ses-chevron:hover { opacity: 1; }
+.session-row .ses-chevron.expanded { transform: rotate(90deg); }
+
+.runs-sublist {
+	margin: 0.25rem 0 0.5rem 1.75rem;
+	padding-left: 0.5rem;
+	border-left: 1px solid var(--border);
+	display: none;
+}
+.runs-sublist.expanded { display: block; }
+.run-row {
+	display: flex; align-items: center; gap: 0.5rem;
+	padding: 0.3rem 0.4rem;
+	font-size: var(--fs-xs);
+	color: var(--text-muted);
+	border-radius: 4px;
+	cursor: pointer;
+}
+.run-row:hover { background: var(--bg-msg-asst); color: var(--text); }
+.run-row .run-time { font-variant-numeric: tabular-nums; }
+.run-row .run-status {
+	padding: 0 0.4em; border-radius: 3px;
+	font-size: 0.85em;
+	background: var(--bg-msg-user);
+}
+.run-row .run-status.completed   { background: rgba(59, 156, 93, 0.18); color: #5ad17e; }
+.run-row .run-status.cancelled   { background: rgba(140, 140, 140, 0.18); color: var(--text-muted); }
+.run-row .run-status.failed      { background: rgba(220, 80, 80, 0.18); color: #ff7a7a; }
+.run-row .run-status.interrupted { background: rgba(220, 140, 40, 0.18); color: #ffa040; }
+.run-row .run-status.running     { background: rgba(80, 140, 220, 0.18); color: #6fa6ff; }
+.run-row .run-count { margin-left: auto; }
+.run-row .run-delete {
+	background: none; border: none; cursor: pointer;
+	opacity: 0; padding: 0.1rem;
+	color: var(--text-muted);
+}
+.run-row:hover .run-delete { opacity: 0.7; }
+.run-row .run-delete:hover { opacity: 1; color: var(--error); }
+.run-row .run-delete svg { width: 12px; height: 12px; }
+
+/* Read-only replay mode banner + composer-hiding (Task 3.3). */
+.replay-banner {
+	background: rgba(220, 140, 40, 0.25);
+	border-bottom: 1px solid rgba(220, 140, 40, 0.5);
+	color: var(--text);
+	padding: 0.5rem 1rem;
+	font-size: var(--fs-sm);
+	display: flex; align-items: center; gap: 0.5rem;
+	cursor: pointer;
+}
+.replay-banner:hover { background: rgba(220, 140, 40, 0.35); }
+.replay-banner .label { flex: 1; }
+body.replay-mode #input-shell { display: none !important; }
+
 .sb-session-edit {
 	flex: 1;
 	min-width: 0;
@@ -1814,6 +1875,21 @@ html.dark #stop-btn {
 	function icon(name) { return ICONS[name] || ''; }
 	var sessionsList = document.getElementById('sessions-list');
 	var sessionsNewBtn = document.getElementById('sessions-new');
+
+	// --- Wave 2: per-session run history state ---
+	// runsBySession: cache of past run summaries keyed by agentId+"::"+sessionKey.
+	// Each value: { runs: [RunSummary], expanded: bool, loading: bool }. Populated
+	// lazily on chevron expand via chat.runs RPC.
+	var runsBySession = new Map();
+	function runsKey(agentId, sessionKey) { return agentId + '::' + sessionKey; }
+	// liveRunIdBySession: tracks the in-flight runId per scope so the runs
+	// sublist can hide the delete button next to the active run. Populated on
+	// the run_attached response to chat.send, cleared on the run_terminal event.
+	var liveRunIdBySession = new Map();
+	// replayState: read-only replay mode. null when viewing live; otherwise
+	// { agentId, sessionKey, runId, events: [] } while a past run is loaded.
+	var replayState = null;
+
 	var sessionsFilter = document.getElementById('sessions-filter');
 	if (sessionsFilter) {
 		sessionsFilter.addEventListener('input', function() {
@@ -2651,13 +2727,18 @@ html.dark #stop-btn {
 			sessionsList.appendChild(empty);
 			return;
 		}
+		var aid = agentSelect.value;
 		for (var i = 0; i < sessions.length; i++) {
 			var s = sessions[i];
 			var row = document.createElement('div');
 			row.className = 'session-row';
 			row.dataset.sessionKey = s.key;
 			if (s.key === sessionSelect.value) row.classList.add('active');
-			row.innerHTML = '<span class="ses-icon">' + icon('chat') + '</span>' +
+			// Chevron expands the per-session runs sublist; the inline SVG
+			// stays in flow so CSS rotation works (a wrapping span would
+			// also work but the SVG carries the .ses-chevron hook directly).
+			row.innerHTML = '<svg class="ses-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>' +
+				'<span class="ses-icon">' + icon('chat') + '</span>' +
 				'<span class="ses-name" title="Double-click to rename"></span>' +
 				'<span class="ses-count"></span>' +
 				'<button class="ses-clear" type="button" aria-label="Clear session" title="Clear session">' +
@@ -2668,7 +2749,8 @@ html.dark #stop-btn {
 			nameEl.dataset.title = s.title || '';
 			row.querySelector('.ses-count').textContent = s.entryCount;
 			var clearBtn = row.querySelector('.ses-clear');
-			(function(key, name, rowEl, nameSpan) {
+			var chevEl = row.querySelector('.ses-chevron');
+			(function(key, name, rowEl, nameSpan, chev) {
 				// detail===2 means the first click of a double-click —
 				// short-circuit so we never switch sessions when the user
 				// is starting an inline rename.
@@ -2692,9 +2774,84 @@ html.dark #stop-btn {
 						clearSessionByKey(key);
 					});
 				});
-			})(s.key, s.title || s.key, row, nameEl);
+				// Chevron toggles the per-session runs sublist. First expand
+				// triggers a chat.runs RPC; subsequent toggles re-render from
+				// the local cache.
+				chev.addEventListener('click', function(ev) {
+					ev.stopPropagation(); // don't switch sessions
+					var k = runsKey(aid, key);
+					var entry = runsBySession.get(k) || { runs: [], expanded: false, loading: false };
+					entry.expanded = !entry.expanded;
+					runsBySession.set(k, entry);
+					chev.classList.toggle('expanded', entry.expanded);
+					var sl = document.querySelector('.runs-sublist[data-key="' + cssEscape(k) + '"]');
+					if (sl) sl.classList.toggle('expanded', entry.expanded);
+					if (entry.expanded && entry.runs.length === 0 && !entry.loading) {
+						fetchRuns(aid, key);
+					} else if (entry.expanded) {
+						renderRunsSublistFor(k);
+					}
+				});
+			})(s.key, s.title || s.key, row, nameEl, chevEl);
 			sessionsList.appendChild(row);
+			// Sibling sublist directly under the row; CSS .runs-sublist
+			// stays hidden until .expanded is toggled by the chevron.
+			var sublist = document.createElement('div');
+			sublist.className = 'runs-sublist';
+			sublist.dataset.key = runsKey(aid, s.key);
+			sessionsList.appendChild(sublist);
 		}
+	}
+
+	// cssEscape — CSS.escape isn't safe to assume in older Safari shipped
+	// with some macOS minor versions; this fallback handles the characters
+	// we put in run-sublist data-key (alphanumerics + ":" + slug chars).
+	function cssEscape(s) {
+		if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(s);
+		return String(s).replace(/[^a-zA-Z0-9_-]/g, function(c) { return '\\' + c; });
+	}
+
+	// fetchRuns sends chat.runs for (agentId, sessionKey). The onmessage
+	// dispatcher routes runs-... IDs back to the sublist renderer. Marks
+	// the entry as loading so the placeholder shows immediately.
+	function fetchRuns(agentId, sessionKey) {
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		var k = runsKey(agentId, sessionKey);
+		var entry = runsBySession.get(k) || { runs: [], expanded: false, loading: false };
+		entry.loading = true;
+		runsBySession.set(k, entry);
+		renderRunsSublistFor(k);
+		ws.send(JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'chat.runs',
+			params: { agentId: agentId, sessionKey: sessionKey },
+			id: 'runs-' + k
+		}));
+	}
+
+	// renderRunsSublistFor paints the cached entry for the given key into
+	// the corresponding .runs-sublist node. Defined here as a forward decl
+	// placeholder — the full implementation lands with Task 3.2.
+	function renderRunsSublistFor(key) {
+		var sublist = document.querySelector('.runs-sublist[data-key="' + cssEscape(key) + '"]');
+		if (!sublist) return;
+		var entry = runsBySession.get(key);
+		if (!entry) { sublist.innerHTML = ''; return; }
+		if (entry.loading) {
+			sublist.innerHTML = '<div class="run-row" style="opacity:0.5">Loading…</div>';
+			return;
+		}
+		if (!entry.runs || entry.runs.length === 0) {
+			sublist.innerHTML = '<div class="run-row" style="opacity:0.5">No past runs</div>';
+			return;
+		}
+		// Task 3.2 will replace this stub with the full row renderer
+		// (timestamp + status badge + count + delete affordance).
+		var html = '';
+		for (var i = 0; i < entry.runs.length; i++) {
+			html += '<div class="run-row">' + (entry.runs[i].id || '') + '</div>';
+		}
+		sublist.innerHTML = html;
 	}
 
 	// startSessionRename swaps the .ses-name span for an inline input.
@@ -3234,6 +3391,31 @@ html.dark #stop-btn {
 			try {
 				var resp = JSON.parse(e.data);
 				if (resp.error) {
+					// Errors on Wave 2 RPCs (runs-/del-/replay-) are scoped to
+					// the sublist or replay flow and must not lock the chat
+					// composer. Surface them in-place; the chat send path is
+					// unaffected.
+					if (typeof resp.id === 'string' &&
+						(resp.id.indexOf('runs-') === 0 ||
+						 resp.id.indexOf('del-') === 0 ||
+						 resp.id.indexOf('replay-') === 0)) {
+						var emsg = (typeof resp.error === 'string') ? resp.error :
+							(resp.error.message || JSON.stringify(resp.error));
+						if (resp.id.indexOf('runs-') === 0) {
+							var ekey = resp.id.slice('runs-'.length);
+							var eentry = runsBySession.get(ekey) || { runs: [], expanded: false, loading: false };
+							eentry.loading = false;
+							runsBySession.set(ekey, eentry);
+							renderRunsSublistFor(ekey);
+							console.error('chat.runs error:', emsg);
+						} else if (resp.id.indexOf('del-') === 0) {
+							alert('Delete failed: ' + emsg);
+						} else {
+							alert('Replay failed: ' + emsg);
+							replayState = null;
+						}
+						return;
+					}
 					addError(typeof resp.error === 'string' ? resp.error : resp.error.message || JSON.stringify(resp.error));
 					sending = false;
 					updateSendBtn();
@@ -3334,6 +3516,19 @@ html.dark #stop-btn {
 						}
 					}
 					scrollToBottom();
+					return;
+				}
+
+				// Handle chat.runs response (Wave 2). Result shape: { runs: [RunSummary] }.
+				if (typeof resp.id === 'string' && resp.id.indexOf('runs-') === 0) {
+					var rkey = resp.id.slice('runs-'.length);
+					var rentry = runsBySession.get(rkey) || { runs: [], expanded: false, loading: false };
+					rentry.loading = false;
+					if (resp.result && Array.isArray(resp.result.runs)) {
+						rentry.runs = resp.result.runs;
+					}
+					runsBySession.set(rkey, rentry);
+					renderRunsSublistFor(rkey);
 					return;
 				}
 
