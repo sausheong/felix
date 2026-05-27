@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -353,7 +354,8 @@ How Cortex works for you:
 - CORTEX FIRST — ALWAYS: Before using any tool (web_fetch, web_search, bash, read_file, or any other), check whether the "Cortex Knowledge Graph" section below already contains the answer. Only reach for a tool if Cortex does not have sufficient information.
 - USE THE CONTEXT: When Cortex results appear, incorporate that knowledge naturally into your response. Reference what you know about people, organizations, past conversations, and relationships.
 - CONNECT THE DOTS: If a user mentions a person or topic that Cortex has data on, proactively surface relevant connections and context — don't wait to be asked.
-- ACKNOWLEDGE MEMORY: When you use Cortex knowledge, you can say things like "From our previous conversations..." or "I recall that..." to indicate you remember.`
+- ACKNOWLEDGE MEMORY: When you use Cortex knowledge, you can say things like "From our previous conversations..." or "I recall that..." to indicate you remember.
+- WEIGH CONFIDENCE: Results may include a "conf: N%" tag indicating how confident Cortex is in the extracted fact. Treat high-confidence items (≥80%) as reliable; treat low-confidence items as hints worth verifying before relying on them.`
 
 // FormatResults formats Cortex recall results for injection into the agent
 // system prompt, similar to memory.FormatForPrompt.
@@ -385,6 +387,9 @@ func FormatResults(results []cortex.Result) string {
 			b.WriteString(" (source: ")
 			b.WriteString(r.Source)
 			b.WriteString(")")
+		}
+		if r.Confidence > 0 {
+			fmt.Fprintf(&b, " [conf: %d%%]", int(math.Round(r.Confidence*100)))
 		}
 		b.WriteString("\n")
 	}

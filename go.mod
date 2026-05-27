@@ -15,7 +15,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/sashabaranov/go-openai v1.41.2
-	github.com/sausheong/cortex v0.0.0-20260429112159-60ec1bfc7c9a
+	github.com/sausheong/cortex v0.0.0-20260527043339-cda76b67bf44
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/bridges/otelslog v0.18.0
