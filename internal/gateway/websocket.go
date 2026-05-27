@@ -316,6 +316,8 @@ func (h *WebSocketHandler) dispatch(conn *websocket.Conn, req JSONRPCRequest) {
 		h.handleChatReplay(conn, req)
 	case "chat.runs":
 		h.handleChatRuns(conn, req)
+	case "chat.deleteRun":
+		h.handleChatDeleteRun(conn, req)
 	case "chat.compact":
 		h.handleChatCompact(conn, req)
 	case "agent.status":
@@ -814,6 +816,56 @@ func (h *WebSocketHandler) handleChatRuns(conn *websocket.Conn, req JSONRPCReque
 	writeJSON(conn, JSONRPCResponse{
 		JSONRPC: "2.0",
 		Result:  map[string]any{"runs": summaries},
+		ID:      req.ID,
+	})
+}
+
+// handleChatDeleteRun removes a completed run from disk. Refuses to
+// delete an in-flight run (the registry enforces this).
+func (h *WebSocketHandler) handleChatDeleteRun(conn *websocket.Conn, req JSONRPCRequest) {
+	var params struct {
+		AgentID    string `json:"agentId"`
+		SessionKey string `json:"sessionKey"`
+		RunID      string `json:"runId"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "invalid params: "+err.Error())
+		return
+	}
+	if params.RunID == "" {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "runId is required")
+		return
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+	if params.SessionKey == "" {
+		h.mu.RLock()
+		if m, ok := h.activeSessionKeys[conn]; ok {
+			params.SessionKey = m[params.AgentID]
+		}
+		h.mu.RUnlock()
+		if params.SessionKey == "" {
+			params.SessionKey = "ws_default"
+		}
+	}
+
+	h.mu.RLock()
+	reg := h.runs
+	metrics := h.metrics
+	h.mu.RUnlock()
+	if reg == nil {
+		writeRPCError(conn, metrics, req.ID, -32000, "runs registry not configured")
+		return
+	}
+
+	if err := reg.DeleteRun(runs.SessionScope{AgentID: params.AgentID, SessionKey: params.SessionKey}, params.RunID); err != nil {
+		writeRPCError(conn, metrics, req.ID, -32000, err.Error())
+		return
+	}
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result:  map[string]any{"deleted": true},
 		ID:      req.ID,
 	})
 }
