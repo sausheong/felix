@@ -6,7 +6,6 @@ package cortex
 import (
 	"fmt"
 	"log/slog"
-	"math"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -205,7 +204,9 @@ func (p *Provider) build(provider, model string) (*cortex.Cortex, error) {
 // agent knows it has a persistent knowledge graph backing its memory.
 const CortexHint = `
 
-You have access to cortex, my persistent memory. At the start of every conversation, call recall with keywords from my first message to check for relevant context. When I tell you something you should remember about me, my projects, my preferences, or my decisions, call remember. Use find_entities and get_relationships when I ask about people, projects, or how things connect.`
+You have access to cortex, my persistent memory. At the start of every conversation, call recall with keywords from my first message to check for relevant context. When I tell you something you should remember about me, my projects, my preferences, or my decisions, call remember. Use find_entities and get_relationships when I ask about people, projects, or how things connect.
+
+Cortex results are ranked by relevance (best match first), but the ranker can still return loosely-related entries when nothing truly matches the query. ALWAYS judge each result by its content against the actual question — if none of the returned entries genuinely address it, treat the recall as a miss and do not cite them.`
 
 // FormatResults formats Cortex recall results for injection into the agent
 // system prompt, similar to memory.FormatForPrompt.
@@ -237,9 +238,6 @@ func FormatResults(results []cortex.Result) string {
 			b.WriteString(" (source: ")
 			b.WriteString(r.Source)
 			b.WriteString(")")
-		}
-		if r.Confidence > 0 {
-			fmt.Fprintf(&b, " [conf: %d%%]", int(math.Round(r.Confidence*100)))
 		}
 		b.WriteString("\n")
 	}

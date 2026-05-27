@@ -113,7 +113,7 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 		},
 		CalibratorStore: deps.CalibratorStore,
 		ConfigSummary:   buildConfigSummary(deps.Config),
-		MemoryFiles:     loadAgentMemoryFiles(a.Workspace) + cortexStaticHint(deps.Config),
+		MemoryFiles:     loadAgentMemoryFiles(a.Workspace) + felixEnvHint() + cortexStaticHint(deps.Config),
 	}
 	if deps.Skills != nil {
 		hdeps.Skills = skillProviderAdapter{l: deps.Skills}
@@ -270,4 +270,37 @@ func cortexStaticHint(cfg *config.Config) string {
 		return ""
 	}
 	return cortexadapter.CortexHint
+}
+
+// felixEnvHint adds a "Felix execution environment" section to the
+// static system prompt: the data-dir layout (so "where is brain.db?"
+// type questions get answered without a filesystem search) and
+// guardrails for bash (so the agent doesn't run unscoped find / commands
+// that block for minutes against the default 120s bash timeout).
+func felixEnvHint() string {
+	return `
+
+## Felix execution environment
+
+Data directory: ~/.felix/
+  ~/.felix/felix.json5             your config file
+  ~/.felix/brain.db                cortex knowledge graph (SQLite)
+  ~/.felix/memory/entries/*.md     per-id markdown memory entries
+  ~/.felix/sessions/<agent>/       append-only session JSONL files
+  ~/.felix/skills/*.md             user skills
+  ~/.felix/calibrators/            per-session token-estimate calibration
+  ~/.felix/mcp-tokens/             MCP OAuth refresh tokens
+
+For questions about "where is X" inside the felix data dir, ANSWER FROM
+THE LAYOUT ABOVE rather than calling bash to search the filesystem.
+
+Bash guardrails: the bash tool has a default 120-second timeout. If a
+command might take longer than a few seconds, pass an explicit shorter
+timeout argument AND scope your search.
+  - Never run "find /" or "find ~" with no scope — pick a specific dir.
+  - On macOS, prefer "mdfind -name X" for filename lookups; it uses the
+    Spotlight index and returns in milliseconds.
+  - For text search, prefer "rg" (ripgrep) over "grep -r" with no scope.
+  - When you DO need a slow command, pass timeout=30 (or less) so a
+    miss fails fast instead of blocking the conversation.`
 }
