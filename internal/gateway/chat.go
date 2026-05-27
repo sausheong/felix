@@ -2800,6 +2800,16 @@ html.dark #stop-btn {
 			sublist.className = 'runs-sublist';
 			sublist.dataset.key = runsKey(aid, s.key);
 			sessionsList.appendChild(sublist);
+			// Restore expand state if the user had this sublist open before
+			// a re-render (session.new / session.switch / agent switch all
+			// rebuild rows from scratch and would otherwise drop .expanded).
+			var cachedKey = runsKey(aid, s.key);
+			var cached = runsBySession.get(cachedKey);
+			if (cached && cached.expanded) {
+				chevEl.classList.add('expanded');
+				sublist.classList.add('expanded');
+				renderRunsSublistFor(cachedKey);
+			}
 		}
 	}
 
