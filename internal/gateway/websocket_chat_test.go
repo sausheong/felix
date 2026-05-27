@@ -349,6 +349,13 @@ func TestHandleChatSend_RunAttachedThenDone(t *testing.T) {
 		r, _ := msg["result"].(map[string]any)
 		typ, _ := r["type"].(string)
 		if typ == "done" || typ == "run_terminal" {
+			// Brief settle wait: chatexec.RunTurn's deferred cleanup
+			// (compactionMgr.ForgetSession, runCancel, session index
+			// saveIndex) runs AFTER the done event is fanned out to
+			// subscribers but BEFORE the RunTurn goroutine returns.
+			// Without this, the deferred writes race with t.TempDir()'s
+			// os.RemoveAll, producing "directory not empty" errors.
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 	}
