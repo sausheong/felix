@@ -27,20 +27,13 @@ import (
 	"github.com/sausheong/felix/internal/tools"
 )
 
-// OverlayMetrics is the minimal metrics surface ChatToolOverlay uses.
-// Backed by gateway.Metrics in production; tests / inbox worker pass
-// nil and the overlay skips the counter bump.
-type OverlayMetrics interface {
-	IncToolCalls(toolName string)
-}
-
 // ChatToolOverlay wraps the shared tool executor and adds per-chat
 // tool instances on top. See the package doc for rationale.
 type ChatToolOverlay struct {
 	Base    tools.Executor  // required
 	Task    *tools.TaskTool // optional
 	Cron    *tools.CronTool // optional
-	Metrics OverlayMetrics  // optional; bumps IncToolCalls on each Execute
+	Metrics MetricsLike     // optional; bumps IncToolCalls on each Execute
 }
 
 // Execute dispatches a tool call. Overlay tools (task, cron) win over

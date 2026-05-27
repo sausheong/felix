@@ -31,10 +31,14 @@ import (
 	"github.com/sausheong/felix/internal/tools"
 )
 
-// MetricsLike is the minimal metrics surface chatexec uses. Backed by
-// gateway.Metrics in production; tests pass nil.
+// MetricsLike is the minimal metrics surface chatexec uses for both
+// per-turn counters (IncChatTurns) and per-tool-call counters
+// (IncToolCalls, called from ChatToolOverlay.Execute). Backed by
+// gateway.Metrics in production; tests pass nil and chatexec/overlay
+// skip the counter bumps.
 type MetricsLike interface {
 	IncChatTurns()
+	IncToolCalls(toolName string)
 }
 
 // CortexProvider resolves a per-agent *cortex.Cortex client keyed on
@@ -177,7 +181,7 @@ func RunTurn(ctx context.Context, deps TurnDeps, scope runs.SessionScope, text s
 	// overlay is per-call because both tools have call-site-specific
 	// captures — registering them on the shared registry would race-clobber
 	// other chats or cross-wire state.
-	overlay := &ChatToolOverlay{Base: deps.Tools}
+	overlay := &ChatToolOverlay{Base: deps.Tools, Metrics: deps.Metrics}
 	if deps.SubagentBuild != nil && deps.Config != nil {
 		if eligible := deps.Config.EligibleSubagents(); len(eligible) > 0 {
 			factory := agent.MakeSubagentFactory(deps.Config, runtimeDeps, deps.SubagentBuild, rt)

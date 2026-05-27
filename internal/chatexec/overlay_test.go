@@ -38,6 +38,10 @@ func (m *countingMetrics) IncToolCalls(name string) {
 	m.calls[name]++
 }
 
+// IncChatTurns is a no-op; overlay tests don't exercise per-turn counters.
+// Present to satisfy the unified MetricsLike interface.
+func (m *countingMetrics) IncChatTurns() {}
+
 // TestOverlay_ExecuteFallsThroughToBase verifies any tool name not
 // owned by the overlay is dispatched to Base.
 func TestOverlay_ExecuteFallsThroughToBase(t *testing.T) {
