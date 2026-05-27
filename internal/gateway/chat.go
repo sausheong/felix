@@ -2924,12 +2924,126 @@ html.dark #stop-btn {
 		}));
 	}
 
-	// Forward decls used by the runs sublist row handlers above; the real
-	// implementations land with Task 3.3. Declared as hoisted function
-	// expressions so the dispatcher can resolve them at runtime regardless
-	// of source order.
-	var renderReplayMode = function() { /* Task 3.3 */ };
-	var exitReplayMode = function() { /* Task 3.3 */ };
+	// renderReplayMode paints replayState.events into the chat pane in
+	// read-only mode. The composer/stop button are hidden via the
+	// body.replay-mode class (see CSS). A yellow banner anchors the
+	// top of #chat-view; clicking it returns to live.
+	//
+	// Past-run events come from eventToResult and use the same shapes the
+	// live dispatcher already knows how to render (text_delta, tool_call_start,
+	// tool_result, compaction.start/done, trace, done, run_terminal). User
+	// messages are NOT in the run log — they live in session history — so
+	// the replay shows only the assistant side of one turn.
+	var renderReplayMode = function() {
+		document.body.classList.add('replay-mode');
+		var chatView = document.getElementById('chat-view');
+		var banner = document.getElementById('replay-banner');
+		if (!banner) {
+			banner = document.createElement('div');
+			banner.id = 'replay-banner';
+			banner.className = 'replay-banner';
+			banner.innerHTML = '<span class="label">← <strong>Back to live</strong> · Viewing past run (read-only)</span>';
+			banner.addEventListener('click', function() { exitReplayMode(); });
+			if (chatView) chatView.insertBefore(banner, chatView.firstChild);
+		}
+		// Reset transcript state and repaint.
+		messagesEl.innerHTML = '';
+		currentAssistant = null;
+		toolEls = {};
+		if (!replayState || !replayState.events || replayState.events.length === 0) {
+			var empty = document.createElement('div');
+			empty.style.cssText = 'opacity:0.5;padding:1rem';
+			empty.textContent = 'Run is empty or no longer available.';
+			messagesEl.appendChild(empty);
+			return;
+		}
+		var localAssistant = null;
+		for (var i = 0; i < replayState.events.length; i++) {
+			var ev = replayState.events[i];
+			if (!ev || !ev.type) continue;
+			switch (ev.type) {
+			case 'text_delta':
+				if (!localAssistant) {
+					localAssistant = addAssistantMsg();
+					currentAssistant = localAssistant;
+				}
+				appendToAssistant(ev.text || '');
+				break;
+			case 'tool_call_start':
+				if (localAssistant) {
+					finalizeAssistant();
+					localAssistant = null;
+					currentAssistant = null;
+				}
+				addToolCall(ev.tool, ev.id, ev.input);
+				break;
+			case 'tool_result':
+				updateToolResult(ev.tool, ev.id, ev.input, ev.output, ev.error, ev.images, ev.auth_required);
+				break;
+			case 'compaction.start':
+				if (!localAssistant) {
+					localAssistant = addAssistantMsg('');
+					currentAssistant = localAssistant;
+				}
+				appendToAssistant('\n*[Compacting context…]*\n');
+				break;
+			case 'compaction.done':
+				if (localAssistant) appendToAssistant('\n*[Context compacted.]*\n');
+				break;
+			case 'trace':
+				addTraceRow(ev);
+				break;
+			case 'run_terminal':
+				if (localAssistant) {
+					finalizeAssistant();
+					localAssistant = null;
+					currentAssistant = null;
+				}
+				if (ev.status && ev.status !== 'completed') {
+					var marker = '';
+					switch (ev.status) {
+					case 'cancelled':   marker = ev.reason === 'superseded' ? '↳ replaced by next turn' : '⏹ cancelled'; break;
+					case 'interrupted': marker = '↯ interrupted by server restart'; break;
+					case 'failed':      marker = '⚠ failed' + (ev.error ? ': ' + ev.error : ''); break;
+					default:            marker = '— ' + ev.status;
+					}
+					addSystemMarker(marker);
+				}
+				break;
+			default:
+				// Unknown event types (e.g. 'done') don't need a visual; the
+				// transcript above them already captures the substance.
+				break;
+			}
+		}
+		if (localAssistant) finalizeAssistant();
+		currentAssistant = null;
+		scrollToBottom();
+	};
+
+	// exitReplayMode tears down the banner, drops the replay-mode body
+	// class, and rehydrates the live session transcript from server history.
+	var exitReplayMode = function() {
+		document.body.classList.remove('replay-mode');
+		var banner = document.getElementById('replay-banner');
+		if (banner) banner.remove();
+		replayState = null;
+		// Reset transcript state.
+		messagesEl.innerHTML = '';
+		currentAssistant = null;
+		toolEls = {};
+		refreshEmptyState();
+		// Re-request the live session's persisted history. This mirrors
+		// what the session.switch handler does on session change.
+		if (ws && ws.readyState === WebSocket.OPEN && agentSelect.value && sessionSelect.value) {
+			ws.send(JSON.stringify({
+				jsonrpc: '2.0',
+				method: 'session.history',
+				params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
+				id: 'history'
+			}));
+		}
+	};
 
 	// startSessionRename swaps the .ses-name span for an inline input.
 	// Enter and blur commit; Esc cancels. The label is updated locally only.
