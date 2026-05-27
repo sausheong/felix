@@ -3,8 +3,11 @@ package runs
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -523,5 +526,97 @@ func TestRun_DoneClosesOnceUnderConcurrentFinish(t *testing.T) {
 	case <-run.Done():
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("Done() not closed after concurrent Finishes")
+	}
+}
+
+func TestRegistry_DeleteRun_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+	reg := NewRegistry(dir)
+	scope := SessionScope{AgentID: "a1", SessionKey: "s1"}
+
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	run, err := reg.Create(scope, "run-1", cancel)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := run.Append(EventTypeTextDelta, []byte(`{"text":"hi"}`)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := run.Finish(StatusCompleted, "", ""); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	logPath := filepath.Join(dir, "a1", "s1.runs", "run-1.jsonl")
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("expected log file before delete: %v", err)
+	}
+	snap, _ := reg.Snapshot(scope)
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 run in index before delete, got %d", len(snap))
+	}
+
+	if err := reg.DeleteRun(scope, "run-1"); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if _, err := os.Stat(logPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected log file deleted, stat err=%v", err)
+	}
+	snap2, _ := reg.Snapshot(scope)
+	if len(snap2) != 0 {
+		t.Fatalf("expected 0 runs in index after delete, got %d", len(snap2))
+	}
+}
+
+func TestRegistry_DeleteRun_RefusesInFlight(t *testing.T) {
+	dir := t.TempDir()
+	reg := NewRegistry(dir)
+	scope := SessionScope{AgentID: "a1", SessionKey: "s1"}
+
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := reg.Create(scope, "run-1", cancel)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	err = reg.DeleteRun(scope, "run-1")
+	if err == nil {
+		t.Fatal("expected error deleting in-flight run, got nil")
+	}
+	if !strings.Contains(err.Error(), "in-flight") {
+		t.Errorf("error should mention 'in-flight', got: %v", err)
+	}
+}
+
+func TestRegistry_DeleteRun_UnknownIDNoError(t *testing.T) {
+	dir := t.TempDir()
+	reg := NewRegistry(dir)
+	scope := SessionScope{AgentID: "a1", SessionKey: "s1"}
+
+	if err := reg.DeleteRun(scope, "ghost"); err != nil {
+		t.Fatalf("DeleteRun on empty registry: %v", err)
+	}
+}
+
+func TestRegistry_DeleteRun_TolerantOfMissingLog(t *testing.T) {
+	dir := t.TempDir()
+	reg := NewRegistry(dir)
+	scope := SessionScope{AgentID: "a1", SessionKey: "s1"}
+
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	run, _ := reg.Create(scope, "run-1", cancel)
+	_ = run.Finish(StatusCompleted, "", "")
+
+	logPath := filepath.Join(dir, "a1", "s1.runs", "run-1.jsonl")
+	_ = os.Remove(logPath)
+
+	if err := reg.DeleteRun(scope, "run-1"); err != nil {
+		t.Fatalf("DeleteRun with missing log: %v", err)
+	}
+	snap, _ := reg.Snapshot(scope)
+	if len(snap) != 0 {
+		t.Fatalf("expected 0 runs after delete-with-missing-log, got %d", len(snap))
 	}
 }

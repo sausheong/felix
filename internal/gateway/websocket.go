@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -313,6 +314,10 @@ func (h *WebSocketHandler) dispatch(conn *websocket.Conn, req JSONRPCRequest) {
 		h.handleChatSubscribe(conn, req)
 	case "chat.replay":
 		h.handleChatReplay(conn, req)
+	case "chat.runs":
+		h.handleChatRuns(conn, req)
+	case "chat.deleteRun":
+		h.handleChatDeleteRun(conn, req)
 	case "chat.compact":
 		h.handleChatCompact(conn, req)
 	case "agent.status":
@@ -639,6 +644,24 @@ func forwardEvents(conn *websocket.Conn, ch <-chan runs.Event) {
 	}
 }
 
+// Wire-format note: this codebase has two paths for sending event
+// payloads to a WebSocket conn, intentionally asymmetric.
+//
+//   1. chat.send → wsSubscriber.OnEvent — writes each event as a
+//      JSONRPCResponse with Result set, ID = the original chat.send
+//      request ID. The existing felix HTML chat client treats multiple
+//      Results sharing one rpcID as a stream; do NOT change this without
+//      updating the client.
+//
+//   2. chat.subscribe → forwardEvents — writes each event as a JSON-RPC
+//      notification (method = "chat.event", no ID). Newer clients that
+//      attach to existing runs (post-disconnect, multi-tab) consume this
+//      shape.
+//
+// Same underlying runs.Event; two different envelopes. The asymmetry
+// exists for backward-compatibility with the chat.send-as-stream pattern
+// the felix HTML client was designed around before durable-runs landed.
+
 // wsSubscriber adapts chatexec.Subscriber → WebSocket JSON-RPC
 // notifications on a single conn. OnEvent runs eventToResult on each
 // event so live and (future) replay paths produce identical wire shapes.
@@ -760,6 +783,108 @@ func (h *WebSocketHandler) handleChatReplay(conn *websocket.Conn, req JSONRPCReq
 			"past":  pastJSON,
 		},
 		ID: req.ID,
+	})
+}
+
+// handleChatRuns returns the past run summaries for a session, sorted
+// newest-first. Reads from the on-disk index.json via Registry.Snapshot.
+// No live subscription is attached — frontends typically follow this
+// with chat.replay to view a specific run.
+func (h *WebSocketHandler) handleChatRuns(conn *websocket.Conn, req JSONRPCRequest) {
+	var params struct {
+		AgentID    string `json:"agentId"`
+		SessionKey string `json:"sessionKey"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "invalid params: "+err.Error())
+		return
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+	if params.SessionKey == "" {
+		h.mu.RLock()
+		if m, ok := h.activeSessionKeys[conn]; ok {
+			params.SessionKey = m[params.AgentID]
+		}
+		h.mu.RUnlock()
+		if params.SessionKey == "" {
+			params.SessionKey = "ws_default"
+		}
+	}
+
+	h.mu.RLock()
+	reg := h.runs
+	metrics := h.metrics
+	h.mu.RUnlock()
+	if reg == nil {
+		writeRPCError(conn, metrics, req.ID, -32000, "runs registry not configured")
+		return
+	}
+
+	summaries, err := reg.Snapshot(runs.SessionScope{AgentID: params.AgentID, SessionKey: params.SessionKey})
+	if err != nil {
+		writeRPCError(conn, metrics, req.ID, -32000, "runs snapshot: "+err.Error())
+		return
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].StartedAt > summaries[j].StartedAt
+	})
+
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result:  map[string]any{"runs": summaries},
+		ID:      req.ID,
+	})
+}
+
+// handleChatDeleteRun removes a completed run from disk. Refuses to
+// delete an in-flight run (the registry enforces this).
+func (h *WebSocketHandler) handleChatDeleteRun(conn *websocket.Conn, req JSONRPCRequest) {
+	var params struct {
+		AgentID    string `json:"agentId"`
+		SessionKey string `json:"sessionKey"`
+		RunID      string `json:"runId"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "invalid params: "+err.Error())
+		return
+	}
+	if params.RunID == "" {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "runId is required")
+		return
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+	if params.SessionKey == "" {
+		h.mu.RLock()
+		if m, ok := h.activeSessionKeys[conn]; ok {
+			params.SessionKey = m[params.AgentID]
+		}
+		h.mu.RUnlock()
+		if params.SessionKey == "" {
+			params.SessionKey = "ws_default"
+		}
+	}
+
+	h.mu.RLock()
+	reg := h.runs
+	metrics := h.metrics
+	h.mu.RUnlock()
+	if reg == nil {
+		writeRPCError(conn, metrics, req.ID, -32000, "runs registry not configured")
+		return
+	}
+
+	if err := reg.DeleteRun(runs.SessionScope{AgentID: params.AgentID, SessionKey: params.SessionKey}, params.RunID); err != nil {
+		writeRPCError(conn, metrics, req.ID, -32000, err.Error())
+		return
+	}
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result:  map[string]any{"deleted": true},
+		ID:      req.ID,
 	})
 }
 

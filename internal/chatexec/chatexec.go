@@ -3,9 +3,10 @@
 // out to the runs.Registry (for durable replay) and to a live Subscriber
 // (for WebSocket clients).
 //
-// The package is consumed both by the WebSocket chat handler and by the
-// inbox worker that delivers agent-to-agent messages, so it must not
-// depend on any transport.
+// The package is consumed by the WebSocket chat handler. It is written
+// to be transport-agnostic; additional consumers (e.g. a future inbox
+// or cron-driven turn dispatcher) can plug in by implementing the
+// Subscriber interface.
 package chatexec
 
 import (
@@ -31,16 +32,20 @@ import (
 	"github.com/sausheong/felix/internal/tools"
 )
 
-// MetricsLike is the minimal metrics surface chatexec uses. Backed by
-// gateway.Metrics in production; tests pass nil.
+// MetricsLike is the minimal metrics surface chatexec uses for both
+// per-turn counters (IncChatTurns) and per-tool-call counters
+// (IncToolCalls, called from ChatToolOverlay.Execute). Backed by
+// gateway.Metrics in production; tests pass nil and chatexec/overlay
+// skip the counter bumps.
 type MetricsLike interface {
 	IncChatTurns()
+	IncToolCalls(toolName string)
 }
 
 // CortexProvider resolves a per-agent *cortex.Cortex client keyed on
 // the agent's model. Mirrors the production *cortex/Provider; the
-// interface lets tests and the inbox worker swap in a fake without
-// dragging the cortex package along.
+// interface lets tests swap in a fake without dragging the cortex
+// package along.
 type CortexProvider interface {
 	For(agentModel string) (*cortex.Cortex, error)
 }
@@ -67,8 +72,8 @@ type TurnDeps struct {
 
 	// OnTraceMark, if non-nil, is called for every trace phase mark
 	// emitted during the turn. The WS handler uses this to forward
-	// phase markers to the conn as JSON-RPC notifications; the inbox
-	// worker passes nil (traces are still logged via slog).
+	// phase markers to the conn as JSON-RPC notifications; non-live
+	// callers pass nil (traces are still logged via slog).
 	OnTraceMark func(phase string, durMs, atMs int64, attrs []any)
 }
 
@@ -91,9 +96,10 @@ var ErrProviderNotConfigured = errors.New("LLM provider not configured")
 // registry is mandatory for chatexec's per-turn lifecycle (Append/Finish).
 var ErrRunsRegistryMissing = errors.New("runs registry not configured")
 
-// RunTurn drives a single chat turn end-to-end. It is the shared
-// primitive used by both the WebSocket chat handler and the inbox
-// wake-loop worker; both call sites care about the same lifecycle
+// RunTurn drives a single chat turn end-to-end. The WebSocket chat
+// handler is the only current caller; the function is written as a
+// shared primitive so future consumers (cron-driven or
+// Subscriber-implementing dispatchers) get the same lifecycle
 // guarantees:
 //
 //   - The run lands in deps.Runs.SupersedeAndCreate before any agent
@@ -177,7 +183,7 @@ func RunTurn(ctx context.Context, deps TurnDeps, scope runs.SessionScope, text s
 	// overlay is per-call because both tools have call-site-specific
 	// captures — registering them on the shared registry would race-clobber
 	// other chats or cross-wire state.
-	overlay := &ChatToolOverlay{Base: deps.Tools}
+	overlay := &ChatToolOverlay{Base: deps.Tools, Metrics: deps.Metrics}
 	if deps.SubagentBuild != nil && deps.Config != nil {
 		if eligible := deps.Config.EligibleSubagents(); len(eligible) > 0 {
 			factory := agent.MakeSubagentFactory(deps.Config, runtimeDeps, deps.SubagentBuild, rt)
@@ -195,7 +201,7 @@ func RunTurn(ctx context.Context, deps TurnDeps, scope runs.SessionScope, text s
 	//
 	// Derive runCtx from deps.ServerCtx (process-wide ctx). Tie the
 	// caller's ctx to the same cancel via AfterFunc so an upstream
-	// cancellation (the WS conn dying, an inbox worker stop) actually
+	// cancellation (the WS conn dying, a caller-level stop) actually
 	// interrupts the harness loop. AfterFunc returns a stop closure we
 	// release on exit so we don't leak the goroutine.
 	parentCtx := deps.ServerCtx

@@ -2,7 +2,10 @@ package runs
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -451,4 +454,48 @@ func (r *Registry) Remove(runID string) {
 	if r.bySession[run.Scope] == run {
 		delete(r.bySession, run.Scope)
 	}
+}
+
+// DeleteRun removes a completed run from disk: deletes the per-run
+// <runID>.jsonl log file (best-effort; failures are logged) and rewrites
+// index.json without the row (atomic via WriteFileAtomic). Returns an
+// error if the run is currently in-flight — callers must wait for or
+// cancel an active run before deleting.
+//
+// File-delete failures are non-fatal: a missing log after this returns
+// nil leaves the index entry gone, so ReadLog on the path returns
+// (nil, nil) on the next access. This is the safer order than
+// "rewrite index first, then delete file" — a crash between the two
+// would leave the index referencing a present log.
+func (reg *Registry) DeleteRun(scope SessionScope, runID string) error {
+	reg.mu.Lock()
+	if run, ok := reg.runs[runID]; ok && !run.Completed.Load() {
+		reg.mu.Unlock()
+		return fmt.Errorf("cannot delete in-flight run %s", runID)
+	}
+	reg.mu.Unlock()
+
+	dir := reg.runsDir(scope)
+	logPath := filepath.Join(dir, runID+".jsonl")
+	if err := os.Remove(logPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		slog.Warn("DeleteRun: log file remove failed", "logPath", logPath, "error", err)
+	}
+
+	indexPath := filepath.Join(dir, "index.json")
+	idx, err := loadIndex(indexPath)
+	if err != nil {
+		return nil
+	}
+	out := idx.Runs[:0]
+	for _, r := range idx.Runs {
+		if r.ID == runID {
+			continue
+		}
+		out = append(out, r)
+	}
+	if len(out) == len(idx.Runs) {
+		return nil
+	}
+	idx.Runs = out
+	return saveIndex(indexPath, idx)
 }
