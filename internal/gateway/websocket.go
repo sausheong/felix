@@ -644,6 +644,24 @@ func forwardEvents(conn *websocket.Conn, ch <-chan runs.Event) {
 	}
 }
 
+// Wire-format note: this codebase has two paths for sending event
+// payloads to a WebSocket conn, intentionally asymmetric.
+//
+//   1. chat.send → wsSubscriber.OnEvent — writes each event as a
+//      JSONRPCResponse with Result set, ID = the original chat.send
+//      request ID. The existing felix HTML chat client treats multiple
+//      Results sharing one rpcID as a stream; do NOT change this without
+//      updating the client.
+//
+//   2. chat.subscribe → forwardEvents — writes each event as a JSON-RPC
+//      notification (method = "chat.event", no ID). Newer clients that
+//      attach to existing runs (post-disconnect, multi-tab) consume this
+//      shape.
+//
+// Same underlying runs.Event; two different envelopes. The asymmetry
+// exists for backward-compatibility with the chat.send-as-stream pattern
+// the felix HTML client was designed around before durable-runs landed.
+
 // wsSubscriber adapts chatexec.Subscriber → WebSocket JSON-RPC
 // notifications on a single conn. OnEvent runs eventToResult on each
 // event so live and (future) replay paths produce identical wire shapes.
