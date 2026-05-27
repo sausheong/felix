@@ -117,7 +117,7 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 		},
 		CalibratorStore: deps.CalibratorStore,
 		ConfigSummary:   buildConfigSummary(deps.Config),
-		MemoryFiles:     loadAgentMemoryFiles(a.Workspace),
+		MemoryFiles:     loadAgentMemoryFiles(a.Workspace) + cortexStaticHint(deps.Config),
 	}
 	if deps.Skills != nil {
 		hdeps.Skills = skillProviderAdapter{l: deps.Skills}
@@ -263,15 +263,14 @@ func (k *cortexKGAdapter) Recall(ctx context.Context, query string) string {
 	cx := k.cx
 	k.mu.Unlock()
 	results, err := cx.Recall(ctx, query, cortex.WithLimit(5))
-	out := cortexadapter.CortexHint
 	if err != nil {
 		slog.Debug("cortex recall error", "error", err)
-		return out
+		return ""
 	}
-	if extra := cortexadapter.FormatResults(results); extra != "" {
-		out += extra
-	}
-	return out
+	// CortexHint is now baked into the static system prompt via
+	// cortexStaticHint(); per-turn we only ship the formatted results
+	// (which include their own "## Cortex Knowledge Graph" header).
+	return cortexadapter.FormatResults(results)
 }
 
 func (k *cortexKGAdapter) Ingest(ctx context.Context, thread []hrt.Message) {
@@ -321,4 +320,18 @@ func buildConfigSummary(cfg *config.Config) string {
 // RuntimeDeps.MemoryFiles.
 func loadAgentMemoryFiles(workspace string) string {
 	return loadAgentMemoryFilesImpl(workspace)
+}
+
+// cortexStaticHint returns the CortexHint text (prepended by a blank
+// line) when Cortex is globally enabled, or "" otherwise. Concatenated
+// into RuntimeDeps.MemoryFiles so the hint lives in the cached static
+// system prompt instead of being re-shipped on every Recall(). Returns
+// "" when cfg is nil or Cortex.Enabled is false — in those cases the
+// per-turn Recall() path also stays empty, so the agent never sees a
+// cortex reference it can't act on.
+func cortexStaticHint(cfg *config.Config) string {
+	if cfg == nil || !cfg.Cortex.Enabled {
+		return ""
+	}
+	return cortexadapter.CortexHint
 }
