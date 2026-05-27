@@ -73,6 +73,11 @@ func (s *Server) routes() {
 	s.router.Get("/health", s.handleHealth)
 	s.router.Get("/ws", s.wsHandler.Handle)
 
+	// Serve the embedded Felix logo at the conventional favicon paths so
+	// browser tabs show the Felix mark instead of the generic globe icon.
+	s.router.Mount("/favicon.ico", FaviconHandler())
+	s.router.Mount("/favicon.png", FaviconHandler())
+
 	if s.opts.MetricsHandler != nil {
 		s.router.Get("/metrics", s.opts.MetricsHandler)
 	}

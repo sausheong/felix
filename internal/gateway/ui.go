@@ -37,6 +37,7 @@ const uiHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>Felix Control Panel</title>
+<link rel="icon" type="image/png" href="/favicon.png">
 <style>
 	* { margin: 0; padding: 0; box-sizing: border-box; }
 	body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #1a1a2e; color: #e0e0e0; padding: 2rem; }

@@ -39,6 +39,7 @@ Felix.app
 !felix.jpg
 !cmd/felix-app/icon.png
 !installer/windows/Felix.ico
+!internal/gateway/assets/felix-logo.png
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hide ALL .md and .txt; track only the user-facing docs (README, howtouse)

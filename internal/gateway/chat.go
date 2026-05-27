@@ -23,6 +23,7 @@ const chatHTML = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Felix</title>
+<link rel="icon" type="image/png" href="/favicon.png">
 <style>
 /* Default: light "warm cream + forest green" matches the Felix
    auth pages so signing in flows visually into the app. Tinted
