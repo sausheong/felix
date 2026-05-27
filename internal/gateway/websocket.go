@@ -240,7 +240,16 @@ func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	slog.Info("websocket client connected", "remote", r.RemoteAddr)
 	defer func() {
 		// chatexec/runs.Registry owns the run lifecycle now — runs survive
-		// a conn disconnect. We just drop this conn's session-key view.
+		// a conn disconnect. We drop this conn's session-key view and
+		// unsubscribe it from any in-flight runs so the per-conn
+		// forwardEvents goroutines exit instead of looping on writeJSON
+		// against a dead conn.
+		h.mu.RLock()
+		reg := h.runs
+		h.mu.RUnlock()
+		if reg != nil {
+			reg.UnsubscribeAll(conn)
+		}
 		h.mu.Lock()
 		delete(h.activeSessionKeys, conn)
 		h.mu.Unlock()
