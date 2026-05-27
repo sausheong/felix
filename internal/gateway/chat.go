@@ -901,22 +901,6 @@ body.replay-mode #input-shell { display: none !important; }
 	font-style: italic;
 	align-self: center;
 }
-.chat-empty {
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	gap: 0.4rem;
-	padding: 4rem 2rem;
-	color: var(--text-muted);
-	text-align: center;
-}
-.chat-empty-title {
-	font-size: 1.1rem;
-	font-weight: 600;
-	color: var(--text);
-}
-#messages .msg ~ .chat-empty { display: none; }
 .msg.user {
 	background: var(--bg-msg-user);
 	align-self: flex-end;
@@ -1743,12 +1727,7 @@ html.dark #stop-btn {
 
 		<div id="main-pane">
 			<div id="chat-view">
-				<div id="messages">
-					<div id="chat-empty-state" class="chat-empty">
-						<div class="chat-empty-title">Felix is ready</div>
-						<div class="chat-empty-body">Ask anything, or drop files anywhere to attach.</div>
-					</div>
-				</div>
+				<div id="messages"></div>
 				<div id="trace-panel" style="display:none;">
 					<div id="trace-header"><span id="trace-title">Live trace</span><button id="trace-clear-btn" title="Clear trace">clear</button></div>
 					<div id="trace-list"></div>
@@ -3192,29 +3171,8 @@ html.dark #stop-btn {
 		renderTokenChip();
 	}
 	function refreshEmptyState() {
-		if (!messagesEl) return;
-		var hasMsg = messagesEl.querySelector('.msg') != null;
-		var emp = document.getElementById('chat-empty-state');
-		if (hasMsg) {
-			if (emp) emp.style.display = 'none';
-			return;
-		}
-		if (!emp) {
-			emp = document.createElement('div');
-			emp.id = 'chat-empty-state';
-			emp.className = 'chat-empty';
-			var t = document.createElement('div');
-			t.className = 'chat-empty-title';
-			t.textContent = 'Felix is ready';
-			var b = document.createElement('div');
-			b.className = 'chat-empty-body';
-			b.textContent = 'Ask anything, or drop files anywhere to attach.';
-			emp.appendChild(t);
-			emp.appendChild(b);
-			messagesEl.appendChild(emp);
-		} else {
-			emp.style.display = '';
-		}
+		// Empty state removed in v0.8.2 — keep the function as a no-op
+		// so the existing call sites don't need to change.
 	}
 	// Initial paint so the chip isn't blank before agent.status arrives.
 	renderTokenChip();
