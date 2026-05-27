@@ -10,6 +10,8 @@
 package tools
 
 import (
+	"github.com/sausheong/cortex"
+	"github.com/sausheong/felix/internal/tools/cortextools"
 	harnesstool "github.com/sausheong/harness/tool"
 	harnessmem "github.com/sausheong/harness/tool/memory"
 	bashtool "github.com/sausheong/harness/tools/bash"
@@ -123,4 +125,14 @@ func RegisterCron(reg *Registry, agentID string, scheduler JobScheduler) {
 // regardless.
 func RegisterMemoryTool(reg *Registry, store harnessmem.MemoryStore) {
 	reg.Register(&harnessmem.MemoryTool{Store: store})
+}
+
+// RegisterCortexTools registers the four cortex-backed tools (recall,
+// remember, find_entities, get_relationships) wired against cx. Pass
+// nil cx to skip — useful when cortex is globally disabled. Mirrors
+// RegisterMemoryTool's shape.
+func RegisterCortexTools(reg *Registry, cx *cortex.Cortex) {
+	for _, t := range cortextools.BuildTools(cx) {
+		reg.Register(t)
+	}
 }

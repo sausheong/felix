@@ -30,6 +30,7 @@ import (
 	"github.com/sausheong/felix/internal/skill"
 	"github.com/sausheong/felix/internal/tokens"
 	"github.com/sausheong/felix/internal/tools"
+	"github.com/sausheong/felix/internal/tools/cortextools"
 )
 
 // MetricsLike is the minimal metrics surface chatexec uses for both
@@ -193,7 +194,14 @@ func RunTurn(ctx context.Context, deps TurnDeps, scope runs.SessionScope, text s
 	if deps.JobScheduler != nil {
 		overlay.Cron = &tools.CronTool{AgentID: agentCfg.ID, Scheduler: deps.JobScheduler}
 	}
-	if overlay.Task != nil || overlay.Cron != nil {
+	// Cortex tools are per-chat because each agent's cortex client is
+	// wired to the same provider/model the agent uses for chat — so the
+	// LLM extractor stays consistent with the conversation. cx is the
+	// resolved client from step 4 above; nil-safe via BuildTools.
+	if cortexTools := cortextools.BuildTools(cx); len(cortexTools) > 0 {
+		overlay.Cortex = cortexTools
+	}
+	if overlay.Task != nil || overlay.Cron != nil || len(overlay.Cortex) > 0 {
 		rt.Tools = overlay
 	}
 

@@ -33,11 +33,13 @@ type ChatToolOverlay struct {
 	Base    tools.Executor  // required
 	Task    *tools.TaskTool // optional
 	Cron    *tools.CronTool // optional
+	Cortex  []tools.Tool    // optional; per-chat cortex tools (recall/remember/find_entities/get_relationships)
 	Metrics MetricsLike     // optional; bumps IncToolCalls on each Execute
 }
 
-// Execute dispatches a tool call. Overlay tools (task, cron) win over
-// any same-named tool in Base. The Base executor handles everything else.
+// Execute dispatches a tool call. Overlay tools (task, cron, cortex)
+// win over any same-named tool in Base. The Base executor handles
+// everything else.
 func (e *ChatToolOverlay) Execute(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
 	if e.Metrics != nil {
 		e.Metrics.IncToolCalls(name)
@@ -47,6 +49,11 @@ func (e *ChatToolOverlay) Execute(ctx context.Context, name string, input json.R
 	}
 	if e.Cron != nil && name == e.Cron.Name() {
 		return e.Cron.Execute(ctx, input)
+	}
+	for _, ct := range e.Cortex {
+		if ct.Name() == name {
+			return ct.Execute(ctx, input)
+		}
 	}
 	return e.Base.Execute(ctx, name, input)
 }
@@ -81,6 +88,23 @@ func (e *ChatToolOverlay) ToolDefs() []llm.ToolDef {
 			Parameters:  e.Task.Parameters(),
 		})
 	}
+	for _, ct := range e.Cortex {
+		// Drop any same-named def from Base so the per-chat cortex tool
+		// wins. In normal wiring Base never registers cortex tools, but
+		// guarding here keeps prompt-cache stability if it ever does.
+		filtered := defs[:0]
+		for _, d := range defs {
+			if d.Name != ct.Name() {
+				filtered = append(filtered, d)
+			}
+		}
+		defs = filtered
+		defs = append(defs, llm.ToolDef{
+			Name:        ct.Name(),
+			Description: ct.Description(),
+			Parameters:  ct.Parameters(),
+		})
+	}
 	// Re-sort to keep prompt-cache-stable ordering — see Registry.ToolDefs.
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	return defs
@@ -103,18 +127,33 @@ func (e *ChatToolOverlay) Names() []string {
 	if e.Task != nil {
 		names = append(names, e.Task.Name())
 	}
+	for _, ct := range e.Cortex {
+		filtered := names[:0]
+		for _, n := range names {
+			if n != ct.Name() {
+				filtered = append(filtered, n)
+			}
+		}
+		names = filtered
+		names = append(names, ct.Name())
+	}
 	sort.Strings(names)
 	return names
 }
 
-// Get returns a tool by name. Overlay tools (task, cron) win over any
-// same-named tool in Base.
+// Get returns a tool by name. Overlay tools (task, cron, cortex) win
+// over any same-named tool in Base.
 func (e *ChatToolOverlay) Get(name string) (tools.Tool, bool) {
 	if e.Task != nil && name == e.Task.Name() {
 		return e.Task, true
 	}
 	if e.Cron != nil && name == e.Cron.Name() {
 		return e.Cron, true
+	}
+	for _, ct := range e.Cortex {
+		if ct.Name() == name {
+			return ct, true
+		}
 	}
 	return e.Base.Get(name)
 }

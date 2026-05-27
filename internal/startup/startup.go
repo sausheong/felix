@@ -734,6 +734,12 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		if memMgr != nil {
 			tools.RegisterMemoryTool(reg, memory.NewHarnessAdapter(memMgr))
 		}
+		// Cortex tools: per-subagent client resolved via resolveCortex.
+		// Passes through to a no-op when cortex is disabled (resolveCortex
+		// returns nil and RegisterCortexTools tolerates a nil cx).
+		if cfg.Cortex.Enabled {
+			tools.RegisterCortexTools(reg, resolveCortex(a.Model))
+		}
 		// Subagents that schedule cron jobs schedule them as themselves.
 		// runtimeJobScheduler is set below after the adapter exists; the
 		// subagent build is invoked at task-dispatch time, by which point
@@ -790,6 +796,11 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
 			if memMgr != nil {
 				tools.RegisterMemoryTool(cronToolReg, memory.NewHarnessAdapter(memMgr))
+			}
+			// Cortex tools: same pattern as the subagent registry — per-agent
+			// cortex client via resolveCortex, no-op when cortex is disabled.
+			if cfg.Cortex.Enabled {
+				tools.RegisterCortexTools(cronToolReg, resolveCortex(agentCfg.Model))
 			}
 			// Per-call cron tool with this agent's ID baked in so jobs that
 			// schedule MORE jobs from inside the loop run them under the
