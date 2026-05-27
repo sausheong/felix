@@ -21,6 +21,7 @@ import (
 	cortexadapter "github.com/sausheong/felix/internal/cortex"
 	"github.com/sausheong/felix/internal/cron"
 	"github.com/sausheong/felix/internal/gateway"
+	"github.com/sausheong/felix/internal/gateway/runs"
 	"github.com/sausheong/felix/internal/llm"
 	"github.com/sausheong/felix/internal/local"
 	"github.com/sausheong/felix/internal/mcp"
@@ -447,7 +448,8 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 
 	// Init components
 	providers := InitProviders(cfg)
-	sessionStore := session.NewStore(filepath.Join(dataDir, "sessions"))
+	sessionsDir := filepath.Join(dataDir, "sessions")
+	sessionStore := session.NewStore(sessionsDir)
 
 	// Reap orphan spill directories from previous crashed runs / deleted
 	// sessions. Best-effort: errors are logged but do not block startup.
@@ -612,13 +614,37 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// session-clear cleanup in handleSessionClear.
 	calibratorStore := tokens.NewCalibratorStore(filepath.Join(dataDir, "calibrators"))
 
+	// serverCtx is the process-wide ctx whose cancellation triggers
+	// shutdown of every long-lived subsystem rooted in StartGateway.
+	// cleanup() cancels it BEFORE srv.Shutdown so in-flight chat runs
+	// observe cancellation rather than draining their full LLM stream.
+	serverCtx, serverCancel := context.WithCancel(context.Background())
+
 	// Init WebSocket handler
-	wsHandler := gateway.NewWebSocketHandler(providers, toolReg, sessionStore, cfg)
+	wsHandler := gateway.NewWebSocketHandler(providers, toolReg, sessionStore, cfg, sessionsDir)
 	wsHandler.SetSkills(skillLoader)
 	wsHandler.SetMemory(memMgr)
 	wsHandler.SetCortexProvider(cxProvider)
 	wsHandler.SetPermission(permission)
 	wsHandler.SetCalibratorStore(calibratorStore)
+	wsHandler.SetServerCtx(serverCtx)
+
+	// Build runs registry rooted at the sessions directory and recover any
+	// runs that were left in 'running' state by a previous process. Recovery
+	// writes synthetic terminal events for orphaned rows so replay/subscribe
+	// from the next process sees clean terminal states. Missing dir → no-op.
+	runsReg := runs.NewRegistry(sessionsDir)
+	if n, err := runs.RecoverInterruptedRuns(sessionsDir); err != nil {
+		slog.Warn("runs recovery failed", "error", err)
+	} else if n > 0 {
+		slog.Info("runs recovery complete", "recovered", n)
+	}
+	wsHandler.SetRunsRegistry(runsReg)
+	// Background runs (cron, etc.) have no wsSubscriber of their own.
+	// Without this hook, events stream to disk only and open WS conns
+	// viewing the affected session never see them. BroadcastNewRun filters
+	// by activeSessionKeys so only conns watching the scope get notified.
+	runsReg.OnNewRun = wsHandler.BroadcastNewRun
 
 	// Config hot-reload — rebuild LLM provider clients from the new config
 	// and push them into the WebSocket handler. Without the provider rebuild,
@@ -837,6 +863,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// to the configured OTLP/metrics endpoint; when disabled the meter
 	// is a no-op and only the local /metrics endpoint sees the data.
 	metrics := gateway.NewMetricsWithMeter(otelProv.Meter("felix.gateway"))
+	wsHandler.SetMetrics(metrics)
 
 	// Start gateway HTTP server
 	port := cfg.Gateway.Port
@@ -863,6 +890,12 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	})
 
 	cleanup := func() {
+		// Cancel serverCtx FIRST so in-flight chat runs (chatexec.RunTurn)
+		// observe cancellation and unwind. If we didn't do this before
+		// srv.Shutdown below, srv.Shutdown would block waiting for WS
+		// handlers that are blocked waiting for chatexec which is blocked
+		// on the LLM stream which has no other cancel signal.
+		serverCancel()
 		// Ollama supervisor goes FIRST. Bundled ollama lives in its own
 		// process group (Setpgid in supervisor_unix.go) so it does NOT
 		// receive a SIGTERM that the menubar app sends to the gateway's

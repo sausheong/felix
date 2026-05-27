@@ -4035,7 +4035,7 @@ html.dark #stop-btn {
 		ws.send(JSON.stringify({
 			jsonrpc: '2.0',
 			method: 'chat.abort',
-			params: {},
+			params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
 			id: 'abort'
 		}));
 	});
