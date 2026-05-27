@@ -495,6 +495,30 @@ func (h *WebSocketHandler) handleChatAbort(conn *websocket.Conn, req JSONRPCRequ
 	}
 
 	run := reg.GetBySession(runs.SessionScope{AgentID: params.AgentID, SessionKey: sessionKey})
+	resolvedAgent := params.AgentID
+	resolvedSession := sessionKey
+	if run == nil {
+		// Fallback: client didn't supply scope (or supplied a mismatched one),
+		// but this conn has views — try each.
+		h.mu.RLock()
+		viewMap := make(map[string]string, len(h.activeSessionKeys[conn]))
+		for a, s := range h.activeSessionKeys[conn] {
+			viewMap[a] = s
+		}
+		h.mu.RUnlock()
+		for a, s := range viewMap {
+			if a == params.AgentID && s == sessionKey {
+				continue
+			}
+			if r := reg.GetBySession(runs.SessionScope{AgentID: a, SessionKey: s}); r != nil {
+				run = r
+				resolvedAgent = a
+				resolvedSession = s
+				slog.Debug("chat.abort: resolved via fallback per-conn lookup", "agentId", a, "sessionKey", s)
+				break
+			}
+		}
+	}
 	if run == nil {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -508,7 +532,7 @@ func (h *WebSocketHandler) handleChatAbort(conn *websocket.Conn, req JSONRPCRequ
 		run.CancelFn()
 	}
 	if err := run.Finish(runs.StatusCancelled, runs.ReasonUserAbort, ""); err != nil {
-		slog.Warn("handleChatAbort: run.Finish", "runId", run.ID, "agent", params.AgentID, "session", sessionKey, "error", err)
+		slog.Warn("handleChatAbort: run.Finish", "runId", run.ID, "agent", resolvedAgent, "session", resolvedSession, "error", err)
 	}
 
 	writeJSON(conn, JSONRPCResponse{
