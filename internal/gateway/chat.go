@@ -2830,8 +2830,8 @@ html.dark #stop-btn {
 	}
 
 	// renderRunsSublistFor paints the cached entry for the given key into
-	// the corresponding .runs-sublist node. Defined here as a forward decl
-	// placeholder — the full implementation lands with Task 3.2.
+	// the corresponding .runs-sublist node. Wires per-row click + delete
+	// handlers after the innerHTML refresh.
 	function renderRunsSublistFor(key) {
 		var sublist = document.querySelector('.runs-sublist[data-key="' + cssEscape(key) + '"]');
 		if (!sublist) return;
@@ -2845,14 +2845,91 @@ html.dark #stop-btn {
 			sublist.innerHTML = '<div class="run-row" style="opacity:0.5">No past runs</div>';
 			return;
 		}
-		// Task 3.2 will replace this stub with the full row renderer
-		// (timestamp + status badge + count + delete affordance).
 		var html = '';
 		for (var i = 0; i < entry.runs.length; i++) {
-			html += '<div class="run-row">' + (entry.runs[i].id || '') + '</div>';
+			html += formatRunRow(key, entry.runs[i]);
 		}
 		sublist.innerHTML = html;
+		// Wire row click (loads replay) + delete click (chat.deleteRun).
+		var rows = sublist.querySelectorAll('.run-row[data-run-id]');
+		for (var r = 0; r < rows.length; r++) {
+			(function(rowEl) {
+				var runId = rowEl.dataset.runId;
+				rowEl.addEventListener('click', function(ev) {
+					if (ev.target.closest && ev.target.closest('.run-delete')) return;
+					var parts = key.split('::');
+					loadRunReadOnly(parts[0], parts[1], runId);
+				});
+				var delBtn = rowEl.querySelector('.run-delete');
+				if (delBtn) {
+					delBtn.addEventListener('click', function(ev) {
+						ev.stopPropagation();
+						if (!confirm('Delete this run? The conversation history stays; only the per-turn event log is removed.')) return;
+						var parts = key.split('::');
+						deleteRun(parts[0], parts[1], runId);
+					});
+				}
+			})(rows[r]);
+		}
 	}
+
+	// formatRunRow builds the HTML for one row in the runs sublist. The
+	// delete affordance is omitted for the currently-in-flight run so the
+	// user can't try to remove a log file the writer still owns.
+	function formatRunRow(key, r) {
+		var t = (r.started_at || '').slice(11, 19); // HH:MM:SS from RFC3339
+		var status = (r.status || 'unknown');
+		var count = (r.last_seq || 0) + ' events';
+		var isLive = (liveRunIdBySession.get(key) === r.id);
+		var delHTML = isLive ? '' :
+			'<button class="run-delete" title="Delete run">' +
+				'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+					'<polyline points="3 6 5 6 21 6"/>' +
+					'<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>' +
+				'</svg></button>';
+		// ULIDs are alphanumeric so escaping is a no-op in practice, but
+		// defense in depth: never trust server strings inside attribute values.
+		var safeId = String(r.id || '').replace(/"/g, '&quot;');
+		var safeStatus = escHtml(status);
+		return '<div class="run-row" data-run-id="' + safeId + '">' +
+			'<span class="run-time">' + escHtml(t) + '</span>' +
+			'<span class="run-status ' + safeStatus + '">' + safeStatus + '</span>' +
+			'<span class="run-count">' + escHtml(count) + '</span>' +
+			delHTML +
+			'</div>';
+	}
+
+	// deleteRun fires chat.deleteRun. The response (success or error) is
+	// handled by the del-... branch in the onmessage dispatcher.
+	function deleteRun(agentId, sessionKey, runId) {
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		ws.send(JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'chat.deleteRun',
+			params: { agentId: agentId, sessionKey: sessionKey, runId: runId },
+			id: 'del-' + runId
+		}));
+	}
+
+	// loadRunReadOnly fires chat.replay. The replay-... branch in the
+	// onmessage dispatcher invokes renderReplayMode() when results land.
+	function loadRunReadOnly(agentId, sessionKey, runId) {
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		replayState = { agentId: agentId, sessionKey: sessionKey, runId: runId, events: [] };
+		ws.send(JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'chat.replay',
+			params: { agentId: agentId, sessionKey: sessionKey, runId: runId, fromSeq: 0 },
+			id: 'replay-' + runId
+		}));
+	}
+
+	// Forward decls used by the runs sublist row handlers above; the real
+	// implementations land with Task 3.3. Declared as hoisted function
+	// expressions so the dispatcher can resolve them at runtime regardless
+	// of source order.
+	var renderReplayMode = function() { /* Task 3.3 */ };
+	var exitReplayMode = function() { /* Task 3.3 */ };
 
 	// startSessionRename swaps the .ses-name span for an inline input.
 	// Enter and blur commit; Esc cancels. The label is updated locally only.
@@ -3532,9 +3609,48 @@ html.dark #stop-btn {
 					return;
 				}
 
+				// Handle chat.deleteRun response (Wave 2). On success, optimistically
+				// remove the row from every cached sublist that contains it; on
+				// failure the dispatcher's top-level error branch already alerted.
+				if (typeof resp.id === 'string' && resp.id.indexOf('del-') === 0) {
+					var delRunId = resp.id.slice('del-'.length);
+					var iter = runsBySession.entries();
+					var step = iter.next();
+					while (!step.done) {
+						var pair = step.value;
+						var pkey = pair[0], pentry = pair[1];
+						var idx = -1;
+						for (var p = 0; p < pentry.runs.length; p++) {
+							if (pentry.runs[p].id === delRunId) { idx = p; break; }
+						}
+						if (idx >= 0) {
+							pentry.runs.splice(idx, 1);
+							renderRunsSublistFor(pkey);
+						}
+						step = iter.next();
+					}
+					return;
+				}
+
+				// Handle chat.replay response (Wave 2). Result shape: { runId, past: [event] }.
+				if (typeof resp.id === 'string' && resp.id.indexOf('replay-') === 0) {
+					if (!replayState) return;
+					var past = (resp.result && Array.isArray(resp.result.past)) ? resp.result.past : [];
+					replayState.events = past;
+					renderReplayMode();
+					return;
+				}
+
 				var r = resp.result;
 
 				switch (r.type) {
+				case 'run_attached':
+					// Track the in-flight runId for the current scope so the
+					// runs sublist hides the delete button next to this row.
+					if (r.runID && agentSelect && agentSelect.value && sessionSelect && sessionSelect.value) {
+						liveRunIdBySession.set(runsKey(agentSelect.value, sessionSelect.value), r.runID);
+					}
+					break;
 				case 'text_delta':
 					if (!currentAssistant) {
 						currentAssistant = addAssistantMsg('');
@@ -3617,6 +3733,11 @@ html.dark #stop-btn {
 					}
 					sending = false;
 					updateSendBtn();
+					// Clear the live runId for this scope so the delete button
+					// reappears in the runs sublist on next render.
+					if (agentSelect && agentSelect.value && sessionSelect && sessionSelect.value) {
+						liveRunIdBySession.delete(runsKey(agentSelect.value, sessionSelect.value));
+					}
 					if (r.status === 'completed') {
 						// Happy path — no marker needed (the 'done' event already
 						// finalized the assistant message).
