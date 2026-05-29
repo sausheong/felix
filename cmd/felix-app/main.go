@@ -158,6 +158,19 @@ func onReady() {
 	quitCh := make(chan os.Signal, 1)
 	signal.Notify(quitCh, syscall.SIGTERM, syscall.SIGINT)
 
+	// Respawn-on-exit budget. Most cases: the gateway exits cleanly
+	// because the user clicked Restart in the chat UI (/admin/restart),
+	// so we relaunch with brief backoff. Pathological cases: a binary
+	// that crashes immediately would hot-loop, so we cap at 3 exits
+	// within respawnWindow and fall back to the error dialog. The
+	// window resets every time the gateway stays up longer than it.
+	const (
+		maxRespawns    = 3
+		respawnWindow  = 60 * time.Second
+		respawnBackoff = 1 * time.Second
+	)
+	var respawnTimes []time.Time
+
 	go func() {
 		for {
 			select {
@@ -173,10 +186,39 @@ func onReady() {
 				shutdownAndExit(gw, fmt.Sprintf("signal %s", sig))
 				return
 			case err := <-gw.exitCh:
-				slog.Error("gateway subprocess exited unexpectedly", "error", err)
-				showError("Felix's gateway process stopped unexpectedly. Use Quit and relaunch.")
-				// Swap to a sentinel so the closed exitCh doesn't hot-loop in the select.
-				gw = &gateway{port: port, owned: false, exitCh: noExitCh()}
+				// Trim respawn history to the recent window so a
+				// long-stable process isn't penalised by old exits.
+				now := time.Now()
+				kept := respawnTimes[:0]
+				for _, t := range respawnTimes {
+					if now.Sub(t) < respawnWindow {
+						kept = append(kept, t)
+					}
+				}
+				respawnTimes = kept
+
+				if len(respawnTimes) >= maxRespawns {
+					slog.Error("gateway exited too many times; not respawning",
+						"error", err,
+						"recent_exits", len(respawnTimes),
+						"window_seconds", int(respawnWindow.Seconds()))
+					showError("Felix's gateway process has exited several times in quick succession. Use Quit and relaunch.")
+					gw = &gateway{port: port, owned: false, exitCh: noExitCh()}
+					continue
+				}
+
+				slog.Warn("gateway exited; respawning", "error", err, "recent_exits", len(respawnTimes))
+				respawnTimes = append(respawnTimes, now)
+				time.Sleep(respawnBackoff)
+				newGw, startErr := startOrAttachGateway(ctx, logFile, 90*time.Second)
+				if startErr != nil {
+					slog.Error("respawn failed", "error", startErr)
+					showError(fmt.Sprintf("Felix could not restart the gateway:\n\n%v", startErr))
+					gw = &gateway{port: port, owned: false, exitCh: noExitCh()}
+					continue
+				}
+				gw = newGw
+				slog.Info("gateway respawned", "port", gw.port)
 			}
 		}
 	}()

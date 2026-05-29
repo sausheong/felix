@@ -78,6 +78,11 @@ func (s *Server) routes() {
 	s.router.Mount("/favicon.ico", FaviconHandler())
 	s.router.Mount("/favicon.png", FaviconHandler())
 
+	// Restart the gateway process. Under felix-app (the menubar wrapper)
+	// the supervisor respawns automatically. Under direct `felix start`
+	// the user must re-launch manually.
+	s.router.Post("/admin/restart", NewRestartHandler())
+
 	if s.opts.MetricsHandler != nil {
 		s.router.Get("/metrics", s.opts.MetricsHandler)
 	}

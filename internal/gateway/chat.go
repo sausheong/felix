@@ -2151,9 +2151,28 @@ html.dark #stop-btn {
 			{ section: 'Open',    icon: 'gear',   label: 'Settings: MCP',         run: function() { window.location.href = '/settings#mcp'; } },
 			{ section: 'Open',    icon: 'eye',    label: 'Logs',                  run: function() { window.location.href = '/logs'; } },
 			{ section: 'Open',    icon: 'eye',    label: 'Jobs',                  run: function() { window.location.href = '/jobs'; } },
-			{ section: 'Help',    icon: 'keyboard', label: 'Keyboard shortcuts',  hint: '?', run: showCheatSheet }
+			{ section: 'Help',    icon: 'keyboard', label: 'Keyboard shortcuts',  hint: '?', run: showCheatSheet },
+			{ section: 'Danger',  icon: 'power',  label: 'Restart gateway',       run: doRestart }
 		);
 		return cmds;
+	}
+
+	// doRestart triggers a clean exit on the gateway. Under felix-app
+	// (the menubar wrapper) the supervisor respawns the gateway with
+	// brief backoff; under direct "felix start" the user must re-launch
+	// manually. The 6-second reload gives the supervisor time to bring
+	// the new process up and serve the next request.
+	function doRestart() {
+		modalConfirm(
+			'Restart gateway?',
+			'The gateway process will exit and (under the menubar app) be respawned. About 5 to 10 seconds of downtime.',
+			{ confirmLabel: 'Restart', danger: true }
+		).then(function(ok) {
+			if (!ok) return;
+			fetch('/admin/restart', { method: 'POST' })
+				.then(function() { setTimeout(function() { location.reload(); }, 6000); })
+				.catch(function(e) { modalAlert('Restart failed', String(e)); });
+		});
 	}
 	// Lightweight fuzzy: characters of the query must appear in order in
 	// the label. Word-boundary matches score higher than mid-token ones
