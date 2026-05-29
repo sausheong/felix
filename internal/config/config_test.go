@@ -956,3 +956,27 @@ func TestConfig_IsServerParallelSafe_UpdatesAfterHotReload(t *testing.T) {
 	cfg.UpdateFrom(src)
 	require.True(t, cfg.IsServerParallelSafe("trusted"))
 }
+
+func TestValidate_ClearsMultipleDefaults(t *testing.T) {
+	cfg := &Config{
+		Agents: AgentsConfig{
+			List: []AgentConfig{
+				{ID: "a", Model: "p/m", Default: true},
+				{ID: "b", Model: "p/m", Default: true},
+				{ID: "c", Model: "p/m", Default: true},
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if !cfg.Agents.List[0].Default {
+		t.Errorf("agent[0] (first) should keep Default=true")
+	}
+	if cfg.Agents.List[1].Default {
+		t.Errorf("agent[1] should have been cleared")
+	}
+	if cfg.Agents.List[2].Default {
+		t.Errorf("agent[2] should have been cleared")
+	}
+}

@@ -656,6 +656,49 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 	padding: 1rem 1rem 0.25rem;
 	position: relative;
 }
+/* === Agent card collapse + Default badge (Task 1 of agents-collapse-default plan) === */
+.agent-card-header {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+	padding: 0.5rem 0.75rem;
+	cursor: pointer;
+	border-radius: 8px;
+	margin: -0.5rem -0.75rem 0.5rem;
+	user-select: none;
+}
+.agent-card-header:hover { background: var(--color-bg-soft); }
+.agent-card-chevron {
+	width: 14px;
+	height: 14px;
+	flex-shrink: 0;
+	color: var(--color-text-muted);
+	transition: transform 0.12s ease;
+}
+.dynamic-item.collapsed .agent-card-chevron { transform: rotate(-90deg); }
+.agent-card-id {
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 0.85rem;
+	color: var(--color-text-muted);
+}
+.agent-card-name { font-weight: 600; }
+.agent-card-model {
+	color: var(--color-text-muted);
+	font-size: 0.85rem;
+	margin-left: auto;
+}
+.agent-card-default-badge {
+	padding: 0.1rem 0.45rem;
+	border-radius: 999px;
+	background: color-mix(in oklch, var(--color-primary) 14%, transparent);
+	color: var(--color-primary);
+	font-size: 0.7rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	flex-shrink: 0;
+}
+.dynamic-item.collapsed .agent-body { display: none; }
 .field-error {
 	color: var(--color-error);
 	font-size: 0.75rem;
@@ -2027,20 +2070,87 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 		list.className = 'dynamic-list';
 		sec.appendChild(list);
 
+		// Per-card expanded state. Map key = agent index. Closure-local —
+		// rebuilt every render(). Force-rules below override.
+		if (!renderAgents._expanded) renderAgents._expanded = {};
+		var expanded = renderAgents._expanded;
+
 		for (var i = 0; i < agents.length; i++) {
 			(function(idx) {
 				var a = agents[idx];
 				var item = document.createElement('div');
-				item.className = 'dynamic-item';
+				item.className = 'dynamic-item agent-card';
+
+				var isOnly = agents.length === 1;
+				var isJustAdded = !!a.__justAdded;
+				var startsExpanded = isOnly || isJustAdded || !!a.default || !!expanded[idx];
+
+				// === Header (always visible; click toggles when not isOnly) ===
+				var header = document.createElement('div');
+				header.className = 'agent-card-header';
+
+				var chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+				chevron.setAttribute('viewBox', '0 0 24 24');
+				chevron.setAttribute('class', 'agent-card-chevron');
+				chevron.innerHTML = '<path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+				header.appendChild(chevron);
+
+				var hId = document.createElement('span');
+				hId.className = 'agent-card-id';
+				hId.textContent = a.id || '(new)';
+				header.appendChild(hId);
+
+				var hName = document.createElement('span');
+				hName.className = 'agent-card-name';
+				hName.textContent = a.name || '';
+				header.appendChild(hName);
+
+				if (a.default) {
+					var badge = document.createElement('span');
+					badge.className = 'agent-card-default-badge';
+					badge.textContent = 'Default';
+					header.appendChild(badge);
+				}
+
+				var hModel = document.createElement('span');
+				hModel.className = 'agent-card-model';
+				hModel.textContent = a.model || '';
+				header.appendChild(hModel);
+
+				item.appendChild(header);
+
+				if (isOnly) {
+					chevron.style.visibility = 'hidden';
+					header.style.cursor = 'default';
+				} else {
+					header.addEventListener('click', function(e) {
+						if (e.target.closest('button, input, select, textarea')) return;
+						expanded[idx] = !item.classList.contains('collapsed') ? false : true;
+						item.classList.toggle('collapsed');
+					});
+				}
 
 				var rm = document.createElement('button');
 				rm.className = 'remove-btn';
 				rm.innerHTML = '&times;';
-				rm.onclick = function() { cfg.agents.list.splice(idx, 1); render(); };
-				item.appendChild(rm);
+				rm.onclick = function(e) {
+					e.stopPropagation();
+					cfg.agents.list.splice(idx, 1);
+					renderAgents._expanded = {};
+					render();
+				};
+				header.appendChild(rm);
 
-				var row1 = makeRow(item);
-				var idField = makeField(row1, 'ID', 'text', a.id || '', function(v) { cfg.agents.list[idx].id = v; });
+				// === Body (collapsible) ===
+				var body = document.createElement('div');
+				body.className = 'agent-body';
+				item.appendChild(body);
+
+				var row1 = makeRow(body);
+				var idField = makeField(row1, 'ID', 'text', a.id || '', function(v) {
+					cfg.agents.list[idx].id = v;
+					hId.textContent = v || '(new)';
+				});
 				(function(idx) {
 					var inp = idField.querySelector('input');
 					inp.setAttribute('pattern', '[a-zA-Z0-9._-]+');
@@ -2057,23 +2167,29 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 					});
 				})(idx);
 
-				var nameField = makeField(row1, 'Name', 'text', a.name || '', function(v) { cfg.agents.list[idx].name = v; });
+				var nameField = makeField(row1, 'Name', 'text', a.name || '', function(v) {
+					cfg.agents.list[idx].name = v;
+					hName.textContent = v || '';
+				});
 				nameField.querySelector('input').setAttribute('maxlength', '200');
 				validateField(nameField, function(v) {
 					if ((v || '').length > 200) return 'Name must be 200 characters or fewer.';
 					return '';
 				});
 
-				var row2 = makeRow(item);
-				makeField(row2, 'Model', 'text', a.model || '', function(v) { cfg.agents.list[idx].model = v; });
+				var row2 = makeRow(body);
+				makeField(row2, 'Model', 'text', a.model || '', function(v) {
+					cfg.agents.list[idx].model = v;
+					hModel.textContent = v || '';
+				});
 				makeField(row2, 'Max Turns', 'number', a.maxTurns || 0, function(v) { cfg.agents.list[idx].maxTurns = v; });
 
-				var row2b = makeRow(item);
+				var row2b = makeRow(body);
 				makeField(row2b, 'Context Window (0 = auto-detect)', 'number', a.contextWindow || 0, function(v) {
 					cfg.agents.list[idx].contextWindow = v;
 				});
 
-				var row2bb = makeRow(item);
+				var row2bb = makeRow(body);
 				makeField(row2bb, 'Reasoning', 'select', {
 					value: a.reasoning || 'off',
 					options: [
@@ -2104,7 +2220,7 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 				// Setting Subagent without a description is technically
 				// allowed but the supervisor will show "(no description)"
 				// in the tool spec, which makes routing unreliable.
-				var row2c = makeRow(item);
+				var row2c = makeRow(body);
 				makeField(row2c, 'Subagent (callable via task tool)', 'toggle', !!a.subagent, function(v) {
 					cfg.agents.list[idx].subagent = v;
 				});
@@ -2112,17 +2228,42 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 					cfg.agents.list[idx].inheritContext = v;
 				});
 
-				makeField(item, 'Subagent Description (shown to supervisor; required when Subagent is on)', 'textarea',
+				// Default toggle: radio-style. Setting on clears others, re-renders.
+				makeField(body, 'Default agent (shown first in chat dropdown)', 'toggle', !!a.default, function(v) {
+					if (v) {
+						for (var j = 0; j < cfg.agents.list.length; j++) {
+							cfg.agents.list[j].default = (j === idx);
+						}
+					} else {
+						cfg.agents.list[idx].default = false;
+					}
+					render();
+				});
+
+				makeField(body, 'Subagent Description (shown to supervisor; required when Subagent is on)', 'textarea',
 					a.description || '',
 					function(v) { cfg.agents.list[idx].description = v; });
 
-				makeReadOnlyField(item, 'Sandbox', 'agent-sandbox-' + idx, 'not implemented yet');
+				makeReadOnlyField(body, 'Sandbox', 'agent-sandbox-' + idx, 'not implemented yet');
 
-				makeField(item, 'System Prompt', 'textarea', a.system_prompt || '', function(v) {
+				makeField(body, 'System Prompt', 'textarea', a.system_prompt || '', function(v) {
 					cfg.agents.list[idx].system_prompt = v;
 				});
 
-				makeToolsCheckboxes(item, idx, a);
+				makeToolsCheckboxes(body, idx, a);
+
+				// === Apply initial collapsed state ===
+				// Force-expand if any field already has an error on first paint.
+				// validateField creates an empty .field-error div eagerly on every
+				// validated field, so we check for the .field-with-error class on
+				// the wrapper instead — that's only set when a validator fails.
+				var hasErr = body.querySelector('.field-with-error');
+				if (!isOnly && !startsExpanded && !hasErr) {
+					item.classList.add('collapsed');
+				}
+
+				// Consume the __justAdded sentinel after first render.
+				if (a.__justAdded) delete cfg.agents.list[idx].__justAdded;
 
 				list.appendChild(item);
 			})(i);
@@ -2134,7 +2275,7 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 		addBtn.onclick = function() {
 			if (!cfg.agents) cfg.agents = {list: []};
 			if (!cfg.agents.list) cfg.agents.list = [];
-			cfg.agents.list.push({id: '', name: '', model: '', tools: {allow: []}});
+			cfg.agents.list.push({id: '', name: '', model: '', tools: {allow: []}, __justAdded: true});
 			render();
 			focusAndFlashNewRow(list);
 		};

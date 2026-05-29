@@ -994,6 +994,7 @@ func (h *WebSocketHandler) handleAgentStatus(conn *websocket.Conn, req JSONRPCRe
 			"model":          a.Model,
 			"workspace":      a.Workspace,
 			"context_window": tokens.ContextWindowFor(a.Model, a.ContextWindow),
+			"default":        a.Default,
 		})
 	}
 

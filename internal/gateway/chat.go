@@ -3612,6 +3612,10 @@ html.dark #stop-btn {
 				// Handle agent.status response
 				if (resp.id === 'agents') {
 					var agents = resp.result.agents || [];
+					// Stable sort: default-flagged agent first, rest in config order.
+					// Array.prototype.sort is stable per ECMAScript 2019+ (all evergreen
+					// browsers we target). Comparator yields negative when 'a' comes first.
+					agents.sort(function(a, b) { return (b['default'] ? 1 : 0) - (a['default'] ? 1 : 0); });
 					agentSelect.innerHTML = '';
 					agentWindows = {};
 					for (var i = 0; i < agents.length; i++) {

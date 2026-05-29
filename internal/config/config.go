@@ -226,6 +226,12 @@ type AgentConfig struct {
 	// auto-detection (tokens.ContextWindow). Drives the preventive
 	// compaction threshold and the token-usage display in the UI.
 	ContextWindow int `json:"contextWindow,omitempty"`
+	// Default marks this agent as the default in the chat UI dropdown:
+	// the dropdown lists it first, and a fresh browser session with no
+	// localStorage selection picks it on initial page load. At most one
+	// agent in cfg.Agents.List may have Default=true; Validate enforces
+	// this and silently clears extra trues, logging a warning.
+	Default bool `json:"default,omitempty"`
 }
 
 type CronConfig struct {
@@ -642,6 +648,24 @@ func (c *Config) Validate() error {
 		if a.Subagent && a.Description == "" {
 			return fmt.Errorf("agent %q: subagent=true requires non-empty description", a.ID)
 		}
+	}
+
+	// At most one agent may have Default=true. If the on-disk config has
+	// multiple (hand-edited or copied across machines), keep the first
+	// and clear the rest so the runtime sees a well-formed state. The UI's
+	// radio semantics prevent this through Settings.
+	seenDefault := false
+	for i := range c.Agents.List {
+		if !c.Agents.List[i].Default {
+			continue
+		}
+		if seenDefault {
+			slog.Warn("config: clearing duplicate Default=true on agent",
+				"agent_id", c.Agents.List[i].ID)
+			c.Agents.List[i].Default = false
+			continue
+		}
+		seenDefault = true
 	}
 
 	return nil
