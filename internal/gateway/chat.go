@@ -3082,8 +3082,19 @@ html.dark #stop-btn {
 			// Always swap back to a span first so a failed save still has a label to show.
 			rowEl.replaceChild(nameEl, input);
 			if (save && newTitle !== current) {
+				// Optimistic UI: paint the new label immediately. The
+				// session.rename response handler calls loadSessions() to
+				// resync from the server if the save was rejected.
 				nameEl.textContent = newTitle || sessionKey;
 				nameEl.dataset.title = newTitle;
+				if (ws && ws.readyState === WebSocket.OPEN) {
+					ws.send(JSON.stringify({
+						jsonrpc: '2.0',
+						method: 'session.rename',
+						params: { agentId: agentSelect.value, sessionKey: sessionKey, title: newTitle },
+						id: 'session-rename-' + sessionKey
+					}));
+				}
 			}
 		}
 		input.addEventListener('keydown', function(ev) {
@@ -3685,6 +3696,17 @@ html.dark #stop-btn {
 
 				// Handle session.switch response
 				if (resp.id === 'session-switch') {
+					return;
+				}
+
+				// Handle session.rename response. The sidebar already
+				// painted the optimistic title on commit; on error,
+				// resync from the server to drop the bad label.
+				if (typeof resp.id === 'string' && resp.id.indexOf('session-rename-') === 0) {
+					if (resp.error) {
+						modalAlert('Rename failed', resp.error.message || 'Server rejected the rename.');
+						loadSessions();
+					}
 					return;
 				}
 

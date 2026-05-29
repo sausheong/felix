@@ -332,6 +332,8 @@ func (h *WebSocketHandler) dispatch(conn *websocket.Conn, req JSONRPCRequest) {
 		h.handleSessionHistory(conn, req)
 	case "session.clear":
 		h.handleSessionClear(conn, req)
+	case "session.rename":
+		h.handleSessionRename(conn, req)
 	case "jobs.list":
 		h.handleJobsList(conn, req)
 	case "jobs.pause":
@@ -1038,6 +1040,7 @@ func (h *WebSocketHandler) handleSessionList(conn *websocket.Conn, req JSONRPCRe
 	for _, s := range sessions {
 		result = append(result, map[string]any{
 			"key":          s.Key,
+			"title":        readSessionMeta(h.sessionsBaseDir, params.AgentID, s.Key),
 			"entryCount":   s.EntryCount,
 			"createdAt":    s.CreatedAt.Unix(),
 			"lastActivity": s.LastActivity.Unix(),
@@ -1074,7 +1077,21 @@ func (h *WebSocketHandler) handleSessionNew(conn *websocket.Conn, req JSONRPCReq
 		params.Name = time.Now().Format("20060102-150405")
 	}
 
-	sessionKey := "ws_" + params.Name
+	// Session key is the user-supplied name (or the timestamp default)
+	// directly — no "ws_" prefix as of the rename-sessions change. Keys
+	// are filesystem path segments under <sessionsBase>/<agentID>/, so
+	// they must satisfy validateSessionPathSegment (no separators, no
+	// '.' or '..', non-empty). Earlier sessions named "ws_*" stay
+	// reachable by their existing keys.
+	sessionKey := params.Name
+	if err := validateSessionPathSegment(sessionKey); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "name: " + err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
 	if h.sessionStore.Exists(params.AgentID, sessionKey) {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -1105,6 +1122,84 @@ func (h *WebSocketHandler) handleSessionNew(conn *websocket.Conn, req JSONRPCReq
 	writeJSON(conn, JSONRPCResponse{
 		JSONRPC: "2.0",
 		Result:  map[string]any{"sessionKey": sessionKey},
+		ID:      req.ID,
+	})
+}
+
+type sessionRenameParams struct {
+	AgentID    string `json:"agentId"`
+	SessionKey string `json:"sessionKey"`
+	Title      string `json:"title"`
+}
+
+// handleSessionRename writes a title sidecar for the given session. The
+// underlying JSONL is untouched; only <sessionsBase>/<agent>/<key>.meta.json
+// is created or overwritten atomically. Title is validated (length cap,
+// no control chars, no path separators) before any disk write.
+func (h *WebSocketHandler) handleSessionRename(conn *websocket.Conn, req JSONRPCRequest) {
+	var params sessionRenameParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "Invalid params"},
+			ID:      req.ID,
+		})
+		return
+	}
+	if params.AgentID == "" {
+		params.AgentID = "default"
+	}
+	if params.SessionKey == "" {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "sessionKey required"},
+			ID:      req.ID,
+		})
+		return
+	}
+	if err := validateSessionPathSegment(params.AgentID); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "agentId: " + err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
+	if err := validateSessionPathSegment(params.SessionKey); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "sessionKey: " + err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
+	if !h.sessionStore.Exists(params.AgentID, params.SessionKey) {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": "Session not found: " + params.SessionKey},
+			ID:      req.ID,
+		})
+		return
+	}
+	if err := validateSessionTitle(params.Title); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32602, "message": err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
+	if err := writeSessionMeta(h.sessionsBaseDir, params.AgentID, params.SessionKey, params.Title); err != nil {
+		writeJSON(conn, JSONRPCResponse{
+			JSONRPC: "2.0",
+			Error:   map[string]any{"code": -32603, "message": "Save title error: " + err.Error()},
+			ID:      req.ID,
+		})
+		return
+	}
+	writeJSON(conn, JSONRPCResponse{
+		JSONRPC: "2.0",
+		Result:  map[string]any{"sessionKey": params.SessionKey, "title": params.Title},
 		ID:      req.ID,
 	})
 }
