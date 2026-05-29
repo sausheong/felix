@@ -1237,6 +1237,9 @@ body.replay-mode #input-shell { display: none !important; }
 .sb-item.active { background: color-mix(in oklch, var(--accent) 14%%, transparent); color: var(--accent); font-weight: 600; }
 .sb-item .icon { width: 18px; height: 18px; flex-shrink: 0; color: var(--text-muted); }
 .sb-item.active .icon, .sb-item:hover .icon { color: var(--accent); }
+.sb-item.sb-danger { color: #b91c1c; }
+.sb-item.sb-danger .icon { color: #b91c1c; }
+.sb-item.sb-danger:hover { background: color-mix(in oklch, #b91c1c 12%%, transparent); }
 #sb-foot {
 	margin-top: auto;
 	padding: 0.6rem 0.6rem 0.75rem;
@@ -1691,6 +1694,10 @@ html.dark #stop-btn {
 			<button class="sb-item" data-view="logs" title="Logs">
 				<svg class="icon" viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13a2 2 0 0 1-2 2H8a3 3 0 0 1-3-3z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>
 				<span class="sb-label">Logs</span>
+			</button>
+			<button class="sb-item sb-danger" data-action="restart" title="Restart gateway">
+				<svg class="icon" viewBox="0 0 24 24"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+				<span class="sb-label">Restart</span>
 			</button>
 		</nav>
 
@@ -4618,10 +4625,13 @@ html.dark #stop-btn {
 
 		// Sidebar tools: re-clicking the active item toggles back to chat;
 		// otherwise route into the embed pane. Selecting a session returns
-		// to chat (the sessions-list capture handler below).
+		// to chat (the sessions-list capture handler below). Action buttons
+		// (data-action="restart") dispatch directly without changing the view.
 		document.getElementById('sb-tools').addEventListener('click', function(e) {
 			var btn = e.target.closest('.sb-item');
-			if (!btn || !btn.dataset.view) return;
+			if (!btn) return;
+			if (btn.dataset.action === 'restart') { doRestart(); return; }
+			if (!btn.dataset.view) return;
 			setView(btn.dataset.view === currentView ? 'chat' : btn.dataset.view);
 		});
 		// Top-right view toggles (Tool calls, Live trace). Both flip the
