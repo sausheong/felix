@@ -114,7 +114,36 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 			}
 			redactConfigSecrets(&clone)
 
-			data, err := json.MarshalIndent(&clone, "", "  ")
+			// Re-marshal then unmarshal-to-map so we can (a) inject the wire-only
+			// _hasKey field per provider for the Providers tab "key set" badge,
+			// and (b) redact api_key with the same sentinel the MCP env path uses
+			// so SaveConfig's restore step (see restoreSecretProviderKeys below)
+			// preserves the stored key on round-trips that didn't touch it.
+			cloneBytes, err := json.Marshal(&clone)
+			if err != nil {
+				http.Error(w, `{"error":"marshal config"}`, http.StatusInternalServerError)
+				return
+			}
+			var asMap map[string]any
+			if err := json.Unmarshal(cloneBytes, &asMap); err != nil {
+				http.Error(w, `{"error":"map config"}`, http.StatusInternalServerError)
+				return
+			}
+			if provs, ok := asMap["providers"].(map[string]any); ok {
+				for _, prov := range provs {
+					pm, ok := prov.(map[string]any)
+					if !ok {
+						continue
+					}
+					apiKey, _ := pm["api_key"].(string)
+					pm["_hasKey"] = apiKey != ""
+					if apiKey != "" {
+						pm["api_key"] = redactedSentinel
+					}
+				}
+			}
+
+			data, err := json.MarshalIndent(asMap, "", "  ")
 			if err != nil {
 				http.Error(w, `{"error":"marshal config"}`, http.StatusInternalServerError)
 				return
@@ -143,6 +172,7 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 			// current in-memory cfg. Clients GET → edit → PUT and
 			// never need to know any secret they didn't type.
 			restoreSecretEnvs(&newCfg, cfg)
+			restoreSecretProviderKeys(&newCfg, cfg)
 
 			if err := newCfg.Validate(); err != nil {
 				w.Header().Set("Content-Type", "application/json")
@@ -267,6 +297,30 @@ func restoreSecretEnvs(incoming, current *config.Config) {
 			curEnv = cur.Stdio.Env
 		}
 		s.Stdio.Env = unredactEnvMap(s.Stdio.Env, curEnv)
+	}
+}
+
+// restoreSecretProviderKeys mirrors restoreSecretEnvs for the per-provider
+// api_key field. The GetConfig handler replaces every non-empty api_key
+// with redactedSentinel on the wire; this walks incoming and substitutes
+// any sentinel value back with current's stored key. Providers present in
+// incoming but missing from current pass through unchanged (genuinely new
+// providers the user just added). A truly empty incoming api_key clears
+// the stored value, preserving "delete the key" as a UI gesture.
+func restoreSecretProviderKeys(incoming, current *config.Config) {
+	if incoming.Providers == nil || current.Providers == nil {
+		return
+	}
+	for name, prov := range incoming.Providers {
+		if prov.APIKey != redactedSentinel {
+			continue
+		}
+		cur, ok := current.Providers[name]
+		if !ok {
+			continue
+		}
+		prov.APIKey = cur.APIKey
+		incoming.Providers[name] = prov
 	}
 }
 
@@ -657,7 +711,7 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 	position: relative;
 }
 /* === Agent card collapse + Default badge (Task 1 of agents-collapse-default plan) === */
-.agent-card-header {
+.collapse-card-header {
 	display: flex;
 	align-items: center;
 	gap: 0.6rem;
@@ -667,22 +721,22 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 	margin: -0.5rem -0.75rem 0.5rem;
 	user-select: none;
 }
-.agent-card-header:hover { background: var(--color-bg-soft); }
-.agent-card-chevron {
+.collapse-card-header:hover { background: var(--color-bg-soft); }
+.collapse-card-chevron {
 	width: 14px;
 	height: 14px;
 	flex-shrink: 0;
 	color: var(--color-text-muted);
 	transition: transform 0.12s ease;
 }
-.dynamic-item.collapsed .agent-card-chevron { transform: rotate(-90deg); }
-.agent-card-id {
+.dynamic-item.collapsed .collapse-card-chevron { transform: rotate(-90deg); }
+.collapse-card-id {
 	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 	font-size: 0.85rem;
 	color: var(--color-text-muted);
 }
-.agent-card-name { font-weight: 600; }
-.agent-card-model {
+.collapse-card-name { font-weight: 600; }
+.collapse-card-meta {
 	color: var(--color-text-muted);
 	font-size: 0.85rem;
 	margin-left: auto;
@@ -698,7 +752,31 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 	letter-spacing: 0.04em;
 	flex-shrink: 0;
 }
-.dynamic-item.collapsed .agent-body { display: none; }
+.dynamic-item.collapsed .collapse-card-body { display: none; }
+.collapse-card-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	background: var(--color-text-muted);
+}
+.collapse-card-dot[data-on="true"] {
+	background: #10b981;
+}
+.collapse-card-key-badge {
+	padding: 0.1rem 0.45rem;
+	border-radius: 999px;
+	background: var(--color-surface-muted, rgba(0,0,0,0.06));
+	color: var(--color-text-muted);
+	font-size: 0.7rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+.collapse-card-key-badge[data-set="true"] {
+	background: color-mix(in oklch, var(--color-primary) 14%, transparent);
+	color: var(--color-primary);
+}
 .field-error {
 	color: var(--color-error);
 	font-size: 0.75rem;
@@ -708,6 +786,11 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 .field-with-error input,
 .field-with-error select,
 .field-with-error textarea {
+	border-color: var(--color-error);
+}
+input.field-with-error,
+select.field-with-error,
+textarea.field-with-error {
 	border-color: var(--color-error);
 }
 .dynamic-item-title {
@@ -1344,6 +1427,8 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 	function renderMCP() {
 		var p = document.getElementById('panel-mcp');
 		p.innerHTML = '';
+		if (!renderMCP._expanded) renderMCP._expanded = {};
+		var expanded = renderMCP._expanded;
 		var sec = makeSection(p, 'MCP Servers');
 
 		var help = document.createElement('p');
@@ -1393,19 +1478,75 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 				}
 
 				var item = document.createElement('div');
-				item.className = 'dynamic-item';
+				item.className = 'dynamic-item mcp-card';
+
+				var isOnly = servers.length === 1;
+				var isJustAdded = !!s.__justAdded;
+				var startsExpanded = isOnly || isJustAdded || !!expanded[idx];
+
+				// === Header ===
+				var header = document.createElement('div');
+				header.className = 'collapse-card-header';
+
+				var chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+				chevron.setAttribute('viewBox', '0 0 24 24');
+				chevron.setAttribute('class', 'collapse-card-chevron');
+				chevron.innerHTML = '<path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+				header.appendChild(chevron);
+
+				var hId = document.createElement('span');
+				hId.className = 'collapse-card-id';
+				hId.textContent = s.id || '(new)';
+				header.appendChild(hId);
+
+				var hMeta = document.createElement('span');
+				hMeta.className = 'collapse-card-meta';
+				hMeta.textContent = s.transport || 'http';
+				header.appendChild(hMeta);
+
+				var dot = document.createElement('span');
+				dot.className = 'collapse-card-dot';
+				dot.dataset.on = s.enabled ? 'true' : 'false';
+				dot.title = s.enabled ? 'Enabled' : 'Disabled';
+				header.appendChild(dot);
 
 				var rm = document.createElement('button');
 				rm.className = 'remove-btn';
 				rm.innerHTML = '&times;';
-				rm.onclick = function() { cfg.mcp_servers.splice(idx, 1); render(); };
-				item.appendChild(rm);
+				rm.onclick = function(e) {
+					e.stopPropagation();
+					cfg.mcp_servers.splice(idx, 1);
+					renderMCP._expanded = {};
+					render();
+				};
+				header.appendChild(rm);
 
-				var row1 = makeRow(item);
-				makeField(row1, 'ID', 'text', s.id || '', function(v) { cfg.mcp_servers[idx].id = v; });
+				item.appendChild(header);
+
+				if (isOnly) {
+					chevron.style.visibility = 'hidden';
+					header.style.cursor = 'default';
+				} else {
+					header.addEventListener('click', function(e) {
+						if (e.target.closest('button, input, select, textarea')) return;
+						expanded[idx] = !item.classList.contains('collapsed') ? false : true;
+						item.classList.toggle('collapsed');
+					});
+				}
+
+				// === Body ===
+				var body = document.createElement('div');
+				body.className = 'collapse-card-body';
+				item.appendChild(body);
+
+				var row1 = makeRow(body);
+				makeField(row1, 'ID', 'text', s.id || '', function(v) {
+					cfg.mcp_servers[idx].id = v;
+					hId.textContent = v || '(new)';
+				});
 				makeField(row1, 'Tool Prefix', 'text', s.tool_prefix || '', function(v) { cfg.mcp_servers[idx].tool_prefix = v; });
 
-				makeField(item, 'Transport', 'select', {
+				makeField(body, 'Transport', 'select', {
 					value: s.transport,
 					options: [
 						{value: 'http', label: 'HTTP (Streamable)'},
@@ -1422,14 +1563,25 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 					render();
 				});
 
-				makeField(item, 'Enabled', 'toggle', !!s.enabled, function(v) { cfg.mcp_servers[idx].enabled = v; });
-				makeField(item, 'Parallel-safe', 'toggle', !!s.parallelSafe, function(v) { cfg.mcp_servers[idx].parallelSafe = v; });
+				makeField(body, 'Enabled', 'toggle', !!s.enabled, function(v) {
+					cfg.mcp_servers[idx].enabled = v;
+					dot.dataset.on = v ? 'true' : 'false';
+					dot.title = v ? 'Enabled' : 'Disabled';
+				});
+				makeField(body, 'Parallel-safe', 'toggle', !!s.parallelSafe, function(v) { cfg.mcp_servers[idx].parallelSafe = v; });
 
 				if (s.transport === 'http') {
-					renderHTTPBlock(item, idx, s);
+					renderHTTPBlock(body, idx, s);
 				} else if (s.transport === 'stdio') {
-					renderStdioBlock(item, idx, s);
+					renderStdioBlock(body, idx, s);
 				}
+
+				// === Apply collapsed state ===
+				var hasErr = body.querySelector('.field-with-error');
+				if (!isOnly && !startsExpanded && !hasErr) {
+					item.classList.add('collapsed');
+				}
+				if (s.__justAdded) delete cfg.mcp_servers[idx].__justAdded;
 
 				list.appendChild(item);
 			})(i);
@@ -1455,7 +1607,8 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 				},
 				enabled: true,
 				parallelSafe: false,
-				tool_prefix: ''
+				tool_prefix: '',
+				__justAdded: true
 			});
 			render();
 			focusAndFlashNewRow(list);
@@ -1671,6 +1824,8 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 	function renderProviders() {
 		var p = document.getElementById('panel-providers');
 		p.innerHTML = '';
+		if (!renderProviders._expanded) renderProviders._expanded = {};
+		var expanded = renderProviders._expanded;
 		var sec = makeSection(p, null);
 		var providers = cfg.providers || {};
 		var names = Object.keys(providers);
@@ -1682,12 +1837,27 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 			(function(name) {
 				var prov = providers[name];
 				var item = document.createElement('div');
-				item.className = 'dynamic-item';
+				item.className = 'dynamic-item provider-card';
 
+				var isOnly = names.length === 1;
+				var isJustAdded = !!(prov && prov._isNew);
+				var startsExpanded = isOnly || isJustAdded || !!expanded[name];
+
+				// === Header ===
+				var header = document.createElement('div');
+				header.className = 'collapse-card-header';
+
+				var chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+				chevron.setAttribute('viewBox', '0 0 24 24');
+				chevron.setAttribute('class', 'collapse-card-chevron');
+				chevron.innerHTML = '<path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+				header.appendChild(chevron);
+
+				// Title: editable input for _isNew, plain span otherwise.
 				var title;
 				if (prov && prov._isNew) {
 					title = document.createElement('input');
-					title.className = 'provider-name dynamic-item-title';
+					title.className = 'collapse-card-id';
 					title.type = 'text';
 					title.value = name;
 					title.placeholder = 'Provider name (e.g. anthropic, openai)';
@@ -1701,25 +1871,59 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 						cfg.providers[newName] = cfg.providers[name];
 						delete cfg.providers[newName]._isNew;
 						delete cfg.providers[name];
+						// Carry expand state across rename so the renamed card stays open.
+						expanded[newName] = true;
 						render();
 					});
 				} else {
-					title = document.createElement('div');
-					title.className = 'dynamic-item-title';
+					title = document.createElement('span');
+					title.className = 'collapse-card-id';
 					title.textContent = name;
 				}
-				item.appendChild(title);
+				header.appendChild(title);
+
+				var hKind = document.createElement('span');
+				hKind.className = 'collapse-card-meta';
+				hKind.textContent = prov.kind || '(no kind)';
+				header.appendChild(hKind);
+
+				var keyBadge = document.createElement('span');
+				keyBadge.className = 'collapse-card-key-badge';
+				var hasKey = !!(prov.api_key || prov._hasKey);
+				keyBadge.dataset.set = hasKey ? 'true' : 'false';
+				keyBadge.textContent = hasKey ? 'key set' : 'no key';
+				header.appendChild(keyBadge);
 
 				var rm = document.createElement('button');
 				rm.className = 'remove-btn';
 				rm.innerHTML = '&times;';
-				rm.onclick = function() { delete cfg.providers[name]; render(); };
-				item.appendChild(rm);
+				rm.onclick = function(e) {
+					e.stopPropagation();
+					delete cfg.providers[name];
+					renderProviders._expanded = {};
+					render();
+				};
+				header.appendChild(rm);
 
-				var row = makeRow(item);
-				// Kind dropdown is fixed-width (longest option is
-				// "openai-compatible"); the URL deserves the rest of
-				// the row. Default .form-row 1fr 1fr would clip the URL.
+				item.appendChild(header);
+
+				if (isOnly) {
+					chevron.style.visibility = 'hidden';
+					header.style.cursor = 'default';
+				} else {
+					header.addEventListener('click', function(e) {
+						if (e.target.closest('button, input, select, textarea')) return;
+						expanded[name] = !item.classList.contains('collapsed') ? false : true;
+						item.classList.toggle('collapsed');
+					});
+				}
+
+				// === Body ===
+				var body = document.createElement('div');
+				body.className = 'collapse-card-body';
+				item.appendChild(body);
+
+				var row = makeRow(body);
 				row.style.gridTemplateColumns = 'minmax(180px, 0.3fr) 1fr';
 				makeField(row, 'Kind', 'select', {
 					value: prov.kind || '',
@@ -1734,6 +1938,7 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 					],
 				}, function(v) {
 					cfg.providers[name].kind = v;
+					hKind.textContent = v || '(no kind)';
 				});
 				var urlField = makeField(row, 'Base URL', 'text', prov.base_url || '', function(v) { cfg.providers[name].base_url = v; });
 				var urlInput = urlField.querySelector('input');
@@ -1749,7 +1954,19 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 					}
 					return '';
 				});
-				makeField(item, 'API Key', 'password', '', function(v) { if (v) cfg.providers[name].api_key = v; });
+				makeField(body, 'API Key', 'password', '', function(v) {
+					if (v) {
+						cfg.providers[name].api_key = v;
+						keyBadge.dataset.set = 'true';
+						keyBadge.textContent = 'key set';
+					}
+				});
+
+				// === Apply collapsed state ===
+				var hasErr = body.querySelector('.field-with-error');
+				if (!isOnly && !startsExpanded && !hasErr) {
+					item.classList.add('collapsed');
+				}
 
 				list.appendChild(item);
 			})(names[i]);
@@ -2087,21 +2304,21 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 
 				// === Header (always visible; click toggles when not isOnly) ===
 				var header = document.createElement('div');
-				header.className = 'agent-card-header';
+				header.className = 'collapse-card-header';
 
 				var chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
 				chevron.setAttribute('viewBox', '0 0 24 24');
-				chevron.setAttribute('class', 'agent-card-chevron');
+				chevron.setAttribute('class', 'collapse-card-chevron');
 				chevron.innerHTML = '<path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
 				header.appendChild(chevron);
 
 				var hId = document.createElement('span');
-				hId.className = 'agent-card-id';
+				hId.className = 'collapse-card-id';
 				hId.textContent = a.id || '(new)';
 				header.appendChild(hId);
 
 				var hName = document.createElement('span');
-				hName.className = 'agent-card-name';
+				hName.className = 'collapse-card-name';
 				hName.textContent = a.name || '';
 				header.appendChild(hName);
 
@@ -2113,7 +2330,7 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 				}
 
 				var hModel = document.createElement('span');
-				hModel.className = 'agent-card-model';
+				hModel.className = 'collapse-card-meta';
 				hModel.textContent = a.model || '';
 				header.appendChild(hModel);
 
@@ -2143,7 +2360,7 @@ main { padding: 1.25rem 1.5rem 2.5rem; }
 
 				// === Body (collapsible) ===
 				var body = document.createElement('div');
-				body.className = 'agent-body';
+				body.className = 'collapse-card-body';
 				item.appendChild(body);
 
 				var row1 = makeRow(body);
