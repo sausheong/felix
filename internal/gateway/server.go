@@ -77,6 +77,7 @@ func (s *Server) routes() {
 	// browser tabs show the Felix mark instead of the generic globe icon.
 	s.router.Mount("/favicon.ico", FaviconHandler())
 	s.router.Mount("/favicon.png", FaviconHandler())
+	s.router.Mount("/logo-mark.png", LogoMarkHandler())
 
 	// Restart the gateway process. Under felix-app (the menubar wrapper)
 	// the supervisor respawns automatically. Under direct `felix start`

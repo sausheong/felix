@@ -1163,9 +1163,10 @@ body.replay-mode #input-shell { display: none !important; }
 .brand-logo {
 	width: 22px;
 	height: 22px;
-	border-radius: 5px;
 	flex-shrink: 0;
 }
+/* The mark is a black cat face on transparency — invert to white in dark mode. */
+html.dark .brand-logo { filter: invert(1); }
 #sb-collapse {
 	background: none;
 	border: 1px solid var(--border);
@@ -1664,7 +1665,7 @@ html.dark #stop-btn {
 	<aside id="sidebar" class="expanded">
 		<div id="sb-head">
 			<a id="brand" href="/" title="Felix">
-				<img class="brand-logo" src="/favicon.png" alt="">
+				<img class="brand-logo" src="/logo-mark.png" alt="">
 				<span class="brand-text">Felix</span>
 			</a>
 			<button id="sb-collapse" aria-label="Collapse sidebar" title="Collapse sidebar">
