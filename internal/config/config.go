@@ -348,6 +348,13 @@ type AgentLoopConfig struct {
 	// checks FELIX_STREAMING_TOOLS=1 as a fallback. Setting it explicitly
 	// to true in JSON5 always wins.
 	StreamingTools bool `json:"streamingTools,omitempty"`
+
+	// MaxToolResultLen caps the in-context length (chars) of a single tool
+	// result; longer results are spilled to disk (head retained inline).
+	// 0 = Felix default 65536 (64K). The harness's own 4000-char default
+	// is far too small for engineering agents — it causes constant spill
+	// and truncation churn that exhausts the turn budget.
+	MaxToolResultLen int `json:"maxToolResultLen,omitempty"`
 }
 
 type SecurityConfig struct {

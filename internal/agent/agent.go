@@ -97,6 +97,17 @@ type RuntimeDeps struct {
 // as pre-extraction (takes *config.AgentConfig, returns RuntimeInputs).
 type SubagentBuildFn func(a *config.AgentConfig) (RuntimeInputs, error)
 
+// effectiveMaxToolResultLen resolves the per-tool-result context cap.
+// Felix's default is 64K — the harness's own 4000-char fallback is sized
+// for chatbots, not engineering agents; at 4K nearly every file read or
+// test run spills/truncates, and the re-read tax exhausts the turn budget.
+func effectiveMaxToolResultLen(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return 65536
+}
+
 // --- BuildRuntimeForAgent: bridges Felix shapes → harness AgentSpec ---
 
 // BuildRuntimeForAgent constructs a Runtime for the given Felix AgentConfig.
@@ -110,6 +121,7 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 			MaxToolConcurrency: deps.AgentLoop.MaxToolConcurrency,
 			MaxAgentDepth:      deps.AgentLoop.MaxAgentDepth,
 			StreamingTools:     deps.AgentLoop.StreamingTools,
+			MaxToolResultLen:   effectiveMaxToolResultLen(deps.AgentLoop.MaxToolResultLen),
 		},
 		CalibratorStore: deps.CalibratorStore,
 		ConfigSummary:   buildConfigSummary(deps.Config),
@@ -181,6 +193,7 @@ func MakeSubagentFactory(cfg *config.Config, deps RuntimeDeps, buildInputs Subag
 			MaxToolConcurrency: deps.AgentLoop.MaxToolConcurrency,
 			MaxAgentDepth:      deps.AgentLoop.MaxAgentDepth,
 			StreamingTools:     deps.AgentLoop.StreamingTools,
+			MaxToolResultLen:   effectiveMaxToolResultLen(deps.AgentLoop.MaxToolResultLen),
 		},
 		CalibratorStore: deps.CalibratorStore,
 		ConfigSummary:   buildConfigSummary(deps.Config),

@@ -2580,6 +2580,9 @@ textarea.field-with-error {
 		makeField(alRow, 'Max Agent Depth (0 = default 3)', 'number',
 			al.maxAgentDepth || 0,
 			function(v) { cfg.agentLoop.maxAgentDepth = v; });
+		makeField(alRow, 'Max Tool Result Length (chars, 0 = default 65536)', 'number',
+			al.maxToolResultLen || 0,
+			function(v) { cfg.agentLoop.maxToolResultLen = v; });
 
 		// Memory Entries — folded in below Agent Loop. Was a top-level
 		// tab; the CRUD UI lives in renderMemoryEntries(), targeting a
