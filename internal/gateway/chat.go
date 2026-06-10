@@ -1160,6 +1160,12 @@ body.replay-mode #input-shell { display: none !important; }
 	color: var(--text);
 	letter-spacing: 0.2px;
 }
+.brand-logo {
+	width: 22px;
+	height: 22px;
+	border-radius: 5px;
+	flex-shrink: 0;
+}
 #sb-collapse {
 	background: none;
 	border: 1px solid var(--border);
@@ -1658,6 +1664,7 @@ html.dark #stop-btn {
 	<aside id="sidebar" class="expanded">
 		<div id="sb-head">
 			<a id="brand" href="/" title="Felix">
+				<img class="brand-logo" src="/favicon.png" alt="">
 				<span class="brand-text">Felix</span>
 			</a>
 			<button id="sb-collapse" aria-label="Collapse sidebar" title="Collapse sidebar">
