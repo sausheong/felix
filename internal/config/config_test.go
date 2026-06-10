@@ -772,9 +772,13 @@ func TestConfig_UpdateFrom_CopiesAgentLoop(t *testing.T) {
 }
 
 func TestCompactionConfigMessageCapDefault(t *testing.T) {
+	// 200, not the old 50: with the 64K tool-result cap, turns are fewer
+	// but individual messages are bigger — the token threshold is the
+	// meaningful trigger, and a 50-message cap fired on count alone for
+	// any tool-heavy run (each turn adds ≥2 messages).
 	cfg := DefaultConfig()
-	assert.Equal(t, 50, cfg.Agents.Defaults.Compaction.MessageCap,
-		"default MessageCap must be 50 (conservative; tool-heavy turns won't insta-trigger)")
+	assert.Equal(t, 200, cfg.Agents.Defaults.Compaction.MessageCap,
+		"default MessageCap must be 200 (count is a backstop, not the primary trigger)")
 }
 
 func TestCompactionConfigMessageCapZeroDisablesCap(t *testing.T) {
