@@ -154,7 +154,11 @@ func TestCompactionDefaultsAreSensible(t *testing.T) {
 	assert.Empty(t, c.Model, "Model is empty by default; BuildManager auto-mirrors from the default agent")
 	assert.InDelta(t, 0.6, c.Threshold, 0.001)
 	assert.Equal(t, 4, c.PreserveTurns)
-	assert.Equal(t, 60, c.TimeoutSec)
+	// 300, not 60: summarizing a ~100K-token transcript takes well over a
+	// minute. At 60s every compaction of a large session timed out, so the
+	// session never shrank — each turn re-sent the full history and paid a
+	// failed 60-second summarizer call on top.
+	assert.Equal(t, 300, c.TimeoutSec)
 }
 
 func TestCompactionConfigUnmarshals(t *testing.T) {

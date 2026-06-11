@@ -541,7 +541,10 @@ func DefaultConfig() *Config {
 					Model:         "",
 					Threshold:     0.6,
 					PreserveTurns: 4,
-					TimeoutSec:    60,
+					// 300s: summarizing a ~100K-token transcript takes well
+					// over a minute; at 60s large-session compaction always
+					// timed out and the session never shrank.
+					TimeoutSec:    300,
 					MessageCap:    200,
 				},
 			},

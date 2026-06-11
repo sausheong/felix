@@ -96,7 +96,7 @@ func buildManagerForModel(cfg *config.Config, modelStr string) *Manager {
 	}
 	timeout := time.Duration(c.TimeoutSec) * time.Second
 	if timeout == 0 {
-		timeout = 60 * time.Second
+		timeout = 300 * time.Second
 	}
 	slog.Info("compaction manager built", "provider", provider, "model", model)
 	return &Manager{
