@@ -59,22 +59,35 @@ func (c *Client) Close() error {
 	return c.session.Close()
 }
 
-// ListTools returns the tools exposed by the server.
+// ListTools returns the tools exposed by the server, following
+// nextCursor across all pages. Servers with large tool surfaces
+// (e.g. Microsoft 365) paginate tools/list; a single call returns
+// only the first page — that bug surfaced as "Felix sees 4 tools
+// where there should be dozens". maxToolPages bounds the walk so a
+// server that echoes the same cursor forever can't hang startup.
 func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
-	res, err := c.session.ListTools(ctx, &mcpsdk.ListToolsParams{})
-	if err != nil {
-		return nil, fmt.Errorf("mcp tools/list: %w", err)
+	const maxToolPages = 100
+	var out []ToolInfo
+	cursor := ""
+	for page := 0; page < maxToolPages; page++ {
+		res, err := c.session.ListTools(ctx, &mcpsdk.ListToolsParams{Cursor: cursor})
+		if err != nil {
+			return nil, fmt.Errorf("mcp tools/list: %w", err)
+		}
+		for _, t := range res.Tools {
+			schema, _ := json.Marshal(t.InputSchema)
+			out = append(out, ToolInfo{
+				Name:        t.Name,
+				Description: t.Description,
+				InputSchema: schema,
+			})
+		}
+		if res.NextCursor == "" || res.NextCursor == cursor {
+			return out, nil
+		}
+		cursor = res.NextCursor
 	}
-	out := make([]ToolInfo, 0, len(res.Tools))
-	for _, t := range res.Tools {
-		schema, _ := json.Marshal(t.InputSchema)
-		out = append(out, ToolInfo{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: schema,
-		})
-	}
-	return out, nil
+	return out, fmt.Errorf("mcp tools/list: exceeded %d pages without terminal nextCursor", maxToolPages)
 }
 
 // CallTool invokes a tool by name with the supplied JSON arguments.
