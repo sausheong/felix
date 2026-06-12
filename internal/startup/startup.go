@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sausheong/cortex"
@@ -69,6 +70,28 @@ func ResolveProviderOpts(name string, cfg *config.Config) llm.ProviderOptions {
 		Kind:    pcfg.Kind,
 	}
 }
+
+// providerHolder is an atomically-swappable provider map shared by the cron
+// agent factory and the subagent factory, so a hot reload that rebuilds
+// providers is visible to them at once (rotated/revoked keys take effect
+// everywhere, not just on the WebSocket path). Finding R5.
+type providerHolder struct {
+	p atomic.Pointer[map[string]llm.LLMProvider]
+}
+
+func newProviderHolder(m map[string]llm.LLMProvider) *providerHolder {
+	h := &providerHolder{}
+	h.p.Store(&m)
+	return h
+}
+
+func (h *providerHolder) get(name string) (llm.LLMProvider, bool) {
+	m := *h.p.Load()
+	p, ok := m[name]
+	return p, ok
+}
+
+func (h *providerHolder) store(m map[string]llm.LLMProvider) { h.p.Store(&m) }
 
 // InitProviders creates LLM providers from config.
 func InitProviders(cfg *config.Config) map[string]llm.LLMProvider {
@@ -471,6 +494,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 
 	// Init components
 	providers := InitProviders(cfg)
+	providerHldr := newProviderHolder(providers)
 	sessionsDir := filepath.Join(dataDir, "sessions")
 	sessionStore := session.NewStore(sessionsDir)
 
@@ -689,6 +713,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		watcher, err := config.NewWatcher(cfg.Path(), func(newCfg *config.Config) {
 			cfg.UpdateFrom(newCfg)
 			newProviders := InitProviders(newCfg)
+			providerHldr.store(newProviders)
 			// Rebuild the permission checker from the new config and re-inject.
 			// Without this, edits to agent Tools.Allow/Deny in felix.json5
 			// silently no-op the dispatch-time gate until restart.
@@ -755,7 +780,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// would otherwise flood the graph with tool-use chatter.
 	buildSubagentInputs := func(a *config.AgentConfig) (agent.RuntimeInputs, error) {
 		pName, _ := llm.ParseProviderModel(a.Model)
-		p, ok := providers[pName]
+		p, ok := providerHldr.get(pName)
 		if !ok {
 			return agent.RuntimeInputs{}, fmt.Errorf("provider %q not configured for subagent %q", pName, a.ID)
 		}
@@ -821,7 +846,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	buildCronAgentFn := func(agentCfg config.AgentConfig, jobName string) func(context.Context, string) (string, error) {
 		return func(ctx context.Context, prompt string) (string, error) {
 			pName, _ := llm.ParseProviderModel(agentCfg.Model)
-			p, ok := providers[pName]
+			p, ok := providerHldr.get(pName)
 			if !ok {
 				return "", fmt.Errorf("provider %q not available for cron job %q on agent %q", pName, jobName, agentCfg.ID)
 			}
@@ -871,7 +896,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	for _, agentCfg := range cfg.Agents.List {
 		for _, cronJob := range agentCfg.Cron {
 			providerName, _ := llm.ParseProviderModel(agentCfg.Model)
-			if _, ok := providers[providerName]; !ok {
+			if _, ok := providerHldr.get(providerName); !ok {
 				continue
 			}
 			agentCfg := agentCfg
