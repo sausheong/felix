@@ -254,7 +254,7 @@ func (s *Supervisor) writePIDFile(pid int) {
 		return
 	}
 	line := fmt.Sprintf("%d %s\n", pid, s.binPath)
-	if err := os.WriteFile(s.pidFile, []byte(line), 0o644); err != nil {
+	if err := os.WriteFile(s.pidFile, []byte(line), 0o600); err != nil {
 		slog.Warn("ollama supervisor: failed to write pid file", "path", s.pidFile, "error", err)
 	}
 }

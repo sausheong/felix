@@ -230,7 +230,7 @@ func (a *CronSchedulerAdapter) persist() {
 		return
 	}
 	tmp := a.JobsFile + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		slog.Warn("cron persist write failed", "path", tmp, "error", err)
 		return
 	}
