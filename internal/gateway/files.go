@@ -139,9 +139,36 @@ func buildBreadcrumbs(dir string) []listBreadcrumb {
 	return out
 }
 
+// inlineSafeTypes are MIME types safe to render inline in the browser. SVG is
+// deliberately excluded — it can carry script. Everything else downloads.
+var inlineSafeTypes = map[string]bool{
+	"image/png":        true,
+	"image/jpeg":       true,
+	"image/gif":        true,
+	"image/webp":       true,
+	"text/plain":       true,
+	"application/pdf":  true,
+	"application/json": true,
+}
+
+// rawDisposition returns "inline" only for an explicit allowlist of
+// preview-safe content types; everything else (HTML, SVG, unknown binary)
+// returns "attachment" so the browser downloads rather than renders it.
+func rawDisposition(contentType string) string {
+	base := contentType
+	if i := strings.IndexByte(base, ';'); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.TrimSpace(strings.ToLower(base))
+	if inlineSafeTypes[base] {
+		return "inline"
+	}
+	return "attachment"
+}
+
 // Raw streams a file from the agent's workspace. The Content-Type is
-// sniffed; Content-Disposition is inline by default, or attachment when
-// ?download=1 is set.
+// sniffed; Content-Disposition defaults to attachment, switching to inline
+// only for an allowlist of preview-safe types. ?download=1 forces attachment.
 func (h *FilesHandlers) Raw(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agent")
 	rel := r.URL.Query().Get("path")
@@ -183,9 +210,15 @@ func (h *FilesHandlers) Raw(w http.ResponseWriter, r *http.Request) {
 	ct := http.DetectContentType(buf[:n])
 	w.Header().Set("Content-Type", ct)
 
-	disposition := "inline"
+	// Security headers: never let the browser sniff a different type, and
+	// sandbox any content that does render so it cannot run script or call
+	// back into the gateway API.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+
+	disposition := rawDisposition(ct)
 	if download {
-		disposition = "attachment"
+		disposition = "attachment" // explicit ?download=1 always attaches
 	}
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, filepath.Base(abs)))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
