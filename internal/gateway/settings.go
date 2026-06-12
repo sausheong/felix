@@ -173,6 +173,7 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 			// never need to know any secret they didn't type.
 			restoreSecretEnvs(&newCfg, cfg)
 			restoreSecretProviderKeys(&newCfg, cfg)
+			restoreSecretScalars(&newCfg, cfg)
 
 			if err := newCfg.Validate(); err != nil {
 				w.Header().Set("Content-Type", "application/json")
@@ -261,17 +262,76 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 	}
 }
 
-// redactConfigSecrets mutates cfg in place: every env map under
-// mcp_servers[].stdio.env has its secret-keyed values replaced with
-// config.RedactedSentinel. Future expansion (when added): OTel
-// headers, HTTP MCP transport headers — the helper structure is
-// ready for additional secret-bearing fields without touching the
-// HTTP handler.
+// redactConfigSecrets mutates cfg in place, replacing every secret-bearing
+// value with redactedSentinel: MCP stdio env values, MCP HTTP auth literals
+// (client_secret/token), the Telegram bot token, the gateway auth token, the
+// web-search API key, and every OTel header value. The *_env name-reference
+// forms are NOT secrets and are left intact. Provider api_key is handled
+// separately in GetConfig.
 func redactConfigSecrets(cfg *config.Config) {
 	for i := range cfg.MCPServers {
 		s := &cfg.MCPServers[i]
 		if s.Stdio != nil && s.Stdio.Env != nil {
 			s.Stdio.Env = redactSecretEnvMap(s.Stdio.Env)
+		}
+		if s.Auth.ClientSecret != "" {
+			s.Auth.ClientSecret = redactedSentinel
+		}
+		if s.Auth.Token != "" {
+			s.Auth.Token = redactedSentinel
+		}
+	}
+	if cfg.Telegram.BotToken != "" {
+		cfg.Telegram.BotToken = redactedSentinel
+	}
+	if cfg.Gateway.Auth.Token != "" {
+		cfg.Gateway.Auth.Token = redactedSentinel
+	}
+	if cfg.WebSearch.APIKey != "" {
+		cfg.WebSearch.APIKey = redactedSentinel
+	}
+	for k, v := range cfg.OTel.Headers {
+		if v != "" {
+			cfg.OTel.Headers[k] = redactedSentinel
+		}
+	}
+}
+
+// restoreSecretScalars mirrors restoreSecretEnvs/restoreSecretProviderKeys for
+// the non-map scalar secrets. Any incoming field whose value is exactly
+// redactedSentinel is swapped back to the stored value from current, so a
+// GET -> edit -> PUT round-trip never drops a secret the user did not retype.
+// A non-sentinel value is a genuine user edit and is left as-is.
+func restoreSecretScalars(incoming, current *config.Config) {
+	if incoming.Telegram.BotToken == redactedSentinel {
+		incoming.Telegram.BotToken = current.Telegram.BotToken
+	}
+	if incoming.Gateway.Auth.Token == redactedSentinel {
+		incoming.Gateway.Auth.Token = current.Gateway.Auth.Token
+	}
+	if incoming.WebSearch.APIKey == redactedSentinel {
+		incoming.WebSearch.APIKey = current.WebSearch.APIKey
+	}
+	for k, v := range incoming.OTel.Headers {
+		if v == redactedSentinel {
+			incoming.OTel.Headers[k] = current.OTel.Headers[k]
+		}
+	}
+	curByID := make(map[string]*config.MCPServerConfig, len(current.MCPServers))
+	for i := range current.MCPServers {
+		curByID[current.MCPServers[i].ID] = &current.MCPServers[i]
+	}
+	for i := range incoming.MCPServers {
+		s := &incoming.MCPServers[i]
+		cur := curByID[s.ID]
+		if cur == nil {
+			continue
+		}
+		if s.Auth.ClientSecret == redactedSentinel {
+			s.Auth.ClientSecret = cur.Auth.ClientSecret
+		}
+		if s.Auth.Token == redactedSentinel {
+			s.Auth.Token = cur.Auth.Token
 		}
 	}
 }
