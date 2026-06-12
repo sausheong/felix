@@ -320,6 +320,10 @@ func (a *CronSchedulerAdapter) Restore() error {
 	}
 	if len(stored) > 0 {
 		slog.Info("cron jobs restored", "count", len(stored), "path", a.JobsFile)
+		// Flush once now that all restored jobs are in. This rewrites the
+		// file canonically with only dynamic jobs (Source-filtered), dropping
+		// any static jobs an older build may have persisted into it.
+		a.persist()
 	}
 	return nil
 }

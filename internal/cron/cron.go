@@ -105,7 +105,10 @@ func (s *Scheduler) startJobLocked(ctx context.Context, job Job) {
 	go s.runJob(jobCtx, job)
 }
 
-// Stop cancels all running jobs and waits for them to finish.
+// Stop cancels all running jobs and waits for them to finish. The scheduler
+// is not restartable after Stop: the lifetime root context is cancelled and
+// left in place, so a subsequent Start is a no-op. Callers use one
+// scheduler per process lifetime and Stop once at shutdown.
 func (s *Scheduler) Stop() {
 	if s.cancel != nil {
 		s.cancel()
