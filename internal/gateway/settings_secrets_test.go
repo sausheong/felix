@@ -64,3 +64,33 @@ func TestRedactMCPHTTPAuthSecrets(t *testing.T) {
 	require.Equal(t, "cs", incoming.MCPServers[0].Auth.ClientSecret)
 	require.Equal(t, "tk", incoming.MCPServers[0].Auth.Token)
 }
+
+func TestRedactAndRestoreNestedHTTPAuth(t *testing.T) {
+	cur := &config.Config{
+		MCPServers: []config.MCPServerConfig{{
+			ID:   "h1",
+			HTTP: &config.MCPHTTPBlock{URL: "https://x/mcp", Auth: config.MCPAuthConfig{ClientSecret: "ncs", Token: "ntk"}},
+		}},
+	}
+	clone := &config.Config{
+		MCPServers: []config.MCPServerConfig{{
+			ID:   "h1",
+			HTTP: &config.MCPHTTPBlock{URL: "https://x/mcp", Auth: config.MCPAuthConfig{ClientSecret: "ncs", Token: "ntk"}},
+		}},
+	}
+	redactConfigSecrets(clone)
+	require.Equal(t, redactedSentinel, clone.MCPServers[0].HTTP.Auth.ClientSecret)
+	require.Equal(t, redactedSentinel, clone.MCPServers[0].HTTP.Auth.Token)
+	// URL is not a secret — must remain.
+	require.Equal(t, "https://x/mcp", clone.MCPServers[0].HTTP.URL)
+
+	incoming := &config.Config{
+		MCPServers: []config.MCPServerConfig{{
+			ID:   "h1",
+			HTTP: &config.MCPHTTPBlock{URL: "https://x/mcp", Auth: config.MCPAuthConfig{ClientSecret: redactedSentinel, Token: redactedSentinel}},
+		}},
+	}
+	restoreSecretScalars(incoming, cur)
+	require.Equal(t, "ncs", incoming.MCPServers[0].HTTP.Auth.ClientSecret)
+	require.Equal(t, "ntk", incoming.MCPServers[0].HTTP.Auth.Token)
+}

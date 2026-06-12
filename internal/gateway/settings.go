@@ -280,6 +280,14 @@ func redactConfigSecrets(cfg *config.Config) {
 		if s.Auth.Token != "" {
 			s.Auth.Token = redactedSentinel
 		}
+		if s.HTTP != nil {
+			if s.HTTP.Auth.ClientSecret != "" {
+				s.HTTP.Auth.ClientSecret = redactedSentinel
+			}
+			if s.HTTP.Auth.Token != "" {
+				s.HTTP.Auth.Token = redactedSentinel
+			}
+		}
 	}
 	if cfg.Telegram.BotToken != "" {
 		cfg.Telegram.BotToken = redactedSentinel
@@ -332,6 +340,14 @@ func restoreSecretScalars(incoming, current *config.Config) {
 		}
 		if s.Auth.Token == redactedSentinel {
 			s.Auth.Token = cur.Auth.Token
+		}
+		if s.HTTP != nil && cur.HTTP != nil {
+			if s.HTTP.Auth.ClientSecret == redactedSentinel {
+				s.HTTP.Auth.ClientSecret = cur.HTTP.Auth.ClientSecret
+			}
+			if s.HTTP.Auth.Token == redactedSentinel {
+				s.HTTP.Auth.Token = cur.HTTP.Auth.Token
+			}
 		}
 	}
 }
