@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sausheong/cortex"
@@ -40,6 +41,25 @@ type Result struct {
 	Cleanup   func() // call to gracefully shut down everything
 }
 
+// cortexAutoAddToolNames are the cortex tool names auto-added to every
+// agent's allowlist when cortex is enabled. Shared by the startup and
+// hot-reload paths so they can't drift.
+var cortexAutoAddToolNames = []string{"recall", "remember", "find_entities", "get_relationships"}
+
+// applyAutoAddedAllowlists augments every agent's Tools.Allow with the tool
+// names added at runtime: MCP-discovered tools, the task tool, and (when
+// cortex is enabled) the cortex tools. This MUST run before
+// BuildPermissionChecker on BOTH the startup path and the hot-reload path —
+// otherwise a curated Tools.Allow silently loses these grants after the
+// first config edit (finding R2).
+func applyAutoAddedAllowlists(cfg *config.Config, mcpNames []string) {
+	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
+	cfg.ApplyTaskToolToAllowlists()
+	if cfg.Cortex.Enabled {
+		cfg.ApplyCortexToolNamesToAllowlists(cortexAutoAddToolNames)
+	}
+}
+
 // ResolveProviderOpts builds ProviderOptions for a given provider name
 // from the config file only.
 func ResolveProviderOpts(name string, cfg *config.Config) llm.ProviderOptions {
@@ -50,6 +70,28 @@ func ResolveProviderOpts(name string, cfg *config.Config) llm.ProviderOptions {
 		Kind:    pcfg.Kind,
 	}
 }
+
+// providerHolder is an atomically-swappable provider map shared by the cron
+// agent factory and the subagent factory, so a hot reload that rebuilds
+// providers is visible to them at once (rotated/revoked keys take effect
+// everywhere, not just on the WebSocket path). Finding R5.
+type providerHolder struct {
+	p atomic.Pointer[map[string]llm.LLMProvider]
+}
+
+func newProviderHolder(m map[string]llm.LLMProvider) *providerHolder {
+	h := &providerHolder{}
+	h.p.Store(&m)
+	return h
+}
+
+func (h *providerHolder) get(name string) (llm.LLMProvider, bool) {
+	m := *h.p.Load()
+	p, ok := m[name]
+	return p, ok
+}
+
+func (h *providerHolder) store(m map[string]llm.LLMProvider) { h.p.Store(&m) }
 
 // InitProviders creates LLM providers from config.
 func InitProviders(cfg *config.Config) map[string]llm.LLMProvider {
@@ -143,6 +185,7 @@ func (a *CronSchedulerAdapter) addJobInternal(agentID, name, schedule, prompt st
 		AgentID:  agentID,
 		Schedule: schedule,
 		Prompt:   prompt,
+		Source:   "dynamic",
 		AgentFn:  agentFn,
 		OutputFn: a.OutputFn,
 	})
@@ -216,6 +259,9 @@ func (a *CronSchedulerAdapter) persist() {
 	jobs := a.Scheduler.Jobs()
 	out := make([]persistedJob, 0, len(jobs))
 	for _, j := range jobs {
+		if j.Source == "static" {
+			continue // static jobs live in felix.json5; don't persist them
+		}
 		out = append(out, persistedJob{
 			Name:     j.Name,
 			AgentID:  j.AgentID,
@@ -274,6 +320,10 @@ func (a *CronSchedulerAdapter) Restore() error {
 	}
 	if len(stored) > 0 {
 		slog.Info("cron jobs restored", "count", len(stored), "path", a.JobsFile)
+		// Flush once now that all restored jobs are in. This rewrites the
+		// file canonically with only dynamic jobs (Source-filtered), dropping
+		// any static jobs an older build may have persisted into it.
+		a.persist()
 	}
 	return nil
 }
@@ -448,6 +498,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 
 	// Init components
 	providers := InitProviders(cfg)
+	providerHldr := newProviderHolder(providers)
 	sessionsDir := filepath.Join(dataDir, "sessions")
 	sessionStore := session.NewStore(sessionsDir)
 
@@ -516,16 +567,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		mcpMgr.Close()
 		return nil, fmt.Errorf("register mcp tools: %w", err)
 	}
-	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
-	cfg.ApplyTaskToolToAllowlists()
-	// Auto-add cortex tool names to every agent's allowlist when cortex is
-	// enabled, so users don't have to list recall/remember/find_entities/
-	// get_relationships on each agent manually. Mirrors the MCP auto-add.
-	if cfg.Cortex.Enabled {
-		cfg.ApplyCortexToolNamesToAllowlists([]string{
-			"recall", "remember", "find_entities", "get_relationships",
-		})
-	}
+	applyAutoAddedAllowlists(cfg, mcpNames)
 
 	// Build a single PermissionChecker covering every agent in cfg. Same
 	// checker, different agent IDs per Runtime — StaticChecker keys on
@@ -675,9 +717,13 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		watcher, err := config.NewWatcher(cfg.Path(), func(newCfg *config.Config) {
 			cfg.UpdateFrom(newCfg)
 			newProviders := InitProviders(newCfg)
+			providerHldr.store(newProviders)
 			// Rebuild the permission checker from the new config and re-inject.
 			// Without this, edits to agent Tools.Allow/Deny in felix.json5
 			// silently no-op the dispatch-time gate until restart.
+			// Re-apply runtime auto-added grants first so curated Tools.Allow
+			// lists don't lose their MCP/task/cortex tools after an edit (R2).
+			applyAutoAddedAllowlists(newCfg, mcpNames)
 			wsHandler.SetPermission(newCfg.BuildPermissionChecker())
 			wsHandler.UpdateConfig(newCfg)
 			wsHandler.UpdateProviders(newProviders)
@@ -738,7 +784,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	// would otherwise flood the graph with tool-use chatter.
 	buildSubagentInputs := func(a *config.AgentConfig) (agent.RuntimeInputs, error) {
 		pName, _ := llm.ParseProviderModel(a.Model)
-		p, ok := providers[pName]
+		p, ok := providerHldr.get(pName)
 		if !ok {
 			return agent.RuntimeInputs{}, fmt.Errorf("provider %q not configured for subagent %q", pName, a.ID)
 		}
@@ -804,7 +850,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	buildCronAgentFn := func(agentCfg config.AgentConfig, jobName string) func(context.Context, string) (string, error) {
 		return func(ctx context.Context, prompt string) (string, error) {
 			pName, _ := llm.ParseProviderModel(agentCfg.Model)
-			p, ok := providers[pName]
+			p, ok := providerHldr.get(pName)
 			if !ok {
 				return "", fmt.Errorf("provider %q not available for cron job %q on agent %q", pName, jobName, agentCfg.ID)
 			}
@@ -854,19 +900,22 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	for _, agentCfg := range cfg.Agents.List {
 		for _, cronJob := range agentCfg.Cron {
 			providerName, _ := llm.ParseProviderModel(agentCfg.Model)
-			if _, ok := providers[providerName]; !ok {
+			if _, ok := providerHldr.get(providerName); !ok {
 				continue
 			}
 			agentCfg := agentCfg
 			cronJob := cronJob
 
-			cronScheduler.Add(cron.Job{
+			if err := cronScheduler.Add(cron.Job{
 				Name:     cronJob.Name,
 				AgentID:  agentCfg.ID,
 				Schedule: cronJob.Schedule,
 				Prompt:   cronJob.Prompt,
+				Source:   "static",
 				AgentFn:  buildCronAgentFn(agentCfg, cronJob.Name),
-			})
+			}); err != nil {
+				slog.Warn("skip duplicate static cron job", "name", cronJob.Name, "error", err)
+			}
 		}
 	}
 

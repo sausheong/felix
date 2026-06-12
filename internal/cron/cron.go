@@ -22,6 +22,7 @@ type Job struct {
 	Schedule string        // cron-like: "30m", "1h", "24h", or time.Duration parseable string
 	Prompt   string        // prompt to send to the agent
 	Paused   bool          // if true, the job is paused and not running
+	Source   string        // "static" (from config) or "dynamic" (tool-created); blank treated as dynamic
 	AgentFn  AgentFunc
 	OutputFn OutputFunc    // optional: called with the response when the job completes
 	interval time.Duration // parsed interval
@@ -51,7 +52,10 @@ func NewScheduler() *Scheduler {
 	}
 }
 
-// Add registers a new job with the scheduler.
+// Add registers a new job with the scheduler. Returns an error if the
+// schedule is unparseable or a job with the same name already exists
+// (names are unique; static config jobs are added before dynamic restores,
+// so a colliding dynamic job is rejected — static config wins).
 func (s *Scheduler) Add(job Job) error {
 	d, err := time.ParseDuration(job.Schedule)
 	if err != nil {
@@ -61,24 +65,33 @@ func (s *Scheduler) Add(job Job) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for i := range s.jobs {
+		if s.jobs[i].Name == job.Name {
+			return fmt.Errorf("cron job %q already exists", job.Name)
+		}
+	}
 	s.jobs = append(s.jobs, job)
 	return nil
 }
 
-// Start begins running all scheduled jobs.
+// Start begins running all scheduled jobs. It is idempotent: the
+// scheduler-lifetime root context is created exactly once, on the first
+// call. Subsequent calls start any jobs added since the last call against
+// that same root, so every job goroutine is a child of one cancellable
+// context and Stop() reliably cancels all of them.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ctx, cancel := context.WithCancel(ctx)
-	s.ctx = ctx
-	s.cancel = cancel
+	if s.cancel == nil {
+		s.ctx, s.cancel = context.WithCancel(ctx)
+	}
 
 	for _, job := range s.jobs {
 		if _, exists := s.running[job.Name]; exists {
 			continue // already running
 		}
-		s.startJobLocked(ctx, job)
+		s.startJobLocked(s.ctx, job)
 	}
 
 	slog.Info("cron scheduler started", "jobs", len(s.running))
@@ -92,7 +105,10 @@ func (s *Scheduler) startJobLocked(ctx context.Context, job Job) {
 	go s.runJob(jobCtx, job)
 }
 
-// Stop cancels all running jobs and waits for them to finish.
+// Stop cancels all running jobs and waits for them to finish. The scheduler
+// is not restartable after Stop: the lifetime root context is cancelled and
+// left in place, so a subsequent Start is a no-op. Callers use one
+// scheduler per process lifetime and Stop once at shutdown.
 func (s *Scheduler) Stop() {
 	if s.cancel != nil {
 		s.cancel()

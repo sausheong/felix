@@ -107,3 +107,55 @@ func TestSchedulerMultipleJobs(t *testing.T) {
 	assert.GreaterOrEqual(t, count1.Load(), int32(1))
 	assert.GreaterOrEqual(t, count2.Load(), int32(1))
 }
+
+func TestSchedulerStartIdempotentNoHang(t *testing.T) {
+	s := NewScheduler()
+	require.NoError(t, s.Add(Job{
+		Name: "j1", Schedule: "1h",
+		AgentFn: func(ctx context.Context, p string) (string, error) { return "ok", nil },
+	}))
+
+	ctx := context.Background()
+	s.Start(ctx) // first generation
+
+	require.NoError(t, s.Add(Job{
+		Name: "j2", Schedule: "1h",
+		AgentFn: func(ctx context.Context, p string) (string, error) { return "ok", nil },
+	}))
+	s.Start(ctx) // second generation
+
+	require.Len(t, s.Jobs(), 2)
+
+	done := make(chan struct{})
+	go func() { s.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop() hung — Start is not idempotent (orphaned job context)")
+	}
+}
+
+func TestSchedulerAddRejectsDuplicateName(t *testing.T) {
+	s := NewScheduler()
+	require.NoError(t, s.Add(Job{
+		Name: "dup", Schedule: "1h", Source: "static",
+		AgentFn: func(ctx context.Context, p string) (string, error) { return "ok", nil },
+	}))
+	err := s.Add(Job{
+		Name: "dup", Schedule: "1h", Source: "dynamic",
+		AgentFn: func(ctx context.Context, p string) (string, error) { return "ok", nil },
+	})
+	require.Error(t, err, "second Add with same name must be rejected")
+	require.Len(t, s.Jobs(), 1)
+}
+
+func TestSchedulerJobsSurfacesSource(t *testing.T) {
+	s := NewScheduler()
+	require.NoError(t, s.Add(Job{
+		Name: "s1", Schedule: "1h", Source: "static",
+		AgentFn: func(ctx context.Context, p string) (string, error) { return "ok", nil },
+	}))
+	jobs := s.Jobs()
+	require.Len(t, jobs, 1)
+	require.Equal(t, "static", jobs[0].Source)
+}
