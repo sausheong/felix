@@ -48,3 +48,23 @@ func TestRequireSameOrigin(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, call("POST", map[string]string{"Origin": "http://evil.com"}))
 	require.Equal(t, http.StatusForbidden, call("GET", map[string]string{"Sec-Fetch-Site": "cross-site"}))
 }
+
+func TestAllowedOriginsDelegates(t *testing.T) {
+	check := AllowedOrigins(nil)
+
+	mk := func(origin string) *http.Request {
+		req := httptest.NewRequest("GET", "/ws", nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		return req
+	}
+
+	require.True(t, check(mk("")))                      // no Origin => allowed (CLI)
+	require.True(t, check(mk("http://localhost:3000"))) // localhost => allowed
+	require.False(t, check(mk("http://evil.com")))      // cross-site => blocked
+
+	checkAllow := AllowedOrigins([]string{"https://app.example.com"})
+	require.True(t, checkAllow(mk("https://app.example.com")))
+	require.False(t, checkAllow(mk("https://other.example.com")))
+}
