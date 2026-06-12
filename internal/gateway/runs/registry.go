@@ -43,6 +43,7 @@ type Run struct {
 
 	mu          sync.Mutex
 	log         *logWriter
+	closed      bool // true after Finish closes log; guarded by mu
 	subscribers map[*websocket.Conn]*subscriber
 	indexPath   string
 	logPath     string
@@ -245,11 +246,11 @@ func (r *Registry) SupersedeAndCreate(scope SessionScope, runID string, cancel c
 // (and won't be re-fanned to this new subscriber), and any event with
 // seq > lastSeq is not yet on disk (so gap-fill can't see it).
 func (r *Run) Append(t EventType, payload []byte) (int64, error) {
-	if r.Completed.Load() {
-		return 0, fmt.Errorf("run %s already completed", r.ID)
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.Completed.Load() || r.closed {
+		return 0, fmt.Errorf("run %s already completed", r.ID)
+	}
 	seq := r.LastSeq.Add(1)
 	e := Event{
 		Seq:     seq,
@@ -272,6 +273,8 @@ func (r *Run) Finish(status Status, reason CancelReason, supersededBy string) er
 		return nil
 	}
 	close(r.done) // signal Done() listeners; safe — CAS ran exactly once
+
+	r.mu.Lock()
 	seq := r.LastSeq.Add(1)
 	e := Event{
 		Seq:          seq,
@@ -283,6 +286,8 @@ func (r *Run) Finish(status Status, reason CancelReason, supersededBy string) er
 	}
 	logErr := r.log.Append(e)
 	_ = r.log.Close()
+	r.closed = true
+	r.mu.Unlock()
 
 	// Persist terminal index BEFORE notifying subscribers, so the
 	// "done" signal is the last thing that happens. A subscriber that
