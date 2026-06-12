@@ -19,20 +19,22 @@ import (
 // surface in verbose logs without spamming default output.
 //
 // id is used purely for log labelling. command is looked up via PATH (so
-// "npx", "python", etc. work without an absolute path). env is merged onto
-// os.Environ() — later entries win, so PATH and other inherited vars stay
-// present unless explicitly overridden.
+// "npx", "python", etc. work without an absolute path). By default the
+// subprocess receives only a minimal base env (PATH/HOME/temp/locale) so
+// Felix's secrets (provider API keys, OTEL_*, etc.) are not leaked into the
+// third-party binary; the explicit env overrides are then merged on top.
+// Set inheritEnv to pass the full os.Environ() through instead.
 //
 // On any failure (binary missing, MCP handshake refused, etc.) the spawned
 // process is cleaned up by the SDK transport's failure path and an error is
 // returned. The Manager's existing log+skip behavior treats this identically
 // to an unreachable HTTP server.
-func ConnectStdio(ctx context.Context, id, command string, args []string, env map[string]string) (*Client, error) {
+func ConnectStdio(ctx context.Context, id, command string, args []string, env map[string]string, inheritEnv bool) (*Client, error) {
 	if command == "" {
 		return nil, fmt.Errorf("mcp stdio %s: empty command", id)
 	}
 	cmd := exec.Command(command, args...)
-	cmd.Env = mergedEnv(os.Environ(), env)
+	cmd.Env = stdioEnvFor(os.Environ(), env, inheritEnv)
 
 	// StderrPipe must be wired up before CommandTransport.Connect calls
 	// cmd.Start — calling StderrPipe after Start panics. The forwarder
@@ -54,6 +56,42 @@ func ConnectStdio(ctx context.Context, id, command string, args []string, env ma
 		return nil, fmt.Errorf("mcp stdio connect %s (%s): %w", id, command, err)
 	}
 	return &Client{session: session}, nil
+}
+
+// minimalBaseEnvKeys are the parent-env variables passed to a stdio MCP
+// subprocess by default. PATH/HOME/temp/locale are needed for node/python to
+// start; secrets (provider keys, OTEL_*, anything else) are deliberately
+// excluded. Windows names cover what node/python need to launch there.
+var minimalBaseEnvKeys = map[string]bool{
+	"PATH": true, "HOME": true, "TMPDIR": true, "TEMP": true, "TMP": true,
+	"LANG": true, "TZ": true,
+	// Windows:
+	"SystemRoot": true, "USERPROFILE": true, "APPDATA": true,
+	"LOCALAPPDATA": true, "ProgramData": true, "PATHEXT": true, "ComSpec": true,
+}
+
+// minimalBaseEnv filters parent down to the curated allowlist (plus any LC_*
+// locale vars). Order is preserved.
+func minimalBaseEnv(parent []string) []string {
+	out := make([]string, 0, len(minimalBaseEnvKeys))
+	for _, kv := range parent {
+		key, _, _ := strings.Cut(kv, "=")
+		if minimalBaseEnvKeys[key] || strings.HasPrefix(key, "LC_") {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// stdioEnvFor builds the subprocess environment. When inheritEnv is false
+// (default) the base is the minimal allowlist; when true it is the full
+// parent. The server's explicit overrides are merged on top in both cases.
+func stdioEnvFor(parent []string, overrides map[string]string, inheritEnv bool) []string {
+	base := parent
+	if !inheritEnv {
+		base = minimalBaseEnv(parent)
+	}
+	return mergedEnv(base, overrides)
 }
 
 // mergedEnv returns parent ++ overrides, deduplicated by KEY with later
