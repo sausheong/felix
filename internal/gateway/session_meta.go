@@ -66,7 +66,7 @@ func writeSessionMeta(sessionsBase, agentID, sessionKey, title string) error {
 	if err != nil {
 		return err
 	}
-	return config.WriteFileAtomic(path, data, 0o644)
+	return config.WriteFileAtomic(path, data, 0o600)
 }
 
 // validateSessionTitle enforces length cap and rejects ASCII control

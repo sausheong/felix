@@ -342,7 +342,7 @@ func (h *FilesHandlers) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	out, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		writeFilesError(w, http.StatusInternalServerError, err)
 		return
