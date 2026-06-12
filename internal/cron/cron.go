@@ -22,6 +22,7 @@ type Job struct {
 	Schedule string        // cron-like: "30m", "1h", "24h", or time.Duration parseable string
 	Prompt   string        // prompt to send to the agent
 	Paused   bool          // if true, the job is paused and not running
+	Source   string        // "static" (from config) or "dynamic" (tool-created); blank treated as dynamic
 	AgentFn  AgentFunc
 	OutputFn OutputFunc    // optional: called with the response when the job completes
 	interval time.Duration // parsed interval
@@ -51,7 +52,10 @@ func NewScheduler() *Scheduler {
 	}
 }
 
-// Add registers a new job with the scheduler.
+// Add registers a new job with the scheduler. Returns an error if the
+// schedule is unparseable or a job with the same name already exists
+// (names are unique; static config jobs are added before dynamic restores,
+// so a colliding dynamic job is rejected — static config wins).
 func (s *Scheduler) Add(job Job) error {
 	d, err := time.ParseDuration(job.Schedule)
 	if err != nil {
@@ -61,6 +65,11 @@ func (s *Scheduler) Add(job Job) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for i := range s.jobs {
+		if s.jobs[i].Name == job.Name {
+			return fmt.Errorf("cron job %q already exists", job.Name)
+		}
+	}
 	s.jobs = append(s.jobs, job)
 	return nil
 }

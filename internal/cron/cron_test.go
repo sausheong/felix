@@ -134,3 +134,28 @@ func TestSchedulerStartIdempotentNoHang(t *testing.T) {
 		t.Fatal("Stop() hung — Start is not idempotent (orphaned job context)")
 	}
 }
+
+func TestSchedulerAddRejectsDuplicateName(t *testing.T) {
+	s := NewScheduler()
+	require.NoError(t, s.Add(Job{
+		Name: "dup", Schedule: "1h", Source: "static",
+		AgentFn: func(ctx context.Context, p string) (string, error) { return "ok", nil },
+	}))
+	err := s.Add(Job{
+		Name: "dup", Schedule: "1h", Source: "dynamic",
+		AgentFn: func(ctx context.Context, p string) (string, error) { return "ok", nil },
+	})
+	require.Error(t, err, "second Add with same name must be rejected")
+	require.Len(t, s.Jobs(), 1)
+}
+
+func TestSchedulerJobsSurfacesSource(t *testing.T) {
+	s := NewScheduler()
+	require.NoError(t, s.Add(Job{
+		Name: "s1", Schedule: "1h", Source: "static",
+		AgentFn: func(ctx context.Context, p string) (string, error) { return "ok", nil },
+	}))
+	jobs := s.Jobs()
+	require.Len(t, jobs, 1)
+	require.Equal(t, "static", jobs[0].Source)
+}
