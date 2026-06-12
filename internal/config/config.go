@@ -846,21 +846,19 @@ func (c *Config) SetPath(path string) {
 func (c *Config) Save() error {
 	c.mu.RLock()
 	path := c.path
+	data, err := json.MarshalIndent(c, "", "  ")
 	c.mu.RUnlock()
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
 
 	if path == "" {
 		path = DefaultConfigPath()
 	}
 
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := WriteFileAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
-
 	return nil
 }
 
