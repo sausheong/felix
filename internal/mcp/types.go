@@ -52,7 +52,8 @@ type HTTPAuthConfig struct {
 // Env map is merged onto os.Environ() at spawn time so the child inherits
 // PATH and other parent env vars unless explicitly overridden.
 type StdioServerConfig struct {
-	Command string
-	Args    []string
-	Env     map[string]string
+	Command    string
+	Args       []string
+	Env        map[string]string
+	InheritEnv bool
 }
