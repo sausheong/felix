@@ -32,6 +32,37 @@ func TestMinimalBaseEnvExcludesSecrets(t *testing.T) {
 	require.False(t, asMap["OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer z"])
 }
 
+func TestMinimalBaseEnvKeepsProxyAndCAVars(t *testing.T) {
+	parent := []string{
+		"HTTPS_PROXY=http://proxy:8080",
+		"http_proxy=http://proxy:8080",
+		"NO_PROXY=localhost",
+		"no_proxy=localhost",
+		"NODE_EXTRA_CA_CERTS=/etc/ssl/corp.pem",
+		"SSL_CERT_FILE=/etc/ssl/certs.pem",
+		"SSL_CERT_DIR=/etc/ssl/certs",
+		"CURL_CA_BUNDLE=/etc/ssl/curl.pem",
+		"REQUESTS_CA_BUNDLE=/etc/ssl/req.pem",
+		"OPENAI_API_KEY=sk-should-drop",
+	}
+	got := minimalBaseEnv(parent)
+	asMap := map[string]bool{}
+	for _, kv := range got {
+		asMap[kv] = true
+	}
+	require.True(t, asMap["HTTPS_PROXY=http://proxy:8080"])
+	require.True(t, asMap["http_proxy=http://proxy:8080"])
+	require.True(t, asMap["NO_PROXY=localhost"])
+	require.True(t, asMap["no_proxy=localhost"])
+	require.True(t, asMap["NODE_EXTRA_CA_CERTS=/etc/ssl/corp.pem"])
+	require.True(t, asMap["SSL_CERT_FILE=/etc/ssl/certs.pem"])
+	require.True(t, asMap["SSL_CERT_DIR=/etc/ssl/certs"])
+	require.True(t, asMap["CURL_CA_BUNDLE=/etc/ssl/curl.pem"])
+	require.True(t, asMap["REQUESTS_CA_BUNDLE=/etc/ssl/req.pem"])
+	// A real secret with no proxy/CA shape is still dropped.
+	require.False(t, asMap["OPENAI_API_KEY=sk-should-drop"])
+}
+
 func TestStdioEnvForUsesMinimalByDefault(t *testing.T) {
 	parent := []string{"PATH=/usr/bin", "SECRET=x"}
 	overrides := map[string]string{"FOO": "bar"}

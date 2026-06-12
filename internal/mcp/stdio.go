@@ -60,23 +60,39 @@ func ConnectStdio(ctx context.Context, id, command string, args []string, env ma
 
 // minimalBaseEnvKeys are the parent-env variables passed to a stdio MCP
 // subprocess by default. PATH/HOME/temp/locale are needed for node/python to
-// start; secrets (provider keys, OTEL_*, anything else) are deliberately
-// excluded. Windows names cover what node/python need to launch there.
+// start; the proxy/CA-cert vars are needed for a server to reach the network
+// behind a corporate proxy or with a custom trust store. Secrets (provider
+// keys, OTEL_*, anything else) are deliberately excluded. Windows names cover
+// what node/python need to launch there.
+//
+// Proxy vars are conventionally honoured in both upper- and lower-case
+// (HTTPS_PROXY / https_proxy); those are matched case-insensitively in
+// minimalBaseEnv rather than enumerated here. The CA-cert vars are
+// conventionally upper-case only.
 var minimalBaseEnvKeys = map[string]bool{
 	"PATH": true, "HOME": true, "TMPDIR": true, "TEMP": true, "TMP": true,
 	"LANG": true, "TZ": true,
+	// TLS trust store / custom CA bundles (corporate MITM proxies, private CAs):
+	"NODE_EXTRA_CA_CERTS": true, "SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
+	"CURL_CA_BUNDLE": true, "REQUESTS_CA_BUNDLE": true,
 	// Windows:
 	"SystemRoot": true, "USERPROFILE": true, "APPDATA": true,
 	"LOCALAPPDATA": true, "ProgramData": true, "PATHEXT": true, "ComSpec": true,
 }
 
+// proxyEnvKeys are matched case-insensitively (both HTTPS_PROXY and
+// https_proxy are honoured by most HTTP clients).
+var proxyEnvKeys = map[string]bool{
+	"http_proxy": true, "https_proxy": true, "all_proxy": true, "no_proxy": true,
+}
+
 // minimalBaseEnv filters parent down to the curated allowlist (plus any LC_*
-// locale vars). Order is preserved.
+// locale vars and the case-insensitive proxy vars). Order is preserved.
 func minimalBaseEnv(parent []string) []string {
 	out := make([]string, 0, len(minimalBaseEnvKeys))
 	for _, kv := range parent {
 		key, _, _ := strings.Cut(kv, "=")
-		if minimalBaseEnvKeys[key] || strings.HasPrefix(key, "LC_") {
+		if minimalBaseEnvKeys[key] || strings.HasPrefix(key, "LC_") || proxyEnvKeys[strings.ToLower(key)] {
 			out = append(out, kv)
 		}
 	}

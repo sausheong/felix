@@ -518,19 +518,30 @@ Felix can connect to external [Model Context Protocol](https://modelcontextproto
       }
     },
 
-    // Stdio: Felix spawns the child process, inherits PATH
+    // Stdio: Felix spawns the child process with a minimal environment
     {
       "id": "fs-tools",
       "transport": "stdio",
       "enabled": true,
       "stdio": {
         "command": "uvx",
-        "args": ["mcp-server-filesystem", "/Users/me/projects"]
+        "args": ["mcp-server-filesystem", "/Users/me/projects"],
+        "env": { "EXTRA_VAR": "value" },   // explicit vars, merged on top of the base
+        "inherit_env": false               // default; see note below
       }
     }
   ]
 }
 ```
+
+**Stdio subprocess environment.** By default Felix does **not** pass its full
+environment to a spawned stdio MCP server — a third-party `npx`/`python`/binary
+should not receive your provider API keys, `OTEL_*` headers, or other secrets.
+The child gets a minimal base env (`PATH`, `HOME`, temp dir, locale, timezone,
+common proxy vars such as `HTTPS_PROXY`/`NO_PROXY`, and TLS trust-store vars such
+as `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`) plus whatever you list in the server's
+`env` map. If a server genuinely needs the full parent environment, set
+`"inherit_env": true` on that server's `stdio` block to opt back in.
 
 Tools discovered from an MCP server are auto-added to agent allowlists at startup. Servers can also be edited from the Settings UI's MCP tab. A per-server circuit breaker stops calling a stuck upstream after 3 consecutive auth failures so the agent can't fall into a token-burning self-heal loop.
 
