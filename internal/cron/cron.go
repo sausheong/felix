@@ -65,20 +65,24 @@ func (s *Scheduler) Add(job Job) error {
 	return nil
 }
 
-// Start begins running all scheduled jobs.
+// Start begins running all scheduled jobs. It is idempotent: the
+// scheduler-lifetime root context is created exactly once, on the first
+// call. Subsequent calls start any jobs added since the last call against
+// that same root, so every job goroutine is a child of one cancellable
+// context and Stop() reliably cancels all of them.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ctx, cancel := context.WithCancel(ctx)
-	s.ctx = ctx
-	s.cancel = cancel
+	if s.cancel == nil {
+		s.ctx, s.cancel = context.WithCancel(ctx)
+	}
 
 	for _, job := range s.jobs {
 		if _, exists := s.running[job.Name]; exists {
 			continue // already running
 		}
-		s.startJobLocked(ctx, job)
+		s.startJobLocked(s.ctx, job)
 	}
 
 	slog.Info("cron scheduler started", "jobs", len(s.running))
