@@ -194,7 +194,7 @@ func connectOne(ctx context.Context, cfg ManagerServerConfig) (*Client, error) {
 		if cfg.Stdio == nil {
 			return nil, fmt.Errorf("stdio transport requires Stdio block")
 		}
-		return ConnectStdio(ctx, cfg.ID, cfg.Stdio.Command, cfg.Stdio.Args, cfg.Stdio.Env)
+		return ConnectStdio(ctx, cfg.ID, cfg.Stdio.Command, cfg.Stdio.Args, cfg.Stdio.Env, cfg.Stdio.InheritEnv)
 	default:
 		return nil, fmt.Errorf("unknown transport %q", cfg.Transport)
 	}

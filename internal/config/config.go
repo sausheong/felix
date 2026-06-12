@@ -98,9 +98,10 @@ type MCPHTTPBlock struct {
 // are merged onto os.Environ() at spawn time so the child inherits PATH
 // (and any other parent env vars) unless explicitly overridden.
 type MCPStdioBlock struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
+	Command    string            `json:"command"`
+	Args       []string          `json:"args,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	InheritEnv bool              `json:"inherit_env,omitempty"` // opt-in: pass full parent env to the subprocess (default: minimal base + Env)
 }
 
 // MCPAuthConfig describes how Felix authenticates to an HTTP MCP server.
@@ -845,21 +846,19 @@ func (c *Config) SetPath(path string) {
 func (c *Config) Save() error {
 	c.mu.RLock()
 	path := c.path
+	data, err := json.MarshalIndent(c, "", "  ")
 	c.mu.RUnlock()
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
 
 	if path == "" {
 		path = DefaultConfigPath()
 	}
 
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := WriteFileAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
-
 	return nil
 }
 
@@ -983,9 +982,10 @@ func (c *Config) ResolveMCPServers() ([]mcp.ManagerServerConfig, error) {
 				ToolPrefix: s.ToolPrefix,
 				Transport:  "stdio",
 				Stdio: &mcp.StdioServerConfig{
-					Command: s.Stdio.Command,
-					Args:    s.Stdio.Args,
-					Env:     s.Stdio.Env,
+					Command:    s.Stdio.Command,
+					Args:       s.Stdio.Args,
+					Env:        s.Stdio.Env,
+					InheritEnv: s.Stdio.InheritEnv,
 				},
 				ParallelSafe: s.ParallelSafe,
 			})

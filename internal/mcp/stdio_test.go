@@ -47,7 +47,7 @@ func TestConnectStdio_NonexistentBinaryFails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := ConnectStdio(ctx, "test-bad", "/no/such/binary-felix-test", nil, nil)
+	_, err := ConnectStdio(ctx, "test-bad", "/no/such/binary-felix-test", nil, nil, false)
 	require.Error(t, err)
 }
 
@@ -55,7 +55,7 @@ func TestConnectStdio_EmptyCommandFails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := ConnectStdio(ctx, "test-empty", "", nil, nil)
+	_, err := ConnectStdio(ctx, "test-empty", "", nil, nil, false)
 	require.Error(t, err)
 }
 
@@ -75,6 +75,6 @@ func TestConnectStdio_HandshakeFailsOnNonMCPProcess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := ConnectStdio(ctx, "cat-test", "cat", nil, nil)
+	_, err := ConnectStdio(ctx, "cat-test", "cat", nil, nil, false)
 	require.Error(t, err, "cat does not speak MCP; handshake must fail")
 }

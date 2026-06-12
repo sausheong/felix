@@ -5,9 +5,33 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 )
+
+// secretScrubbers are applied to every log message + attribute before the
+// record enters the ring buffer and SSE fan-out. Best-effort defense in depth:
+// the canonical fix is to not log secrets, but these close the known leak
+// shapes (provider auth errors, MCP stderr, Telegram bot-token URLs).
+var secretScrubbers = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`(?i)bearer\s+\S+`), "Bearer [REDACTED]"},
+	{regexp.MustCompile(`(?i)(api[_-]?key|token|secret|password)(\s*[=:]\s*)\S+`), "${1}${2}[REDACTED]"},
+	{regexp.MustCompile(`sk-[A-Za-z0-9]{16,}`), "[REDACTED]"},
+	{regexp.MustCompile(`bot\d+:[A-Za-z0-9_-]{30,}`), "bot[REDACTED]"},
+	{regexp.MustCompile(`//[^/@\s]+:[^/@\s]+@`), "//[REDACTED]@"},
+}
+
+// scrubSecrets returns s with known secret shapes masked.
+func scrubSecrets(s string) string {
+	for _, sc := range secretScrubbers {
+		s = sc.re.ReplaceAllString(s, sc.repl)
+	}
+	return s
+}
 
 // LogEntry is a single captured log record.
 type LogEntry struct {
@@ -61,14 +85,14 @@ func (b *LogBuffer) Handle(ctx context.Context, r slog.Record) error {
 		if attrs != "" {
 			attrs += " "
 		}
-		attrs += a.Key + "=" + a.Value.String()
+		attrs += a.Key + "=" + scrubSecrets(a.Value.String())
 		return true
 	})
 
 	entry := LogEntry{
 		Time:    r.Time,
 		Level:   r.Level,
-		Message: r.Message,
+		Message: scrubSecrets(r.Message),
 		Attrs:   attrs,
 	}
 

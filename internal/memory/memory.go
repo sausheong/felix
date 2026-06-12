@@ -240,7 +240,7 @@ func (m *Manager) Save(id, content string) error {
 	}
 
 	path := filepath.Join(entriesDir, id+".md")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write memory entry: %w", err)
 	}
 

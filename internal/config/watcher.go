@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 // Watcher watches the config file and calls a callback on changes.
 type Watcher struct {
 	path     string
+	dir      string // parent directory actually registered with fsnotify
+	name     string // base filename we filter events by
 	callback func(*Config)
 	watcher  *fsnotify.Watcher
 	stop     chan struct{}
@@ -18,17 +21,28 @@ type Watcher struct {
 }
 
 // NewWatcher creates a new config file watcher.
+//
+// It watches the file's PARENT DIRECTORY (not the file inode) and filters
+// events by basename. This is the standard fsnotify pattern for surviving
+// atomic rename-replace saves: editors (vim, VS Code) and Felix's own
+// Config.Save write a temp file and rename it over the target, which swaps the
+// inode. A watch added directly on the file path is bound to the old inode and
+// goes deaf after the first such save; a directory watch keeps firing because
+// the directory inode is stable.
 func NewWatcher(path string, callback func(*Config)) (*Watcher, error) {
 	fw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
-	if err := fw.Add(path); err != nil {
+	dir := filepath.Dir(path)
+	if err := fw.Add(dir); err != nil {
 		fw.Close()
 		return nil, err
 	}
 	return &Watcher{
 		path:     path,
+		dir:      dir,
+		name:     filepath.Base(path),
 		callback: callback,
 		watcher:  fw,
 		stop:     make(chan struct{}),
@@ -43,13 +57,27 @@ func (w *Watcher) Start() {
 func (w *Watcher) run() {
 	// Debounce: editors often do rename+create or multiple writes
 	var debounce *time.Timer
+	// Ensure a pending debounce timer is stopped on exit so it can't fire a
+	// reload after Stop() (and so the timer's resources are released).
+	defer func() {
+		if debounce != nil {
+			debounce.Stop()
+		}
+	}()
 	for {
 		select {
 		case event, ok := <-w.watcher.Events:
 			if !ok {
 				return
 			}
-			if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
+			// We watch the parent directory, so filter to events for our
+			// file. Create/Rename cover atomic rename-replace saves (the
+			// temp file is renamed onto our name); Write covers in-place
+			// edits.
+			if filepath.Base(event.Name) != w.name {
+				continue
+			}
+			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) != 0 {
 				if debounce != nil {
 					debounce.Stop()
 				}
