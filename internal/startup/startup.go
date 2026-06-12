@@ -143,6 +143,7 @@ func (a *CronSchedulerAdapter) addJobInternal(agentID, name, schedule, prompt st
 		AgentID:  agentID,
 		Schedule: schedule,
 		Prompt:   prompt,
+		Source:   "dynamic",
 		AgentFn:  agentFn,
 		OutputFn: a.OutputFn,
 	})
@@ -216,6 +217,9 @@ func (a *CronSchedulerAdapter) persist() {
 	jobs := a.Scheduler.Jobs()
 	out := make([]persistedJob, 0, len(jobs))
 	for _, j := range jobs {
+		if j.Source == "static" {
+			continue // static jobs live in felix.json5; don't persist them
+		}
 		out = append(out, persistedJob{
 			Name:     j.Name,
 			AgentID:  j.AgentID,
@@ -860,13 +864,16 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			agentCfg := agentCfg
 			cronJob := cronJob
 
-			cronScheduler.Add(cron.Job{
+			if err := cronScheduler.Add(cron.Job{
 				Name:     cronJob.Name,
 				AgentID:  agentCfg.ID,
 				Schedule: cronJob.Schedule,
 				Prompt:   cronJob.Prompt,
+				Source:   "static",
 				AgentFn:  buildCronAgentFn(agentCfg, cronJob.Name),
-			})
+			}); err != nil {
+				slog.Warn("skip duplicate static cron job", "name", cronJob.Name, "error", err)
+			}
 		}
 	}
 
