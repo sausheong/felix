@@ -70,44 +70,33 @@ func NewServer(host string, port int, wsHandler *WebSocketHandler, opts ...Serve
 }
 
 func (s *Server) routes() {
+	// --- Unguarded: health, websocket, static assets, read-only GETs ---
 	s.router.Get("/health", s.handleHealth)
 	s.router.Get("/ws", s.wsHandler.Handle)
 
-	// Serve the embedded Felix logo at the conventional favicon paths so
-	// browser tabs show the Felix mark instead of the generic globe icon.
 	s.router.Mount("/favicon.ico", FaviconHandler())
 	s.router.Mount("/favicon.png", FaviconHandler())
 	s.router.Mount("/logo-mark.png", LogoMarkHandler())
 
-	// Restart the gateway process. Under felix-app (the menubar wrapper)
-	// the supervisor respawns automatically. Under direct `felix start`
-	// the user must re-launch manually.
-	s.router.Post("/admin/restart", NewRestartHandler())
-
 	if s.opts.MetricsHandler != nil {
 		s.router.Get("/metrics", s.opts.MetricsHandler)
 	}
-
 	if s.opts.UIHandler != nil {
 		s.router.Mount("/ui", s.opts.UIHandler)
 	}
-
 	if s.opts.ChatHandler != nil {
 		s.router.Get("/chat", s.opts.ChatHandler)
 		s.router.Get("/", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/chat", http.StatusFound)
 		})
 	}
-
 	if s.opts.JobsHandler != nil {
 		s.router.Get("/jobs", s.opts.JobsHandler)
 	}
-
 	if s.opts.Settings != nil {
 		s.router.Get("/settings", s.opts.Settings.Page)
 		s.router.Get("/settings/", s.opts.Settings.Page)
 		s.router.Get("/settings/api/config", s.opts.Settings.GetConfig)
-		s.router.Post("/settings/api/config", s.opts.Settings.SaveConfig)
 		if s.opts.Settings.ListTools != nil {
 			s.router.Get("/settings/api/tools", s.opts.Settings.ListTools)
 		}
@@ -115,40 +104,52 @@ func (s *Server) routes() {
 			s.router.Get("/settings/api/bootstrap", s.opts.Settings.BootstrapStatus)
 		}
 	}
-
 	if s.opts.Skills != nil {
 		s.router.Get("/settings/api/skills", s.opts.Skills.List)
 		s.router.Get("/settings/api/skills/{name}", s.opts.Skills.Get)
-		s.router.Post("/settings/api/skills", s.opts.Skills.Upload)
-		s.router.Delete("/settings/api/skills/{name}", s.opts.Skills.Delete)
 	}
-
 	if s.opts.Memory != nil {
 		s.router.Get("/settings/api/memory", s.opts.Memory.List)
 		s.router.Get("/settings/api/memory/{id}", s.opts.Memory.Get)
-		s.router.Post("/settings/api/memory", s.opts.Memory.Save)
-		s.router.Delete("/settings/api/memory/{id}", s.opts.Memory.Delete)
 	}
-
-	if s.opts.MCP != nil {
-		s.router.Post("/api/mcp/reauth/{id}", s.opts.MCP.Reauth)
-	}
-
-	if s.opts.LogBuffer != nil {
-		s.router.Get("/logs", NewLogsHandler(s.opts.LogBuffer))
-		s.router.Get("/logs/stream", NewLogsStreamHandler(s.opts.LogBuffer))
-	}
-
 	if s.opts.Files != nil {
 		s.router.Get("/files", NewFilesPageHandler())
 		s.router.Get("/files/list", s.opts.Files.List)
 		s.router.Get("/files/raw", s.opts.Files.Raw)
-		s.router.Post("/files/upload", s.opts.Files.Upload)
-		s.router.Delete("/files", s.opts.Files.Delete)
-		s.router.Post("/files/move", s.opts.Files.Move)
-		s.router.Post("/files/rename", s.opts.Files.Rename)
-		s.router.Post("/files/mkdir", s.opts.Files.MkDir)
 	}
+
+	// --- Guarded: mutating routes + sensitive GETs (/logs*) + restart ---
+	s.router.Group(func(r chi.Router) {
+		r.Use(RequireSameOrigin(s.opts.AllowedOrigins))
+
+		r.Post("/admin/restart", NewRestartHandler())
+
+		if s.opts.Settings != nil {
+			r.Post("/settings/api/config", s.opts.Settings.SaveConfig)
+		}
+		if s.opts.Skills != nil {
+			r.Post("/settings/api/skills", s.opts.Skills.Upload)
+			r.Delete("/settings/api/skills/{name}", s.opts.Skills.Delete)
+		}
+		if s.opts.Memory != nil {
+			r.Post("/settings/api/memory", s.opts.Memory.Save)
+			r.Delete("/settings/api/memory/{id}", s.opts.Memory.Delete)
+		}
+		if s.opts.MCP != nil {
+			r.Post("/api/mcp/reauth/{id}", s.opts.MCP.Reauth)
+		}
+		if s.opts.LogBuffer != nil {
+			r.Get("/logs", NewLogsHandler(s.opts.LogBuffer))
+			r.Get("/logs/stream", NewLogsStreamHandler(s.opts.LogBuffer))
+		}
+		if s.opts.Files != nil {
+			r.Post("/files/upload", s.opts.Files.Upload)
+			r.Delete("/files", s.opts.Files.Delete)
+			r.Post("/files/move", s.opts.Files.Move)
+			r.Post("/files/rename", s.opts.Files.Rename)
+			r.Post("/files/mkdir", s.opts.Files.MkDir)
+		}
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
