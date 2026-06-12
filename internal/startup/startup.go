@@ -743,6 +743,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			return agent.RuntimeInputs{}, fmt.Errorf("provider %q not configured for subagent %q", pName, a.ID)
 		}
 		reg := tools.NewRegistry()
+		if strings.TrimSpace(a.Workspace) == "" {
+			return agent.RuntimeInputs{}, fmt.Errorf("agent %q has no workspace; refusing to build unclamped file tools", a.ID)
+		}
 		tools.RegisterCoreToolsWithSearch(reg, a.Workspace, execPolicy, searchBackend)
 		if _, err := mcp.RegisterTools(reg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 			slog.Warn("subagent mcp registration failed; continuing", "agent", a.ID, "error", err)
@@ -808,6 +811,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			sess := session.NewSession(agentCfg.ID, "cron_"+jobName)
 			defer startupCompactionMgr.ForgetSession(sess)
 			cronToolReg := tools.NewRegistry()
+			if strings.TrimSpace(agentCfg.Workspace) == "" {
+				return "", fmt.Errorf("agent %q has no workspace; refusing to build unclamped file tools", agentCfg.ID)
+			}
 			tools.RegisterCoreToolsWithSearch(cronToolReg, agentCfg.Workspace, execPolicy, searchBackend)
 			if _, err := mcp.RegisterTools(cronToolReg, mcpMgr, cfg.IsServerParallelSafe); err != nil {
 				slog.Warn("mcp: failed to register tools for sub-registry, continuing", "error", err)
