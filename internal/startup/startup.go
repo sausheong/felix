@@ -40,6 +40,25 @@ type Result struct {
 	Cleanup   func() // call to gracefully shut down everything
 }
 
+// cortexAutoAddToolNames are the cortex tool names auto-added to every
+// agent's allowlist when cortex is enabled. Shared by the startup and
+// hot-reload paths so they can't drift.
+var cortexAutoAddToolNames = []string{"recall", "remember", "find_entities", "get_relationships"}
+
+// applyAutoAddedAllowlists augments every agent's Tools.Allow with the tool
+// names added at runtime: MCP-discovered tools, the task tool, and (when
+// cortex is enabled) the cortex tools. This MUST run before
+// BuildPermissionChecker on BOTH the startup path and the hot-reload path —
+// otherwise a curated Tools.Allow silently loses these grants after the
+// first config edit (finding R2).
+func applyAutoAddedAllowlists(cfg *config.Config, mcpNames []string) {
+	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
+	cfg.ApplyTaskToolToAllowlists()
+	if cfg.Cortex.Enabled {
+		cfg.ApplyCortexToolNamesToAllowlists(cortexAutoAddToolNames)
+	}
+}
+
 // ResolveProviderOpts builds ProviderOptions for a given provider name
 // from the config file only.
 func ResolveProviderOpts(name string, cfg *config.Config) llm.ProviderOptions {
@@ -520,16 +539,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		mcpMgr.Close()
 		return nil, fmt.Errorf("register mcp tools: %w", err)
 	}
-	cfg.ApplyMCPToolNamesToAllowlists(mcpNames)
-	cfg.ApplyTaskToolToAllowlists()
-	// Auto-add cortex tool names to every agent's allowlist when cortex is
-	// enabled, so users don't have to list recall/remember/find_entities/
-	// get_relationships on each agent manually. Mirrors the MCP auto-add.
-	if cfg.Cortex.Enabled {
-		cfg.ApplyCortexToolNamesToAllowlists([]string{
-			"recall", "remember", "find_entities", "get_relationships",
-		})
-	}
+	applyAutoAddedAllowlists(cfg, mcpNames)
 
 	// Build a single PermissionChecker covering every agent in cfg. Same
 	// checker, different agent IDs per Runtime — StaticChecker keys on
@@ -682,6 +692,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			// Rebuild the permission checker from the new config and re-inject.
 			// Without this, edits to agent Tools.Allow/Deny in felix.json5
 			// silently no-op the dispatch-time gate until restart.
+			// Re-apply runtime auto-added grants first so curated Tools.Allow
+			// lists don't lose their MCP/task/cortex tools after an edit (R2).
+			applyAutoAddedAllowlists(newCfg, mcpNames)
 			wsHandler.SetPermission(newCfg.BuildPermissionChecker())
 			wsHandler.UpdateConfig(newCfg)
 			wsHandler.UpdateProviders(newProviders)
