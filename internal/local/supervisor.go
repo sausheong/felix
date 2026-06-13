@@ -97,7 +97,10 @@ func (s *Supervisor) Healthy() bool {
 // Start spawns ollama serve, waits for it to respond to /api/version, and
 // returns nil once ready. On any failure, the child (if started) is killed
 // and an error is returned.
-func (s *Supervisor) Start(ctx context.Context) error {
+// Spawn starts the ollama child and binds its port, returning as soon as the
+// process is launched (does NOT wait for readiness). BoundPort() is valid
+// after Spawn returns nil.
+func (s *Supervisor) Spawn() error {
 	// Reap any leftover ollama child from a prior felix run that exited
 	// without cleanup (crash, force-quit, menu-bar timeout). Must happen
 	// before probeFreePort so the orphan's port is freed first.
@@ -147,6 +150,15 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		slog.Warn("ollama exited; local provider is now unhealthy. Restart felix to recover.")
 	}()
 
+	return nil
+}
+
+// WaitReady blocks until the spawned ollama answers /api/version or
+// ctx/timeout elapses. Call after Spawn.
+func (s *Supervisor) WaitReady(ctx context.Context) error {
+	s.mu.Lock()
+	port := s.boundPort
+	s.mu.Unlock()
 	timeout := s.readyTimeout
 	if timeout == 0 {
 		timeout = 60 * time.Second
@@ -157,6 +169,14 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	slog.Info("ollama supervisor ready", "port", port, "models_dir", s.modelsDir)
 	return nil
+}
+
+// Start preserves the original blocking behavior (Spawn + WaitReady).
+func (s *Supervisor) Start(ctx context.Context) error {
+	if err := s.Spawn(); err != nil {
+		return err
+	}
+	return s.WaitReady(ctx)
 }
 
 func (s *Supervisor) waitReady(ctx context.Context, port int, timeout time.Duration) error {

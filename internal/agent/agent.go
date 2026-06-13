@@ -17,6 +17,8 @@ package agent
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/sausheong/cortex"
 	hrt "github.com/sausheong/harness/runtime"
@@ -108,6 +110,55 @@ func effectiveMaxToolResultLen(configured int) int {
 	return 65536
 }
 
+// --- Prompt-input cache: invariant inputs keyed by config generation ---
+
+var configGeneration atomic.Int64
+
+// BumpConfigGeneration invalidates the prompt cache. Called from the startup
+// fsnotify reload callback.
+func BumpConfigGeneration() { configGeneration.Add(1) }
+
+type cachedPrompt struct {
+	gen           int64
+	configSummary string
+	memoryFiles   string
+}
+
+var (
+	promptCacheMu sync.Mutex
+	promptCache   = map[string]cachedPrompt{}
+)
+
+func promptCacheGet(agentID string, gen int64) (cachedPrompt, bool) {
+	promptCacheMu.Lock()
+	defer promptCacheMu.Unlock()
+	c, ok := promptCache[agentID]
+	if ok && c.gen == gen {
+		return c, true
+	}
+	return cachedPrompt{}, false
+}
+
+func promptCachePut(agentID string, gen int64, p cachedPrompt) {
+	p.gen = gen
+	promptCacheMu.Lock()
+	promptCache[agentID] = p
+	promptCacheMu.Unlock()
+}
+
+// ConfigSummaryFor returns the (cached) config summary for the current
+// generation, shared by subagent-factory call sites and BuildRuntimeForAgent.
+func ConfigSummaryFor(cfg *config.Config) string {
+	const key = "\x00config_summary"
+	gen := configGeneration.Load()
+	if c, ok := promptCacheGet(key, gen); ok {
+		return c.configSummary
+	}
+	cs := buildConfigSummary(cfg)
+	promptCachePut(key, gen, cachedPrompt{configSummary: cs})
+	return cs
+}
+
 // --- BuildRuntimeForAgent: bridges Felix shapes → harness AgentSpec ---
 
 // BuildRuntimeForAgent constructs a Runtime for the given Felix AgentConfig.
@@ -115,6 +166,15 @@ func effectiveMaxToolResultLen(configured int) int {
 // Skills/Memory, KGFn closure for Cortex) and converts the AgentConfig
 // into an AgentSpec, then delegates to harness.BuildRuntime.
 func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.AgentConfig) (*Runtime, error) {
+	gen := configGeneration.Load()
+	cached, ok := promptCacheGet(a.ID, gen)
+	if !ok {
+		cached = cachedPrompt{
+			configSummary: buildConfigSummary(deps.Config),
+			memoryFiles:   loadAgentMemoryFiles(a.Workspace) + felixEnvHint() + cortexStaticHint(deps.Config),
+		}
+		promptCachePut(a.ID, gen, cached)
+	}
 	hdeps := hrt.RuntimeDeps{
 		Permission:      deps.Permission,
 		AgentLoop: hrt.LoopConfig{
@@ -124,8 +184,8 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 			MaxToolResultLen:   effectiveMaxToolResultLen(deps.AgentLoop.MaxToolResultLen),
 		},
 		CalibratorStore: deps.CalibratorStore,
-		ConfigSummary:   buildConfigSummary(deps.Config),
-		MemoryFiles:     loadAgentMemoryFiles(a.Workspace) + felixEnvHint() + cortexStaticHint(deps.Config),
+		ConfigSummary:   cached.configSummary,
+		MemoryFiles:     cached.memoryFiles,
 	}
 	if deps.Skills != nil {
 		hdeps.Skills = skillProviderAdapter{l: deps.Skills}
@@ -153,7 +213,7 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 // subagents through Felix's *config.Config (cfg.GetAgent + Subagent flag
 // + InheritContext flag) and builds them via the supplied
 // SubagentBuildFn.
-func MakeSubagentFactory(cfg *config.Config, deps RuntimeDeps, buildInputs SubagentBuildFn, parent *Runtime) tool.SubagentFactory {
+func MakeSubagentFactory(cfg *config.Config, deps RuntimeDeps, buildInputs SubagentBuildFn, configSummary string, parent *Runtime) tool.SubagentFactory {
 	resolve := func(id string) (hrt.SubagentSpec, bool) {
 		a, ok := cfg.GetAgent(id)
 		if !ok {
@@ -196,7 +256,7 @@ func MakeSubagentFactory(cfg *config.Config, deps RuntimeDeps, buildInputs Subag
 			MaxToolResultLen:   effectiveMaxToolResultLen(deps.AgentLoop.MaxToolResultLen),
 		},
 		CalibratorStore: deps.CalibratorStore,
-		ConfigSummary:   buildConfigSummary(deps.Config),
+		ConfigSummary:   configSummary,
 	}
 	if deps.Skills != nil {
 		hdeps.Skills = skillProviderAdapter{l: deps.Skills}

@@ -187,7 +187,7 @@ func RunTurn(ctx context.Context, deps TurnDeps, scope runs.SessionScope, text s
 	overlay := &ChatToolOverlay{Base: deps.Tools, Metrics: deps.Metrics}
 	if deps.SubagentBuild != nil && deps.Config != nil {
 		if eligible := deps.Config.EligibleSubagents(); len(eligible) > 0 {
-			factory := agent.MakeSubagentFactory(deps.Config, runtimeDeps, deps.SubagentBuild, rt)
+			factory := agent.MakeSubagentFactory(deps.Config, runtimeDeps, deps.SubagentBuild, agent.ConfigSummaryFor(deps.Config), rt)
 			overlay.Task = tools.NewTaskTool(factory, rt.Depth, eligible)
 		}
 	}

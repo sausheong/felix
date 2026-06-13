@@ -524,7 +524,7 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 			}, &rtAgentCfg)
 			// Wire task tool so cron-launched runs can also dispatch to subagents.
 			if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
-				factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, cronRT)
+				factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, agent.ConfigSummaryFor(cfg), cronRT)
 				cronToolReg.Register(tools.NewTaskTool(factory, cronRT.Depth, eligible))
 			}
 			return cronRT.RunSync(ctx, prompt, nil)
@@ -580,7 +580,7 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 	// Wire task tool so the interactive REPL can dispatch to subagents.
 	// Idempotent: re-registering on the same toolReg overwrites by name.
 	if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
-		factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+		factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, agent.ConfigSummaryFor(cfg), rt)
 		toolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
 	}
 
