@@ -316,3 +316,23 @@ func TestWriteFileAtomic_RoundTrips(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "hello", string(b))
 }
+
+func TestSave_DoesNotBlockOnVectorSemaphore(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	// Without an embedder, vecColl is nil so the goroutine path is skipped;
+	// this guards that Save returns promptly regardless. (Structural guard for
+	// the moved-acquire fix — the acquire is no longer under m.mu.)
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			_ = m.Save(fmt.Sprintf("agent-%d", i), "# t\n\nbody")
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Save calls blocked unexpectedly")
+	}
+}

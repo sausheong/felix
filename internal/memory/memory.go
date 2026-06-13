@@ -270,8 +270,8 @@ func (m *Manager) Save(id, content string) error {
 	// lock so the goroutine never dereferences m.vecColl (which Load/Delete
 	// reassign). vecSem bounds concurrent vector-add network calls.
 	if coll := m.vecColl; coll != nil {
-		m.vecSem <- struct{}{}
 		go func() {
+			m.vecSem <- struct{}{}
 			defer func() { <-m.vecSem }()
 			doc := chromem.Document{ID: id, Content: content}
 			if err := coll.AddDocument(context.Background(), doc); err != nil {

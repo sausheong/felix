@@ -1,6 +1,7 @@
 package cortex
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -31,4 +32,9 @@ func TestFormatRecall_UTF8Safe(t *testing.T) {
 	results := []cortex.Result{{Type: "memory", Content: long}}
 	out := formatRecall(results)
 	require.True(t, utf8.ValidString(out), "formatRecall must not split a rune")
+}
+
+func TestCortexKG_IngestEmptyThreadNoOp(t *testing.T) {
+	kg := &cortexKG{} // cx nil; empty thread returns before touching cx
+	require.NotPanics(t, func() { kg.Ingest(context.Background(), nil) })
 }

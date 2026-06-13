@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sausheong/cortex"
@@ -49,6 +50,8 @@ func (k *cortexKG) Ingest(ctx context.Context, thread []hrt.Message) {
 	for _, m := range thread {
 		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
 	}
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
 	_ = k.cx.Remember(ctx, strings.TrimSpace(b.String()))
 }
 
