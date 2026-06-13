@@ -725,6 +725,10 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			// lists don't lose their MCP/task/cortex tools after an edit (R2).
 			applyAutoAddedAllowlists(newCfg, mcpNames)
 			wsHandler.SetPermission(newCfg.BuildPermissionChecker())
+			// Invalidate the cached invariant prompt inputs (config summary,
+			// memory-files block) so the next agent run recomputes them from
+			// the reloaded config (P4).
+			agent.BumpConfigGeneration()
 			wsHandler.UpdateConfig(newCfg)
 			wsHandler.UpdateProviders(newProviders)
 			// Swap the web_search backend on the live shared registry so
@@ -888,7 +892,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				return "", fmt.Errorf("build runtime for cron job %q on agent %q: %w", jobName, agentCfg.ID, err)
 			}
 			if eligible := cfg.EligibleSubagents(); len(eligible) > 0 {
-				factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, rt)
+				factory := agent.MakeSubagentFactory(cfg, runtimeDeps, buildSubagentInputs, agent.ConfigSummaryFor(cfg), rt)
 				cronToolReg.Register(tools.NewTaskTool(factory, rt.Depth, eligible))
 			}
 			return rt.RunSync(ctx, prompt, nil)
