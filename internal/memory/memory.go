@@ -285,7 +285,13 @@ func (m *Manager) Save(id, content string) error {
 
 // Search queries the memory and returns relevant entries.
 // Uses vector search when an embedder is configured, BM25 otherwise.
-func (m *Manager) Search(query string, maxResults int) []Entry {
+//
+// The passed ctx bounds and cancels the vector query: chromem invokes the
+// embedder (an HTTP round-trip) synchronously inside Query, and this call
+// holds m.mu.RLock for its duration — so an unbounded call would block every
+// memory write behind a hung endpoint. The vector query is additionally
+// capped at 5s (matching the embedder probe timeout) regardless of ctx.
+func (m *Manager) Search(ctx context.Context, query string, maxResults int) []Entry {
 	if maxResults <= 0 {
 		maxResults = 5
 	}
@@ -299,7 +305,12 @@ func (m *Manager) Search(query string, maxResults int) []Entry {
 
 	// Vector search when available.
 	if m.vecColl != nil {
-		results, err := m.vecColl.Query(context.Background(), query, maxResults, nil, nil)
+		// Bound the embedder round-trip (chromem calls the embedder inside
+		// Query) so a hung endpoint can't hold the read lock — and writes —
+		// indefinitely. 5s matches the embedder probe timeout.
+		qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		results, err := m.vecColl.Query(qctx, query, maxResults, nil, nil)
+		cancel()
 		if err == nil {
 			var entries []Entry
 			for _, r := range results {
