@@ -1,0 +1,79 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"unicode/utf8"
+
+	"github.com/sausheong/felix/internal/memory"
+)
+
+const (
+	searchMemoryDefaultResults = 5
+	searchMemoryMaxResults     = 20
+	searchMemorySnippetRunes   = 200
+)
+
+// MemorySearcher is the narrow read contract SearchMemoryTool needs.
+// *memory.Manager satisfies it via its existing
+// Search(query string, maxResults int) []memory.Entry method.
+type MemorySearcher interface {
+	Search(query string, maxResults int) []memory.Entry
+}
+
+// SearchMemoryTool lets the agent retrieve saved memory entries by meaning or
+// keyword. It calls memory.Manager.Search (vector search when an embedder is
+// configured, BM25 otherwise) and returns matching entry IDs with snippets;
+// the agent then uses load_memory to read a full entry body. This is the
+// search counterpart to the static, capped memory index in the system prompt.
+type SearchMemoryTool struct {
+	Searcher MemorySearcher
+}
+
+func (t *SearchMemoryTool) Name() string { return "search_memory" }
+
+func (t *SearchMemoryTool) Description() string {
+	return "Search your saved memory entries by meaning or keyword. Returns " +
+		"matching entry IDs with snippets; use load_memory to read a full " +
+		"entry. Use this when the memory index in your system prompt doesn't " +
+		"show what you need."
+}
+
+func (t *SearchMemoryTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"query": {
+				"type": "string",
+				"description": "What to search for — natural language or keywords."
+			},
+			"max_results": {
+				"type": "integer",
+				"description": "Maximum number of entries to return (default 5, max 20)."
+			}
+		},
+		"required": ["query"]
+	}`)
+}
+
+// IsConcurrencySafe: pure read. Manager.Search takes an RLock.
+func (t *SearchMemoryTool) IsConcurrencySafe(_ json.RawMessage) bool { return true }
+
+type searchMemoryInput struct {
+	Query      string `json:"query"`
+	MaxResults int    `json:"max_results"`
+}
+
+func (t *SearchMemoryTool) Execute(_ context.Context, input json.RawMessage) (ToolResult, error) {
+	// Implemented in a later task.
+	return ToolResult{}, nil
+}
+
+// truncateRunes returns s truncated to at most n runes, never splitting a
+// multi-byte rune. Local copy — memory.truncateRunes is unexported.
+func truncateRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
+}
