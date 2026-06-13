@@ -112,3 +112,15 @@ func TestSearchMemory_SnippetSingleLine(t *testing.T) {
 	require.Len(t, lines, 1, "each hit must render on a single line")
 	require.Contains(t, res.Output, "first line second line third")
 }
+
+func TestRegisterSearchMemoryTool(t *testing.T) {
+	reg := NewRegistry()
+	RegisterSearchMemoryTool(reg, &fakeSearcher{})
+	require.Contains(t, reg.Names(), "search_memory")
+}
+
+func TestRegisterSearchMemoryTool_NilSearcher(t *testing.T) {
+	reg := NewRegistry()
+	RegisterSearchMemoryTool(reg, nil) // defensive no-op
+	require.NotContains(t, reg.Names(), "search_memory")
+}

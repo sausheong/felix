@@ -105,6 +105,17 @@ func (t *SearchMemoryTool) Execute(_ context.Context, input json.RawMessage) (To
 	return ToolResult{Output: strings.TrimRight(b.String(), "\n")}, nil
 }
 
+// RegisterSearchMemoryTool registers the search_memory tool backed by the
+// given searcher. Pass a *internal/memory.Manager — it satisfies
+// MemorySearcher. A nil searcher is a no-op (mirrors the memMgr != nil guard
+// at the startup registration sites), so callers need not branch twice.
+func RegisterSearchMemoryTool(reg *Registry, searcher MemorySearcher) {
+	if searcher == nil {
+		return
+	}
+	reg.Register(&SearchMemoryTool{Searcher: searcher})
+}
+
 // truncateRunes returns s truncated to at most n runes, never splitting a
 // multi-byte rune. Local copy — memory.truncateRunes is unexported.
 func truncateRunes(s string, n int) string {
