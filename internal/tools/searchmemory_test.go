@@ -21,7 +21,7 @@ type fakeSearcher struct {
 	callCount int
 }
 
-func (f *fakeSearcher) Search(query string, maxResults int) []memory.Entry {
+func (f *fakeSearcher) Search(ctx context.Context, query string, maxResults int) []memory.Entry {
 	f.callCount++
 	f.lastQuery = query
 	f.lastLimit = maxResults

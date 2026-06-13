@@ -18,9 +18,10 @@ const (
 
 // MemorySearcher is the narrow read contract SearchMemoryTool needs.
 // *memory.Manager satisfies it via its existing
-// Search(query string, maxResults int) []memory.Entry method.
+// Search(ctx context.Context, query string, maxResults int) []memory.Entry
+// method. The ctx bounds and cancels the underlying vector query.
 type MemorySearcher interface {
-	Search(query string, maxResults int) []memory.Entry
+	Search(ctx context.Context, query string, maxResults int) []memory.Entry
 }
 
 // SearchMemoryTool lets the agent retrieve saved memory entries by meaning or
@@ -66,7 +67,7 @@ type searchMemoryInput struct {
 	MaxResults int    `json:"max_results"`
 }
 
-func (t *SearchMemoryTool) Execute(_ context.Context, input json.RawMessage) (ToolResult, error) {
+func (t *SearchMemoryTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
 	var in searchMemoryInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return ToolResult{Error: fmt.Sprintf("invalid input: %v", err)}, nil
@@ -85,7 +86,7 @@ func (t *SearchMemoryTool) Execute(_ context.Context, input json.RawMessage) (To
 		limit = searchMemoryMaxResults
 	}
 
-	entries := t.Searcher.Search(query, limit)
+	entries := t.Searcher.Search(ctx, query, limit)
 	if len(entries) == 0 {
 		return ToolResult{Output: "no matching memory entries"}, nil
 	}

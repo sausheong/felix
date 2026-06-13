@@ -1,11 +1,13 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -99,7 +101,7 @@ func TestMemoryManagerSearch(t *testing.T) {
 	mgr.Save("recipes", "# Favorite Recipes\n\nChocolate cake recipe with vanilla frosting.")
 
 	// Search for programming
-	results := mgr.Search("programming language", 5)
+	results := mgr.Search(context.Background(), "programming language", 5)
 	assert.NotEmpty(t, results)
 	// Both golang and python should match
 	ids := make([]string, len(results))
@@ -108,6 +110,82 @@ func TestMemoryManagerSearch(t *testing.T) {
 	}
 	assert.Contains(t, ids, "golang")
 	assert.Contains(t, ids, "python")
+}
+
+// toggleEmbedder embeds normally until hang is set, after which Embed blocks
+// until its ctx is cancelled and then returns ctx.Err(). It models a black-holed
+// embedder endpoint so the test can prove Search bounds the vector query.
+type toggleEmbedder struct {
+	dim  int
+	hang atomic.Bool
+}
+
+func (e *toggleEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if e.hang.Load() {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	out := make([][]float32, len(texts))
+	for i := range out {
+		v := make([]float32, e.dim)
+		// Non-zero so chromem's cosine similarity is defined (zero vectors NaN).
+		v[0] = 1
+		out[i] = v
+	}
+	return out, nil
+}
+
+// TestMemoryManagerSearch_BoundsHungEmbedder proves Search does not hold the
+// RLock indefinitely when the embedder black-holes: the internal 5s timeout
+// fires, Search falls back to BM25 (or returns nil) and RETURNS rather than
+// hanging. Without the ctx-timeout fix this test would wait the full 15s and
+// fail.
+func TestMemoryManagerSearch_BoundsHungEmbedder(t *testing.T) {
+	dir := t.TempDir()
+	mgr := NewManager(dir)
+	emb := &toggleEmbedder{dim: 8}
+	mgr.SetEmbedder(emb)
+	mgr.SetEmbedderModel("fake")
+
+	// Seed an entry on disk, then Load so initVectorCollection builds vecColl
+	// via the fast (non-hanging) embedder path.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "entries"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "entries", "golang.md"),
+		[]byte("# Go Programming\n\nGo is a compiled language."), 0o600))
+	require.NoError(t, mgr.Load())
+	require.NotNil(t, mgr.vecColl, "vector collection must be built so the hung path is exercised")
+
+	// Now black-hole the embedder: every Query embed call blocks until cancelled.
+	emb.hang.Store(true)
+
+	done := make(chan []Entry, 1)
+	start := time.Now()
+	go func() {
+		done <- mgr.Search(context.Background(), "programming", 5)
+	}()
+
+	select {
+	case res := <-done:
+		// Returned — the 5s bound fired. res is BM25 fallback or nil; either is
+		// acceptable. The point is that Search returned at all.
+		require.Less(t, time.Since(start), 10*time.Second,
+			"Search returned but only after the internal timeout; bound too loose")
+		_ = res
+	case <-time.After(15 * time.Second):
+		t.Fatal("Search did not return; embedder timeout not enforced (RLock held on hung endpoint)")
+	}
+
+	// The write lock must be acquirable immediately — Search must have released
+	// its RLock. This is the actual harm being prevented.
+	saveDone := make(chan error, 1)
+	go func() { saveDone <- mgr.Save("after", "# After\n\nbody") }()
+	select {
+	case err := <-saveDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Save blocked — Search did not release the read lock")
+	}
 }
 
 func TestMemoryManagerDelete(t *testing.T) {
