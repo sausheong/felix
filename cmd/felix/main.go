@@ -213,7 +213,12 @@ func runStart(configPath string) error {
 	}()
 
 	<-stop
-	slog.Info("shutting down gateway...")
+	slog.Info("shutting down gateway... (press Ctrl-C again to force)")
+	go func() {
+		<-stop
+		slog.Warn("forced shutdown")
+		os.Exit(1)
+	}()
 	result.Cleanup()
 	return nil
 }
@@ -593,24 +598,18 @@ func runChat(agentID, configPath, modelOverride string, noGateway bool) error {
 
 	// Interactive REPL
 
+	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print("> ")
-		var input string
-		scanner := make([]byte, 0, 4096)
-		buf := make([]byte, 1)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil || n == 0 {
+		line, err := reader.ReadString('\n')
+		if err != nil && line == "" {
+			return nil
+		}
+		input := strings.TrimSpace(line)
+		if input == "" {
+			if err != nil {
 				return nil
 			}
-			if buf[0] == '\n' {
-				break
-			}
-			scanner = append(scanner, buf[0])
-		}
-		input = strings.TrimSpace(string(scanner))
-
-		if input == "" {
 			continue
 		}
 		if input == "/quit" || input == "/exit" {
