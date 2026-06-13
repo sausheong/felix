@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,4 +42,30 @@ func TestHandle_FanOutDoesNotBlockOnFullSubscriber(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Handle blocked on a full subscriber channel")
 	}
+}
+
+func TestHandle_ConcurrentUnsubscribeNoPanic(t *testing.T) {
+	buf := NewLogBuffer(64, slog.NewTextHandler(io.Discard, nil))
+	var wg sync.WaitGroup
+	// Producer: log continuously.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			_ = buf.Handle(context.Background(), slog.Record{})
+		}
+	}()
+	// Churn: subscribe then unsubscribe repeatedly, concurrent with Handle.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			ch := buf.Subscribe()
+			if ch != nil {
+				buf.Unsubscribe(ch)
+			}
+		}
+	}()
+	wg.Wait()
+	// If we get here without a panic ("send on closed channel"), the fix holds.
 }

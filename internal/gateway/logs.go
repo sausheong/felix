@@ -169,13 +169,22 @@ func (b *LogBuffer) Subscribe() chan LogEntry {
 	return ch
 }
 
-// Unsubscribe removes a subscriber channel.
+// Unsubscribe removes a subscriber channel from the fan-out set.
+//
+// It deliberately does NOT close(ch). Handle fans out off the lock (it
+// snapshots the subscriber channels under s.mu, releases the lock, then does a
+// non-blocking send on each), so there are multiple concurrent producers and no
+// single owner that can safely close the channel — closing here would race with
+// an in-flight send in Handle and panic with "send on closed channel". The
+// correct Go pattern with multiple producers is to not close. The channel is
+// simply dropped from the map and garbage-collected once the consumer goroutine
+// returns. The only consumer (NewLogsStreamHandler) exits via r.Context().Done()
+// when the client disconnects, not via channel close, so close is unnecessary.
 func (b *LogBuffer) Unsubscribe(ch chan LogEntry) {
 	s := b.store
 	s.mu.Lock()
 	delete(s.subs, ch)
 	s.mu.Unlock()
-	close(ch)
 }
 
 // formatEntry formats a log entry as a single text line.
