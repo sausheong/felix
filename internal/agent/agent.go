@@ -61,14 +61,6 @@ var (
 	SetOTelTracer          = hrt.SetOTelTracer
 	NewSubagentSession     = hrt.NewSubagentSession
 	BuildStaticSystemPrompt = hrt.BuildStaticSystemPrompt
-	BuildDynamicSystemPromptSuffix = func(dateLine, kgContext string) string {
-		// Re-export of unexported helper isn't needed by call sites today;
-		// kept here so a future export from harness can be wired without
-		// changing the public Felix API.
-		_ = dateLine
-		_ = kgContext
-		return ""
-	}
 	FormatDateLine    = hrt.FormatDateLine
 	SpillDirForSession   = hrt.SpillDirForSession
 	RemoveSessionSpill   = hrt.RemoveSessionSpill
@@ -186,6 +178,12 @@ func BuildRuntimeForAgent(deps RuntimeDeps, inputs RuntimeInputs, a *config.Agen
 		CalibratorStore: deps.CalibratorStore,
 		ConfigSummary:   cached.configSummary,
 		MemoryFiles:     cached.memoryFiles,
+		KGFn: func(model string) hrt.KnowledgeGraph {
+			if deps.CortexFn == nil {
+				return nil
+			}
+			return cortexadapter.NewKnowledgeGraph(deps.CortexFn(model))
+		},
 	}
 	if deps.Skills != nil {
 		hdeps.Skills = skillProviderAdapter{l: deps.Skills}
@@ -257,6 +255,7 @@ func MakeSubagentFactory(cfg *config.Config, deps RuntimeDeps, buildInputs Subag
 		},
 		CalibratorStore: deps.CalibratorStore,
 		ConfigSummary:   configSummary,
+		// KGFn intentionally unset — subagents do not auto-recall or ingest.
 	}
 	if deps.Skills != nil {
 		hdeps.Skills = skillProviderAdapter{l: deps.Skills}
