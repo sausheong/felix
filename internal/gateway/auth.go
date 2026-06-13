@@ -24,9 +24,16 @@ func BearerAuthMiddleware(token string) func(http.Handler) http.Handler {
 			// Check Authorization header
 			auth := r.Header.Get("Authorization")
 			if auth == "" {
-				// Also check query parameter for WebSocket clients that
-				// can't set custom headers
-				auth = "Bearer " + r.URL.Query().Get("token")
+				// Browser WebSocket clients can't set headers — accept the token
+				// via the Sec-WebSocket-Protocol "Bearer.<token>" value. Query
+				// params are intentionally NOT accepted (they leak into browser
+				// history and proxy logs). (S10)
+				for _, proto := range websocketSubprotocols(r) {
+					if strings.HasPrefix(proto, "Bearer.") {
+						auth = "Bearer " + strings.TrimPrefix(proto, "Bearer.")
+						break
+					}
+				}
 			}
 
 			if !strings.HasPrefix(auth, "Bearer ") {
@@ -57,4 +64,18 @@ func AllowedOrigins(origins []string) func(r *http.Request) bool {
 		}
 		return originAllowed(origin, origins)
 	}
+}
+
+// websocketSubprotocols parses the comma-separated Sec-WebSocket-Protocol
+// request header into individual trimmed tokens.
+func websocketSubprotocols(r *http.Request) []string {
+	raw := r.Header.Get("Sec-WebSocket-Protocol")
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
 }
