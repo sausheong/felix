@@ -3634,6 +3634,17 @@ html.dark #stop-btn {
 					updateSendBtn();
 					return;
 				}
+				// Server-initiated notification (no id/result): the gateway
+				// auto-generated a display title for a session. Refresh the
+				// sidebar so the new name shows. Only refresh when it concerns
+				// the currently selected agent.
+				if (resp.method === 'session_titled') {
+					var stp = resp.params || {};
+					if (!agentSelect || !agentSelect.value || stp.agentId === agentSelect.value) {
+						loadSessions();
+					}
+					return;
+				}
 				if (!resp.result) return;
 
 				// Handle agent.status response
