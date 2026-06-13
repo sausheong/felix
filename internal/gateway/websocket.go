@@ -1703,7 +1703,9 @@ func writeJSON(conn *websocket.Conn, v any) {
 	mu.Lock()
 	defer mu.Unlock()
 	if err := conn.WriteJSON(v); err != nil {
-		slog.Error("websocket write error", "error", err)
+		// A disconnected client is expected, not an error condition; under
+		// event fan-out every queued write would otherwise spam Error logs.
+		slog.Debug("websocket write failed (client likely disconnected)", "error", err)
 	}
 }
 

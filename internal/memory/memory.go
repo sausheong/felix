@@ -503,10 +503,9 @@ func indexDescription(e Entry) string {
 
 // extractTitle pulls the first H1 heading from content, falling back to the id.
 func extractTitle(id, content string) string {
-	if idx := strings.Index(content, "# "); idx >= 0 {
-		end := strings.Index(content[idx:], "\n")
-		if end > 0 {
-			return strings.TrimPrefix(content[idx:idx+end], "# ")
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "# ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "# "))
 		}
 	}
 	return id

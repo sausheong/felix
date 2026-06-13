@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 )
 
 // Installer wraps the Ollama HTTP API for model management.
@@ -148,11 +147,6 @@ func (i *Installer) Show(ctx context.Context, name string) (int64, error) {
 		return 0, fmt.Errorf("show %q: decode: %w", name, err)
 	}
 	return out.Size, nil
-}
-
-// shortDeadline returns a context cancelled after d for one-shot calls.
-func shortDeadline(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, d)
 }
 
 // bytesReader is a small wrapper to avoid importing bytes alongside io for one call site.

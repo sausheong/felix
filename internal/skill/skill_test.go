@@ -3,6 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -231,47 +232,6 @@ func TestLoaderLoadFromNonexistent(t *testing.T) {
 	assert.Empty(t, loader.Skills())
 }
 
-func TestMatchSkills(t *testing.T) {
-	loader := NewLoader()
-
-	// Manually set skills for testing
-	loader.skills = []Skill{
-		{Name: "web-search", Description: "Search the web for current information", Tags: []string{"search", "web"}},
-		{Name: "calendar", Description: "Manage calendar events and appointments", Tags: []string{"calendar", "schedule"}},
-		{Name: "code-review", Description: "Review code for bugs and improvements", Tags: []string{"code", "review"}},
-	}
-
-	// Search-related query should match web-search
-	matches := loader.MatchSkills("search the web for latest news", 3)
-	assert.NotEmpty(t, matches)
-	assert.Equal(t, "web-search", matches[0].Name)
-
-	// Calendar-related query
-	matches = loader.MatchSkills("what's on my calendar today?", 3)
-	assert.NotEmpty(t, matches)
-	assert.Equal(t, "calendar", matches[0].Name)
-
-	// Unrelated query should return nothing
-	matches = loader.MatchSkills("hello there", 3)
-	assert.Empty(t, matches)
-}
-
-func TestFormatForPrompt(t *testing.T) {
-	skills := []Skill{
-		{Name: "test-skill", Body: "This is the body."},
-	}
-
-	result := FormatForPrompt(skills)
-	assert.Contains(t, result, "## Available Skills")
-	assert.Contains(t, result, "### test-skill")
-	assert.Contains(t, result, "This is the body.")
-}
-
-func TestFormatForPromptEmpty(t *testing.T) {
-	result := FormatForPrompt(nil)
-	assert.Equal(t, "", result)
-}
-
 func TestFormatIndex(t *testing.T) {
 	loader := NewLoader()
 	loader.skills = []Skill{
@@ -319,4 +279,14 @@ func TestSeedBundledSkills_NonEmptyDirSkipped(t *testing.T) {
 	// Bundled files should NOT have appeared.
 	_, err = os.Stat(filepath.Join(dir, "pdftotext.md"))
 	assert.True(t, os.IsNotExist(err), "pdftotext.md should NOT have been written")
+}
+
+func TestSplitFrontmatter_ExactClosingFence(t *testing.T) {
+	in := "---\nname: x\n----\nbody"
+	fm, _ := SplitFrontmatter(in)
+	require.NotContains(t, fm, "name: x\n----", "must not close on ----")
+	in2 := "---\nname: y\n---\nbody text"
+	fm2, body2 := SplitFrontmatter(in2)
+	require.Equal(t, "name: y", strings.TrimSpace(fm2))
+	require.Equal(t, "body text", strings.TrimSpace(body2))
 }

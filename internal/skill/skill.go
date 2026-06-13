@@ -106,87 +106,6 @@ func (l *Loader) Skills() []Skill {
 	return append([]Skill{}, l.skills...)
 }
 
-// MatchSkills returns skills relevant to the given user message.
-// Relevance is determined by keyword matching against skill name,
-// description, and tags.
-func (l *Loader) MatchSkills(userMsg string, maxSkills int) []Skill {
-	l.mu.RLock()
-	skills := l.skills
-	l.mu.RUnlock()
-
-	if len(skills) == 0 {
-		return nil
-	}
-
-	if maxSkills <= 0 {
-		maxSkills = 3
-	}
-
-	msgLower := strings.ToLower(userMsg)
-	msgWords := strings.Fields(msgLower)
-
-	type scored struct {
-		skill Skill
-		score int
-	}
-
-	var results []scored
-
-	for _, s := range skills {
-		score := 0
-
-		nameLower := strings.ToLower(s.Name)
-		descLower := strings.ToLower(s.Description)
-
-		// Check if any word from the message appears in skill metadata
-		for _, word := range msgWords {
-			if len(word) < 3 {
-				continue // skip short words
-			}
-			if strings.Contains(nameLower, word) {
-				score += 3
-			}
-			if strings.Contains(descLower, word) {
-				score += 2
-			}
-			for _, tag := range s.Tags {
-				if strings.Contains(strings.ToLower(tag), word) {
-					score += 2
-				}
-			}
-		}
-
-		// Also check if skill name/tags appear in the message
-		if strings.Contains(msgLower, nameLower) {
-			score += 5
-		}
-		for _, tag := range s.Tags {
-			if strings.Contains(msgLower, strings.ToLower(tag)) {
-				score += 3
-			}
-		}
-
-		if score > 0 {
-			results = append(results, scored{skill: s, score: score})
-		}
-	}
-
-	// Sort by score descending (simple insertion sort for small lists)
-	for i := 1; i < len(results); i++ {
-		for j := i; j > 0 && results[j].score > results[j-1].score; j-- {
-			results[j], results[j-1] = results[j-1], results[j]
-		}
-	}
-
-	// Return top N
-	var matched []Skill
-	for i := 0; i < len(results) && i < maxSkills; i++ {
-		matched = append(matched, results[i].skill)
-	}
-
-	return matched
-}
-
 // ParseSkillFile reads a SKILL.md file and parses its frontmatter and body.
 func ParseSkillFile(path string) (Skill, error) {
 	data, err := os.ReadFile(path)
@@ -235,51 +154,48 @@ func SplitFrontmatter(content string) (frontmatter, body string) {
 		rest = rest[2:]
 	}
 
-	endIdx := strings.Index(rest, "\n---")
+	// Find a line whose trimmed content is exactly "---" (not "----" or
+	// "---publish:"). Track byte offsets to slice frontmatter/body.
+	endIdx := -1
+	bodyStart := -1
+	off := 0
+	for {
+		nl := strings.IndexByte(rest[off:], '\n')
+		var line string
+		if nl < 0 {
+			line = rest[off:]
+		} else {
+			line = rest[off : off+nl]
+		}
+		if strings.TrimRight(line, "\r") == "---" {
+			endIdx = off
+			if nl < 0 {
+				bodyStart = len(rest)
+			} else {
+				bodyStart = off + nl + 1
+			}
+			break
+		}
+		if nl < 0 {
+			break
+		}
+		off += nl + 1
+	}
 	if endIdx < 0 {
 		return "", content
 	}
 
-	frontmatter = rest[:endIdx]
-	body = rest[endIdx+4:]
-
-	// Trim the newline after closing ---
-	if len(body) > 0 && body[0] == '\n' {
-		body = body[1:]
-	} else if len(body) > 1 && body[0] == '\r' && body[1] == '\n' {
-		body = body[2:]
-	}
+	frontmatter = strings.TrimRight(rest[:endIdx], "\n")
+	body = rest[bodyStart:]
 
 	return frontmatter, body
-}
-
-// FormatForPrompt formats matched skills for injection into the system prompt.
-func FormatForPrompt(skills []Skill) string {
-	if len(skills) == 0 {
-		return ""
-	}
-
-	var b strings.Builder
-	b.WriteString("\n\n## Available Skills\n\nIMPORTANT: The following skills are matched to the user's request. You MUST use these skills and their CLI tools via bash instead of alternative approaches (like opening a browser or using APIs directly). The skill provides the correct command-line tool and usage instructions — follow them.\n\n")
-
-	for _, s := range skills {
-		b.WriteString("### ")
-		b.WriteString(s.Name)
-		b.WriteString("\n\n")
-		if s.Body != "" {
-			b.WriteString(s.Body)
-			b.WriteString("\n\n")
-		}
-	}
-
-	return b.String()
 }
 
 // FormatIndex returns a markdown index of every loaded skill (name +
 // one-line description). Cheap to inject (~50 chars per skill) and gives
 // the agent awareness of every skill it has access to, even when no skill
-// matches the user's request closely. The full body of relevant skills is
-// still injected separately via MatchSkills + FormatForPrompt.
+// matches the user's request closely. Full skill bodies are loaded on
+// demand via the load_skill tool.
 func (l *Loader) FormatIndex() string {
 	l.mu.RLock()
 	skills := l.skills
