@@ -33,6 +33,10 @@ func scrubSecrets(s string) string {
 	return s
 }
 
+// maxSSESubscribers caps concurrent /logs/stream subscribers so an attacker
+// can't exhaust memory/goroutines by opening unbounded SSE connections. (N2)
+const maxSSESubscribers = 16
+
 // LogEntry is a single captured log record.
 type LogEntry struct {
 	Time    time.Time
@@ -103,14 +107,20 @@ func (b *LogBuffer) Handle(ctx context.Context, r slog.Record) error {
 	if s.count < s.max {
 		s.count++
 	}
-	// Notify subscribers (non-blocking)
+	// Snapshot subscriber channels under the lock; send AFTER releasing so a
+	// large/slow subscriber set can't serialize every slog call. (N2)
+	subs := make([]chan LogEntry, 0, len(s.subs))
 	for ch := range s.subs {
+		subs = append(subs, ch)
+	}
+	s.mu.Unlock()
+
+	for _, ch := range subs {
 		select {
 		case ch <- entry:
 		default:
 		}
 	}
-	s.mu.Unlock()
 
 	// Forward to the original handler
 	return b.inner.Handle(ctx, r)
@@ -145,14 +155,17 @@ func (b *LogBuffer) Snapshot() []LogEntry {
 	return out
 }
 
-// Subscribe returns a channel that receives new log entries.
-// Call Unsubscribe when done.
+// Subscribe returns a channel that receives new log entries, or nil if the
+// subscriber cap is reached (caller must handle nil). Call Unsubscribe when done.
 func (b *LogBuffer) Subscribe() chan LogEntry {
-	ch := make(chan LogEntry, 64)
 	s := b.store
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.subs) >= maxSSESubscribers {
+		return nil
+	}
+	ch := make(chan LogEntry, 64)
 	s.subs[ch] = struct{}{}
-	s.mu.Unlock()
 	return ch
 }
 
@@ -205,6 +218,11 @@ func NewLogsStreamHandler(buf *LogBuffer) http.HandlerFunc {
 
 		// Stream new entries
 		ch := buf.Subscribe()
+		if ch == nil {
+			fmt.Fprint(w, ": too many log subscribers, try again later\n\n")
+			flusher.Flush()
+			return
+		}
 		defer buf.Unsubscribe(ch)
 
 		ctx := r.Context()

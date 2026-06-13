@@ -973,7 +973,14 @@ func (h *WebSocketHandler) handleChatCompact(conn *websocket.Conn, req JSONRPCRe
 		return
 	}
 
-	res, err := mgr.MaybeCompact(context.Background(), sess, compaction.ReasonManual, params.Instructions)
+	// Tie manual compaction to the server context so it unwinds on shutdown.
+	// The summarizer already self-bounds with its own per-call deadline, so no
+	// extra timeout is needed here. serverCtx is nil-able. (G4)
+	compactCtx := h.serverCtx
+	if compactCtx == nil {
+		compactCtx = context.Background()
+	}
+	res, err := mgr.MaybeCompact(compactCtx, sess, compaction.ReasonManual, params.Instructions)
 	if err != nil {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
