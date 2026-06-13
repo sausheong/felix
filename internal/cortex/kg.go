@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sausheong/cortex"
 	hrt "github.com/sausheong/harness/runtime"
@@ -58,8 +59,8 @@ func formatRecall(results []cortex.Result) string {
 	b.WriteString("Relevant context from memory:\n")
 	for _, r := range results {
 		content := r.Content
-		if len(content) > 300 {
-			content = content[:300] + "..."
+		if utf8.RuneCountInString(content) > 300 {
+			content = string([]rune(content)[:300]) + "..."
 		}
 		fmt.Fprintf(&b, "- [%s] %s\n", r.Type, content)
 	}
