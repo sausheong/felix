@@ -149,7 +149,7 @@ func promptCachePut(agentID string, gen int64, p cachedPrompt) {
 // ConfigSummaryFor returns the (cached) config summary for the current
 // generation, shared by subagent-factory call sites and BuildRuntimeForAgent.
 func ConfigSummaryFor(cfg *config.Config) string {
-	const key = "__config_summary__"
+	const key = "\x00config_summary"
 	gen := configGeneration.Load()
 	if c, ok := promptCacheGet(key, gen); ok {
 		return c.configSummary

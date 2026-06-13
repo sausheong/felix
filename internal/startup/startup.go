@@ -452,6 +452,18 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				// the rest of wiring proceed against a valid local provider.
 				sup := localSup
 				tracker := bootstrapTracker
+				// Snapshot cfg fields the goroutine reads into locals before
+				// launching it. config.Config.UpdateFrom rewrites these same
+				// fields under cfg.mu.Lock() on hot reload, so reading them
+				// directly inside the goroutine would race. cfg.GetProvider is
+				// mutex-guarded and stays as a live call below.
+				localEnabled := cfg.Local.Enabled
+				defaultModel := ""
+				if len(cfg.Agents.List) > 0 {
+					defaultModel = cfg.Agents.List[0].Model
+				}
+				memEnabled := cfg.Memory.Enabled
+				embedModel := cfg.Memory.EmbeddingModel
 				go func() {
 					rctx, rcancel := context.WithTimeout(context.Background(), 70*time.Second)
 					defer rcancel()
@@ -460,7 +472,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 						return
 					}
 					// First-run background pull of default local models (gemma4 + nomic-embed).
-					if cfg.Local.Enabled {
+					if localEnabled {
 						if pcfg := cfg.GetProvider("local"); pcfg.BaseURL != "" {
 							ollamaURL := strings.TrimSuffix(pcfg.BaseURL, "/v1")
 							puller := local.NewInstaller(ollamaURL)
@@ -473,8 +485,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 							// Pre-warm the default agent's local model so the first chat
 							// turn doesn't pay the ~10s cold-load latency. Runs in the
 							// background and silently logs failure (e.g. model still pulling).
-							if len(cfg.Agents.List) > 0 {
-								defaultModel := cfg.Agents.List[0].Model
+							if defaultModel != "" {
 								go func() {
 									// Wait briefly so EnsureFirstRunModels can start; if the
 									// model isn't on disk yet, /api/generate will fail and we
@@ -493,8 +504,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 							// top of the chat-model warmup. Runs concurrently with
 							// the chat-model warmup since they're different models
 							// and Ollama can hold two resident if RAM allows.
-							if cfg.Memory.Enabled && cfg.Memory.EmbeddingModel != "" {
-								embedModel := cfg.Memory.EmbeddingModel
+							if memEnabled && embedModel != "" {
 								go func() {
 									time.Sleep(2 * time.Second)
 									warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
