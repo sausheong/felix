@@ -95,3 +95,17 @@ func TestMaybeGenerateSessionTitle_SkipsWithoutAssistantReply(t *testing.T) {
 		t.Errorf("title = %q, want empty (no reply yet)", got)
 	}
 }
+
+func TestMaybeGenerateSessionTitle_SkipsOnEmptyModelOutput(t *testing.T) {
+	// No scripted replies -> the title model call yields "" -> sanitizeTitle
+	// returns "" -> the best-effort path must NOT write a sidecar.
+	h, _, _ := testHandler(t) // no replies
+	scope := runs.SessionScope{AgentID: "default", SessionKey: "ws_default"}
+	seedFirstTurn(t, h, scope.AgentID, scope.SessionKey, "how do I deploy?", "Run goreleaser.")
+
+	h.maybeGenerateSessionTitle(scope)
+
+	if got := readSessionMeta(h.sessionsBaseDir, scope.AgentID, scope.SessionKey); got != "" {
+		t.Errorf("title = %q, want empty (model produced no usable output)", got)
+	}
+}
