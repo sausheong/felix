@@ -35,6 +35,7 @@ type Manager struct {
 	vecDB         *chromem.DB
 	vecColl       *chromem.Collection
 	cache         *embedCache
+	vecSem        chan struct{} // bounds concurrent vector-add goroutines
 	mu            sync.RWMutex
 }
 
@@ -45,6 +46,7 @@ func NewManager(baseDir string) *Manager {
 		entries: make(map[string]Entry),
 		index:   NewBM25Index(),
 		cache:   newEmbedCache(filepath.Join(baseDir, "entries")),
+		vecSem:  make(chan struct{}, 4),
 	}
 }
 
@@ -241,7 +243,7 @@ func (m *Manager) Save(id, content string) error {
 	}
 
 	path := filepath.Join(entriesDir, id+".md")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := writeFileAtomic(path, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write memory entry: %w", err)
 	}
 
@@ -264,12 +266,15 @@ func (m *Manager) Save(id, content string) error {
 		m.index.Add(e.ID, e.Content)
 	}
 
-	// Add/update in vector collection if available.
-	if m.vecColl != nil {
+	// Add/update in vector collection if available. Capture coll under the
+	// lock so the goroutine never dereferences m.vecColl (which Load/Delete
+	// reassign). vecSem bounds concurrent vector-add network calls.
+	if coll := m.vecColl; coll != nil {
+		m.vecSem <- struct{}{}
 		go func() {
-			ctx := context.Background()
+			defer func() { <-m.vecSem }()
 			doc := chromem.Document{ID: id, Content: content}
-			if err := m.vecColl.AddDocument(ctx, doc); err != nil {
+			if err := coll.AddDocument(context.Background(), doc); err != nil {
 				slog.Warn("vector index add failed", "id", id, "error", err)
 			}
 		}()

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -285,4 +286,33 @@ func TestTruncateRunes_UTF8Safe(t *testing.T) {
 	out := truncateRunes(s, 10)
 	require.True(t, utf8.ValidString(out), "must not split a rune")
 	require.Equal(t, 10, utf8.RuneCountInString(out))
+}
+
+func TestSave_ConcurrentWithLoadNoRace(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			_ = m.Save(fmt.Sprintf("agent-%d", i), "# t\n\nbody")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			_ = m.Load()
+		}
+	}()
+	wg.Wait()
+}
+
+func TestWriteFileAtomic_RoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.md")
+	require.NoError(t, writeFileAtomic(p, []byte("hello"), 0o600))
+	b, err := os.ReadFile(p)
+	require.NoError(t, err)
+	require.Equal(t, "hello", string(b))
 }
