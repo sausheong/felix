@@ -1308,9 +1308,10 @@ func (h *WebSocketHandler) handleSessionHistory(conn *websocket.Conn, req JSONRP
 				continue
 			}
 			entries = append(entries, map[string]any{
-				"type": "message",
-				"role": entry.Role,
-				"text": msg.Text,
+				"type":      "message",
+				"role":      entry.Role,
+				"text":      msg.Text,
+				"timestamp": entry.Timestamp,
 			})
 		case session.EntryTypeToolCall:
 			var tc session.ToolCallData
