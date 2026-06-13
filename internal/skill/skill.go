@@ -235,20 +235,39 @@ func SplitFrontmatter(content string) (frontmatter, body string) {
 		rest = rest[2:]
 	}
 
-	endIdx := strings.Index(rest, "\n---")
+	// Find a line whose trimmed content is exactly "---" (not "----" or
+	// "---publish:"). Track byte offsets to slice frontmatter/body.
+	endIdx := -1
+	bodyStart := -1
+	off := 0
+	for {
+		nl := strings.IndexByte(rest[off:], '\n')
+		var line string
+		if nl < 0 {
+			line = rest[off:]
+		} else {
+			line = rest[off : off+nl]
+		}
+		if strings.TrimRight(line, "\r") == "---" {
+			endIdx = off
+			if nl < 0 {
+				bodyStart = len(rest)
+			} else {
+				bodyStart = off + nl + 1
+			}
+			break
+		}
+		if nl < 0 {
+			break
+		}
+		off += nl + 1
+	}
 	if endIdx < 0 {
 		return "", content
 	}
 
-	frontmatter = rest[:endIdx]
-	body = rest[endIdx+4:]
-
-	// Trim the newline after closing ---
-	if len(body) > 0 && body[0] == '\n' {
-		body = body[1:]
-	} else if len(body) > 1 && body[0] == '\r' && body[1] == '\n' {
-		body = body[2:]
-	}
+	frontmatter = strings.TrimRight(rest[:endIdx], "\n")
+	body = rest[bodyStart:]
 
 	return frontmatter, body
 }

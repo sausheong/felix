@@ -414,3 +414,9 @@ func TestSave_DoesNotBlockOnVectorSemaphore(t *testing.T) {
 		t.Fatal("Save calls blocked unexpectedly")
 	}
 }
+
+func TestExtractTitle_LineStartOnly(t *testing.T) {
+	content := "intro text with a # hash not at line start\n# Real Title\nbody"
+	require.Equal(t, "Real Title", extractTitle("id1", content))
+	require.Equal(t, "id2", extractTitle("id2", "no heading here # nope"))
+}

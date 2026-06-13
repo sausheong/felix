@@ -3,6 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -319,4 +320,14 @@ func TestSeedBundledSkills_NonEmptyDirSkipped(t *testing.T) {
 	// Bundled files should NOT have appeared.
 	_, err = os.Stat(filepath.Join(dir, "pdftotext.md"))
 	assert.True(t, os.IsNotExist(err), "pdftotext.md should NOT have been written")
+}
+
+func TestSplitFrontmatter_ExactClosingFence(t *testing.T) {
+	in := "---\nname: x\n----\nbody"
+	fm, _ := SplitFrontmatter(in)
+	require.NotContains(t, fm, "name: x\n----", "must not close on ----")
+	in2 := "---\nname: y\n---\nbody text"
+	fm2, body2 := SplitFrontmatter(in2)
+	require.Equal(t, "name: y", strings.TrimSpace(fm2))
+	require.Equal(t, "body text", strings.TrimSpace(body2))
 }
