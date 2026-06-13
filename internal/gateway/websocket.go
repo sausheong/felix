@@ -406,6 +406,19 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	if sessionKey == "" {
 		sessionKey = "ws_default"
 	}
+	// Validate both segments before they reach any filesystem path
+	// (session JSONL, run log, and the .meta.json title sidecar written by
+	// maybeGenerateSessionTitle). Every other session RPC validates these;
+	// chat.send is the one that creates the on-disk entry, so it must too,
+	// or a crafted "../" key escapes <sessionsBase>/<agentID>/.
+	if err := validateSessionPathSegment(params.AgentID); err != nil {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "agentId: "+err.Error())
+		return
+	}
+	if err := validateSessionPathSegment(sessionKey); err != nil {
+		writeRPCError(conn, h.metrics, req.ID, -32602, "sessionKey: "+err.Error())
+		return
+	}
 	scope := runs.SessionScope{AgentID: params.AgentID, SessionKey: sessionKey}
 
 	rpcID := req.ID

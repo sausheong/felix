@@ -390,3 +390,30 @@ func TestChatHandlers_RejectNilRegistry(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleChatSend_RejectsPathTraversal ensures chat.send validates the
+// agentId/sessionKey path segments before they reach any filesystem path
+// (session JSONL, run log, or the .meta.json title sidecar). A "../" key
+// must be rejected, not silently used to escape <sessionsBase>/<agentID>/.
+func TestHandleChatSend_RejectsPathTraversal(t *testing.T) {
+	h, _, _ := testHandler(t, "ok")
+	clientConn, serverConn := wsPair(t, h)
+
+	cases := []struct {
+		name   string
+		params map[string]string
+	}{
+		{"traversal-key", map[string]string{"agentId": "default", "sessionKey": "../pwned", "text": "hi"}},
+		{"separator-key", map[string]string{"agentId": "default", "sessionKey": "a/b", "text": "hi"}},
+		{"dotdot-agent", map[string]string{"agentId": "..", "sessionKey": "ws_default", "text": "hi"}},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h.handleChatSend(serverConn, makeReq(t, "chat.send", tc.params, i+1))
+			resp := readJSON(t, clientConn)
+			if _, isErr := resp["error"]; !isErr {
+				t.Errorf("chat.send with %s should error, got: %v", tc.name, resp)
+			}
+		})
+	}
+}
