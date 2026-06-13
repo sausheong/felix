@@ -123,19 +123,22 @@ func TestStripJSON5(t *testing.T) {
 		want  string
 	}{
 		{
+			// The single-pass stripper preserves the newline that follows a
+			// line comment (it only removes the comment text), and no longer
+			// appends a synthetic trailing newline. Output is still valid JSON.
 			name:  "strip single-line comment",
 			input: "// comment\n{\"key\": \"value\"}",
-			want:  "{\"key\": \"value\"}\n",
+			want:  "\n{\"key\": \"value\"}",
 		},
 		{
 			name:  "strip trailing comma before }",
 			input: `{"key": "value",}`,
-			want:  "{\"key\": \"value\"}\n",
+			want:  `{"key": "value"}`,
 		},
 		{
 			name:  "strip trailing comma before ]",
 			input: `["a", "b",]`,
-			want:  "[\"a\", \"b\"]\n",
+			want:  `["a", "b"]`,
 		},
 	}
 
@@ -987,4 +990,62 @@ func TestValidate_ClearsMultipleDefaults(t *testing.T) {
 	if cfg.Agents.List[2].Default {
 		t.Errorf("agent[2] should have been cleared")
 	}
+}
+
+func TestStripJSON5_PreservesCommaInString(t *testing.T) {
+	in := `{"prompt": "say hi, " }`
+	out := stripJSON5(in)
+	require.True(t, json.Valid([]byte(out)), "output must be valid JSON: %q", out)
+	var m map[string]string
+	require.NoError(t, json.Unmarshal([]byte(out), &m))
+	require.Equal(t, "say hi, ", m["prompt"])
+}
+
+func TestStripJSON5_StripsCommentAfterURL(t *testing.T) {
+	in := `{"base_url": "http://x/v1", // note` + "\n" + `"k": 1}`
+	out := stripJSON5(in)
+	require.True(t, json.Valid([]byte(out)), "output must be valid JSON: %q", out)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &m))
+	require.Equal(t, "http://x/v1", m["base_url"])
+}
+
+func TestStripJSON5_TrailingComma(t *testing.T) {
+	in := `{"a": 1, "b": 2,}`
+	out := stripJSON5(in)
+	var m map[string]int
+	require.NoError(t, json.Unmarshal([]byte(out), &m))
+	require.Equal(t, 2, m["b"])
+}
+
+func TestStripJSON5_BlockComment(t *testing.T) {
+	in := `{ /* hi */ "a": 1 }`
+	out := stripJSON5(in)
+	var m map[string]int
+	require.NoError(t, json.Unmarshal([]byte(out), &m))
+	require.Equal(t, 1, m["a"])
+}
+
+func TestStripJSON5_EscapedQuoteInString(t *testing.T) {
+	in := `{"a": "she said \"hi\", ok"}`
+	out := stripJSON5(in)
+	var m map[string]string
+	require.NoError(t, json.Unmarshal([]byte(out), &m))
+	require.Equal(t, `she said "hi", ok`, m["a"])
+}
+
+func TestStripJSON5_LineComment(t *testing.T) {
+	in := "// header\n{\"a\": 1}\n"
+	out := stripJSON5(in)
+	var m map[string]int
+	require.NoError(t, json.Unmarshal([]byte(out), &m))
+	require.Equal(t, 1, m["a"])
+}
+
+func TestStripJSON5_TrailingCommaThenComment(t *testing.T) {
+	in := "{\"a\": 1, // last\n}"
+	out := stripJSON5(in)
+	var m map[string]int
+	require.NoError(t, json.Unmarshal([]byte(out), &m))
+	require.Equal(t, 1, m["a"])
 }

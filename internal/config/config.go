@@ -862,64 +862,97 @@ func (c *Config) Save() error {
 	return nil
 }
 
-// stripJSON5 removes single-line comments and trailing commas from JSON5
-// to produce valid JSON for the stdlib parser.
+// stripJSON5 converts JSON5-lite (// line comments, /* block */ comments, and
+// trailing commas before } or ]) into standard JSON. It walks the input once,
+// tracking string/escape/comment state so commas and comment markers INSIDE
+// string literals are never misread. Replaces the prior line-based stripper,
+// which corrupted strings containing ", " and failed on URLs containing "//".
 func stripJSON5(s string) string {
+	const (
+		stDefault = iota
+		stString
+		stEscape
+		stLineComment
+		stBlockComment
+	)
+	runes := []rune(s)
 	var b strings.Builder
-	lines := strings.Split(s, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		// Skip full-line comments
-		if strings.HasPrefix(trimmed, "//") {
-			continue
-		}
-		// Remove inline comments (naive: doesn't handle // inside strings,
-		// but sufficient for typical config files)
-		if idx := strings.Index(line, "//"); idx >= 0 {
-			// Only strip if not inside a quoted string
-			if !inString(line, idx) {
-				line = line[:idx]
+	b.Grow(len(s))
+	state := stDefault
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		switch state {
+		case stDefault:
+			switch {
+			case c == '"':
+				b.WriteRune(c)
+				state = stString
+			case c == '/' && i+1 < len(runes) && runes[i+1] == '/':
+				state = stLineComment
+				i++
+			case c == '/' && i+1 < len(runes) && runes[i+1] == '*':
+				state = stBlockComment
+				i++
+			case c == ',':
+				if nextSignificantIsCloser(runes, i+1) {
+					// drop trailing comma
+				} else {
+					b.WriteRune(c)
+				}
+			default:
+				b.WriteRune(c)
+			}
+		case stString:
+			b.WriteRune(c)
+			if c == '\\' {
+				state = stEscape
+			} else if c == '"' {
+				state = stDefault
+			}
+		case stEscape:
+			b.WriteRune(c)
+			state = stString
+		case stLineComment:
+			if c == '\n' {
+				b.WriteRune(c)
+				state = stDefault
+			}
+		case stBlockComment:
+			if c == '*' && i+1 < len(runes) && runes[i+1] == '/' {
+				i++
+				state = stDefault
 			}
 		}
-		b.WriteString(line)
-		b.WriteByte('\n')
 	}
-
-	// Remove trailing commas before } or ]
-	result := b.String()
-	result = removeTrailingCommas(result)
-	return result
+	return b.String()
 }
 
-// inString checks if position pos in line is inside a JSON string literal.
-func inString(line string, pos int) bool {
-	inStr := false
-	for i := 0; i < pos; i++ {
-		if line[i] == '"' && (i == 0 || line[i-1] != '\\') {
-			inStr = !inStr
-		}
-	}
-	return inStr
-}
-
-// removeTrailingCommas removes commas that appear before } or ] (with optional whitespace).
-func removeTrailingCommas(s string) string {
-	runes := []rune(s)
-	var out []rune
-	for i := 0; i < len(runes); i++ {
-		if runes[i] == ',' {
-			// Look ahead past whitespace for } or ]
-			j := i + 1
-			for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\n' || runes[j] == '\r') {
+// nextSignificantIsCloser reports whether the next non-whitespace, non-comment
+// rune starting at index j is } or ] — i.e. the comma at j-1 is a trailing
+// comma. Skips whitespace and // and /* comments.
+func nextSignificantIsCloser(runes []rune, j int) bool {
+	for j < len(runes) {
+		c := runes[j]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			j++
+		case c == '/' && j+1 < len(runes) && runes[j+1] == '/':
+			for j < len(runes) && runes[j] != '\n' {
 				j++
 			}
-			if j < len(runes) && (runes[j] == '}' || runes[j] == ']') {
-				continue // skip this trailing comma
+		case c == '/' && j+1 < len(runes) && runes[j+1] == '*':
+			j += 2
+			for j+1 < len(runes) && !(runes[j] == '*' && runes[j+1] == '/') {
+				j++
 			}
+			j += 2
+		case c == '}' || c == ']':
+			return true
+		default:
+			return false
 		}
-		out = append(out, runes[i])
 	}
-	return string(out)
+	return false
 }
 
 // ResolveMCPServers returns one mcp.ManagerServerConfig per enabled
