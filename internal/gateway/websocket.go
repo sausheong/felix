@@ -453,13 +453,21 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 	go func() {
 		defer h.releaseRun()
 		_, err := chatexec.RunTurn(context.Background(), deps, scope, params.Text, sub)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("chatexec.RunTurn", "agent", scope.AgentID, "session", scope.SessionKey, "error", err)
-			// chatexec wrote a terminal failure event via Finish, which the
-			// subscriber already saw. Surface an RPC error for completeness
-			// so clients that wired chat.send → callback can fail cleanly.
-			writeRPCError(conn, metrics, rpcID, -32603, err.Error())
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				slog.Error("chatexec.RunTurn", "agent", scope.AgentID, "session", scope.SessionKey, "error", err)
+				// chatexec wrote a terminal failure event via Finish, which the
+				// subscriber already saw. Surface an RPC error for completeness
+				// so clients that wired chat.send → callback can fail cleanly.
+				writeRPCError(conn, metrics, rpcID, -32603, err.Error())
+			}
+			return
 		}
+		// Best-effort: name an untitled session from its first Q&A. No-op
+		// when already titled or when there's no complete first turn. Never
+		// affects the turn the user just saw (its done event was already
+		// delivered by RunTurn before it returned).
+		h.maybeGenerateSessionTitle(scope)
 	}()
 }
 
