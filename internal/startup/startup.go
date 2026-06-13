@@ -32,13 +32,14 @@ import (
 	"github.com/sausheong/felix/internal/skill"
 	"github.com/sausheong/felix/internal/tokens"
 	"github.com/sausheong/felix/internal/tools"
+	"golang.org/x/sync/errgroup"
 )
 
 // Result holds the running gateway components.
 type Result struct {
-	Server    *gateway.Server
-	Config    *config.Config
-	Cleanup   func() // call to gracefully shut down everything
+	Server  *gateway.Server
+	Config  *config.Config
+	Cleanup func() // call to gracefully shut down everything
 }
 
 // cortexAutoAddToolNames are the cortex tool names auto-added to every
@@ -425,9 +426,8 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				KeepAlive: cfg.Local.KeepAlive,
 				PIDFile:   filepath.Join(config.DefaultDataDir(), "ollama.pid"),
 			})
-			startCtx, startCancel := context.WithTimeout(context.Background(), 70*time.Second)
-			if err := localSup.Start(startCtx); err != nil {
-				slog.Warn("failed to start bundled ollama; local provider disabled", "error", err)
+			if err := localSup.Spawn(); err != nil {
+				slog.Warn("failed to spawn bundled ollama; local provider disabled", "error", err)
 				localSup = nil
 			} else {
 				if ierr := local.InjectLocalProvider(configPath, localSup.BoundPort()); ierr != nil {
@@ -437,52 +437,77 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 				if reloaded, rerr := config.Load(configPath); rerr == nil {
 					cfg.UpdateFrom(reloaded)
 				}
-				// First-run background pull of default local models (gemma4 + nomic-embed).
+				// Create the bootstrap tracker synchronously so the Settings
+				// handler (wired below) sees a non-nil tracker regardless of
+				// readiness timing. The actual model pulls/warmups are kicked
+				// off from the background goroutine once ollama is ready.
 				if cfg.Local.Enabled {
 					if pcfg := cfg.GetProvider("local"); pcfg.BaseURL != "" {
-						ollamaURL := strings.TrimSuffix(pcfg.BaseURL, "/v1")
-						puller := local.NewInstaller(ollamaURL)
 						bootstrapTracker = local.NewTracker()
-						local.EnsureFirstRunModels(context.Background(), config.DefaultDataDir(), puller, bootstrapTracker.OnEvent)
-
-						// Pre-warm the default agent's local model so the first chat
-						// turn doesn't pay the ~10s cold-load latency. Runs in the
-						// background and silently logs failure (e.g. model still pulling).
-						if len(cfg.Agents.List) > 0 {
-							defaultModel := cfg.Agents.List[0].Model
-							go func() {
-								// Wait briefly so EnsureFirstRunModels can start; if the
-								// model isn't on disk yet, /api/generate will fail and we
-								// just log+move on.
-								time.Sleep(2 * time.Second)
-								warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
-								defer warmCancel()
-								if err := local.WarmModel(warmCtx, ollamaURL, defaultModel); err != nil {
-									slog.Debug("ollama warmup deferred", "model", defaultModel, "error", err)
-								}
-							}()
-						}
-						// Pre-warm the embedder model too. Cortex recall and
-						// memory both hit it on the user's first chat turn —
-						// without warmup that turn pays a ~5–10s cold-load on
-						// top of the chat-model warmup. Runs concurrently with
-						// the chat-model warmup since they're different models
-						// and Ollama can hold two resident if RAM allows.
-						if cfg.Memory.Enabled && cfg.Memory.EmbeddingModel != "" {
-							embedModel := cfg.Memory.EmbeddingModel
-							go func() {
-								time.Sleep(2 * time.Second)
-								warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
-								defer warmCancel()
-								if err := local.WarmEmbedder(warmCtx, ollamaURL, embedModel); err != nil {
-									slog.Debug("ollama embedder warmup deferred", "model", embedModel, "error", err)
-								}
-							}()
-						}
 					}
 				}
+				// Defer readiness wait + first-run model pulls/warmups to a
+				// background goroutine so they don't block the HTTP server.
+				// The port is already bound after Spawn, so InitProviders and
+				// the rest of wiring proceed against a valid local provider.
+				sup := localSup
+				tracker := bootstrapTracker
+				go func() {
+					rctx, rcancel := context.WithTimeout(context.Background(), 70*time.Second)
+					defer rcancel()
+					if err := sup.WaitReady(rctx); err != nil {
+						slog.Warn("bundled ollama did not become ready", "error", err)
+						return
+					}
+					// First-run background pull of default local models (gemma4 + nomic-embed).
+					if cfg.Local.Enabled {
+						if pcfg := cfg.GetProvider("local"); pcfg.BaseURL != "" {
+							ollamaURL := strings.TrimSuffix(pcfg.BaseURL, "/v1")
+							puller := local.NewInstaller(ollamaURL)
+							var onEvent func(local.BootstrapEvent)
+							if tracker != nil {
+								onEvent = tracker.OnEvent
+							}
+							local.EnsureFirstRunModels(context.Background(), config.DefaultDataDir(), puller, onEvent)
+
+							// Pre-warm the default agent's local model so the first chat
+							// turn doesn't pay the ~10s cold-load latency. Runs in the
+							// background and silently logs failure (e.g. model still pulling).
+							if len(cfg.Agents.List) > 0 {
+								defaultModel := cfg.Agents.List[0].Model
+								go func() {
+									// Wait briefly so EnsureFirstRunModels can start; if the
+									// model isn't on disk yet, /api/generate will fail and we
+									// just log+move on.
+									time.Sleep(2 * time.Second)
+									warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
+									defer warmCancel()
+									if err := local.WarmModel(warmCtx, ollamaURL, defaultModel); err != nil {
+										slog.Debug("ollama warmup deferred", "model", defaultModel, "error", err)
+									}
+								}()
+							}
+							// Pre-warm the embedder model too. Cortex recall and
+							// memory both hit it on the user's first chat turn —
+							// without warmup that turn pays a ~5–10s cold-load on
+							// top of the chat-model warmup. Runs concurrently with
+							// the chat-model warmup since they're different models
+							// and Ollama can hold two resident if RAM allows.
+							if cfg.Memory.Enabled && cfg.Memory.EmbeddingModel != "" {
+								embedModel := cfg.Memory.EmbeddingModel
+								go func() {
+									time.Sleep(2 * time.Second)
+									warmCtx, warmCancel := context.WithTimeout(context.Background(), 60*time.Second)
+									defer warmCancel()
+									if err := local.WarmEmbedder(warmCtx, ollamaURL, embedModel); err != nil {
+										slog.Debug("ollama embedder warmup deferred", "model", embedModel, "error", err)
+									}
+								}()
+							}
+						}
+					}
+				}()
 			}
-			startCancel()
 		}
 	}
 
@@ -556,24 +581,27 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	if err != nil {
 		return nil, fmt.Errorf("resolve mcp_servers: %w", err)
 	}
-	mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	mcpMgr, err := mcp.NewManager(mcpInitCtx, mcpServerCfgs)
-	mcpInitCancel()
-	if err != nil {
-		return nil, fmt.Errorf("init mcp manager: %w", err)
-	}
-	mcpNames, err := mcp.RegisterTools(toolReg, mcpMgr, cfg.IsServerParallelSafe)
-	if err != nil {
-		mcpMgr.Close()
-		return nil, fmt.Errorf("register mcp tools: %w", err)
-	}
-	applyAutoAddedAllowlists(cfg, mcpNames)
+	// MCP connect can block up to 30s on remote handshakes. Run it
+	// concurrently with the skill/memory/cortex-tool-def init below, which do
+	// not touch the MCP manager or register MCP tools. Join (eg.Wait) before
+	// mcp.RegisterTools so the critical invariant holds:
+	//   RegisterTools -> applyAutoAddedAllowlists -> BuildPermissionChecker -> server.
+	// mcpMgr is written only in this goroutine and read after eg.Wait()
+	// returns, so the happens-before edge from Wait makes the read race-free.
+	var mcpMgr *mcp.Manager
+	var eg errgroup.Group
+	eg.Go(func() error {
+		mctx, mcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer mcancel()
+		m, mErr := mcp.NewManager(mctx, mcpServerCfgs)
+		if mErr != nil {
+			return fmt.Errorf("init mcp manager: %w", mErr)
+		}
+		mcpMgr = m
+		return nil
+	})
 
-	// Build a single PermissionChecker covering every agent in cfg. Same
-	// checker, different agent IDs per Runtime — StaticChecker keys on
-	// AgentID. An agent absent from the map is treated as allow-all, matching
-	// today's behavior when no policy is configured.
-	permission := cfg.BuildPermissionChecker()
+	// --- concurrent window: init that does NOT touch mcpMgr / MCP tools ---
 
 	// Init skill loader
 	skillLoader := skill.NewLoader()
@@ -614,6 +642,23 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 	if cfg.Cortex.Enabled {
 		tools.RegisterCortexTools(toolReg, nil)
 	}
+
+	// --- end concurrent window: join MCP before registering its tools ---
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+	mcpNames, err := mcp.RegisterTools(toolReg, mcpMgr, cfg.IsServerParallelSafe)
+	if err != nil {
+		mcpMgr.Close()
+		return nil, fmt.Errorf("register mcp tools: %w", err)
+	}
+	applyAutoAddedAllowlists(cfg, mcpNames)
+
+	// Build a single PermissionChecker covering every agent in cfg. Same
+	// checker, different agent IDs per Runtime — StaticChecker keys on
+	// AgentID. An agent absent from the map is treated as allow-all, matching
+	// today's behavior when no policy is configured.
+	permission := cfg.BuildPermissionChecker()
 
 	// Init Cortex knowledge graph as a per-agent factory. Each chatting agent
 	// gets its own *cortex.Cortex (cached) wired with the same provider/model
@@ -967,8 +1012,8 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			wsHandler.UpdateConfig(newCfg)
 			slog.Info("config updated via settings page")
 		}),
-		Skills:    skillHandlers,
-		Memory:    gateway.NewMemoryHandlers(memMgr),
+		Skills: skillHandlers,
+		Memory: gateway.NewMemoryHandlers(memMgr),
 		MCP: gateway.NewMCPHandlers(mcpMgr, func() *config.Config {
 			// Closure rather than a snapshot so config hot-reload (which
 			// rewrites cfg in place) is observed by the re-auth handler.
