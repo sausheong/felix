@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	chromem "github.com/philippgille/chromem-go"
 )
@@ -386,8 +387,8 @@ func FormatForPrompt(entries []Entry) string {
 		b.WriteString(e.Title)
 		b.WriteString("\n\n")
 		content := e.Content
-		if len(content) > 2000 {
-			content = content[:2000] + "\n\n[truncated]"
+		if utf8.RuneCountInString(content) > 2000 {
+			content = truncateRunes(content, 2000) + "\n\n[truncated]"
 		}
 		b.WriteString(content)
 		b.WriteString("\n\n")
@@ -409,7 +410,10 @@ const MaxMemoryIndexEntries = 200
 // 5–10 KB of system-prompt prefix and lets the model decide what's
 // worth pulling. Returns "" for empty Manager.
 //
-// Entries are sorted by id for stable cache-prefix ordering across turns.
+// Entries are sorted by ModTime descending (tie-break id descending) so
+// that when there are more than MaxMemoryIndexEntries the NEWEST entries
+// survive the cap — agent ids are time-ascending, so id-sorting would
+// silently drop the most recent memories off the only discovery surface.
 // One-line description is the first non-empty line of the body that is
 // not the title heading; trimmed to ~120 chars.
 func (m *Manager) FormatIndex() string {
@@ -423,9 +427,17 @@ func (m *Manager) FormatIndex() string {
 	if len(entries) == 0 {
 		return ""
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	sort.Slice(entries, func(i, j int) bool {
+		if !entries[i].ModTime.Equal(entries[j].ModTime) {
+			return entries[i].ModTime.After(entries[j].ModTime)
+		}
+		return entries[i].ID > entries[j].ID
+	})
+	omitted := 0
 	if len(entries) > MaxMemoryIndexEntries {
+		omitted = len(entries) - MaxMemoryIndexEntries
 		entries = entries[:MaxMemoryIndexEntries]
+		slog.Warn("memory index truncated", "shown", MaxMemoryIndexEntries, "omitted", omitted)
 	}
 
 	var b strings.Builder
@@ -441,7 +453,19 @@ func (m *Manager) FormatIndex() string {
 		}
 		b.WriteString("\n")
 	}
+	if omitted > 0 {
+		fmt.Fprintf(&b, "\n…and %d more (use the memory list tool to see all).\n", omitted)
+	}
 	return b.String()
+}
+
+// truncateRunes returns s limited to n runes, never splitting a multibyte
+// rune (byte-slicing UTF-8 can inject invalid bytes into the system prompt).
+func truncateRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
 }
 
 // indexDescription returns a short one-line teaser for the index entry —
@@ -453,8 +477,8 @@ func indexDescription(e Entry) string {
 		if line == "" || strings.HasPrefix(line, "# ") {
 			continue
 		}
-		if len(line) > 120 {
-			line = line[:120] + "…"
+		if utf8.RuneCountInString(line) > 120 {
+			line = truncateRunes(line, 120) + "…"
 		}
 		return line
 	}
