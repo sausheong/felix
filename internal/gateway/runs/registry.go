@@ -491,7 +491,7 @@ func (reg *Registry) DeleteRun(scope SessionScope, runID string) error {
 	if err != nil {
 		return nil
 	}
-	out := idx.Runs[:0]
+	out := make([]RunSummary, 0, len(idx.Runs))
 	for _, r := range idx.Runs {
 		if r.ID == runID {
 			continue

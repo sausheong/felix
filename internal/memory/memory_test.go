@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -176,23 +179,24 @@ func TestFormatIndexEmptyManagerReturnsEmpty(t *testing.T) {
 	require.Equal(t, "", m.FormatIndex())
 }
 
-func TestFormatIndexListsEntriesSortedByID(t *testing.T) {
+func TestFormatIndexListsEntriesNewestFirst(t *testing.T) {
 	m := NewManager(t.TempDir())
+	// Entries are sorted by ModTime descending (tie-break id desc) so the
+	// newest survives the cap. Give distinct ModTimes to assert ordering.
 	m.entries = map[string]Entry{
-		"zebra":  {ID: "zebra", Title: "Z", Content: "# Z\n\nlast line about zebras."},
-		"apple":  {ID: "apple", Title: "A", Content: "# A\n\nfirst line about apples."},
-		"banana": {ID: "banana", Title: "B", Content: "# B\n\nbody about bananas."},
+		"apple":  {ID: "apple", Title: "A", Content: "# A\n\nfirst line about apples.", ModTime: time.Unix(100, 0)},
+		"banana": {ID: "banana", Title: "B", Content: "# B\n\nbody about bananas.", ModTime: time.Unix(200, 0)},
+		"zebra":  {ID: "zebra", Title: "Z", Content: "# Z\n\nlast line about zebras.", ModTime: time.Unix(300, 0)},
 	}
 	got := m.FormatIndex()
 	require.Contains(t, got, "## Memory Index")
-	// Order must be apple, banana, zebra. Sorting matters: the index
-	// goes into the cached static prompt, so any non-deterministic
-	// ordering would invalidate the prompt cache every turn.
-	a := strings.Index(got, "**apple**")
-	b := strings.Index(got, "**banana**")
+	// Order must be zebra (newest), banana, apple (oldest). Sorting is
+	// deterministic so the index stays cache-stable across turns.
 	z := strings.Index(got, "**zebra**")
-	require.True(t, a >= 0 && b > a && z > b,
-		"entries must be sorted by id; got positions %d %d %d", a, b, z)
+	b := strings.Index(got, "**banana**")
+	a := strings.Index(got, "**apple**")
+	require.True(t, z >= 0 && b > z && a > b,
+		"entries must be sorted newest-first; got positions z=%d b=%d a=%d", z, b, a)
 }
 
 func TestFormatIndexIncludesTitleAndDescription(t *testing.T) {
@@ -230,18 +234,18 @@ func TestFormatIndexSkipsTitleInDescription(t *testing.T) {
 func TestFormatIndexCapsAtMax(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.entries = make(map[string]Entry)
-	// 250 entries with sortable IDs (e_001 .. e_250) so the cap is
-	// observable: the LAST entry (e_250) must be elided when the cap
-	// is 200.
+	// 250 entries; ModTime ascends with i so the NEWEST (e_250 .. e_051)
+	// survive the cap and the OLDEST (e_001 .. e_050) are elided. This is
+	// the R8 fix: newest-first ordering keeps recent memories discoverable.
 	for i := 1; i <= 250; i++ {
 		id := fmt.Sprintf("e_%03d", i)
-		m.entries[id] = Entry{ID: id, Title: id, Content: ""}
+		m.entries[id] = Entry{ID: id, Title: id, Content: "", ModTime: time.Unix(int64(i), 0)}
 	}
 	got := m.FormatIndex()
-	require.Contains(t, got, "**e_001**")
-	require.Contains(t, got, "**e_200**")
-	require.NotContains(t, got, "**e_201**")
-	require.NotContains(t, got, "**e_250**")
+	require.Contains(t, got, "**e_250**")
+	require.Contains(t, got, "**e_051**")
+	require.NotContains(t, got, "**e_050**")
+	require.NotContains(t, got, "**e_001**")
 }
 
 func TestFormatIndexTrimsLongDescription(t *testing.T) {
@@ -256,4 +260,79 @@ func TestFormatIndexTrimsLongDescription(t *testing.T) {
 	require.Contains(t, got, "…")
 	// The description segment must end with the ellipsis, not the full string.
 	require.NotContains(t, got, long)
+}
+
+func TestFormatIndex_ShowsNewestWhenOverCap(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	total := MaxMemoryIndexEntries + 5
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("agent-%010d-x", i)
+		require.NoError(t, m.Save(id, "# T"+id+"\n\nbody"))
+		m.mu.Lock()
+		e := m.entries[id]
+		e.ModTime = time.Unix(int64(1000+i), 0)
+		m.entries[id] = e
+		m.mu.Unlock()
+	}
+	idx := m.FormatIndex()
+	require.Contains(t, idx, fmt.Sprintf("agent-%010d-x", total-1), "newest must be listed")
+	require.NotContains(t, idx, fmt.Sprintf("agent-%010d-x", 0), "oldest must fall off")
+	require.Contains(t, idx, "and ", "truncation notice must appear")
+}
+
+func TestTruncateRunes_UTF8Safe(t *testing.T) {
+	s := strings.Repeat("é", 100)
+	out := truncateRunes(s, 10)
+	require.True(t, utf8.ValidString(out), "must not split a rune")
+	require.Equal(t, 10, utf8.RuneCountInString(out))
+}
+
+func TestSave_ConcurrentWithLoadNoRace(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			_ = m.Save(fmt.Sprintf("agent-%d", i), "# t\n\nbody")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			_ = m.Load()
+		}
+	}()
+	wg.Wait()
+}
+
+func TestWriteFileAtomic_RoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.md")
+	require.NoError(t, writeFileAtomic(p, []byte("hello"), 0o600))
+	b, err := os.ReadFile(p)
+	require.NoError(t, err)
+	require.Equal(t, "hello", string(b))
+}
+
+func TestSave_DoesNotBlockOnVectorSemaphore(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	// Without an embedder, vecColl is nil so the goroutine path is skipped;
+	// this guards that Save returns promptly regardless. (Structural guard for
+	// the moved-acquire fix — the acquire is no longer under m.mu.)
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			_ = m.Save(fmt.Sprintf("agent-%d", i), "# t\n\nbody")
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Save calls blocked unexpectedly")
+	}
 }
