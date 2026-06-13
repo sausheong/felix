@@ -901,6 +901,14 @@ body.replay-mode #input-shell { display: none !important; }
 	font-style: italic;
 	align-self: center;
 }
+.msg-time {
+	font-size: var(--fs-xs);
+	color: var(--text-muted);
+	margin-top: 0.35rem;
+	font-variant-numeric: tabular-nums;
+}
+.msg.user .msg-time { text-align: right; }
+.msg.assistant .msg-time { text-align: left; }
 .msg.user {
 	background: var(--bg-msg-user);
 	align-self: flex-end;
@@ -2988,7 +2996,7 @@ html.dark #stop-btn {
 			switch (ev.type) {
 			case 'text_delta':
 				if (!localAssistant) {
-					localAssistant = addAssistantMsg();
+					localAssistant = addAssistantMsg(0);
 					currentAssistant = localAssistant;
 				}
 				appendToAssistant(ev.text || '');
@@ -3006,7 +3014,7 @@ html.dark #stop-btn {
 				break;
 			case 'compaction.start':
 				if (!localAssistant) {
-					localAssistant = addAssistantMsg('');
+					localAssistant = addAssistantMsg(0);
 					currentAssistant = localAssistant;
 				}
 				appendToAssistant('\n*[Compacting context…]*\n');
@@ -3724,9 +3732,9 @@ html.dark #stop-btn {
 					for (var i = 0; i < entries.length; i++) {
 						var entry = entries[i];
 						if (entry.type === 'message' && entry.role === 'user') {
-							addUserMsg(entry.text);
+							addUserMsg(entry.text, entry.timestamp);
 						} else if (entry.type === 'message' && entry.role === 'assistant') {
-							var bubble = addAssistantMsg();
+							var bubble = addAssistantMsg(entry.timestamp);
 							bubble.raw = entry.text;
 							bubble.content.innerHTML = renderMd(entry.text);
 						} else if (entry.type === 'tool_call') {
@@ -3802,7 +3810,7 @@ html.dark #stop-btn {
 					break;
 				case 'text_delta':
 					if (!currentAssistant) {
-						currentAssistant = addAssistantMsg('');
+						currentAssistant = addAssistantMsg();
 					}
 					appendToAssistant(r.text);
 					break;
@@ -3848,7 +3856,7 @@ html.dark #stop-btn {
 					break;
 				case 'compaction.start':
 					if (!currentAssistant) {
-						currentAssistant = addAssistantMsg('');
+						currentAssistant = addAssistantMsg();
 					}
 					appendToAssistant('\n*[Compacting context…]*\n');
 					break;
@@ -3935,20 +3943,57 @@ html.dark #stop-btn {
 		inputEl.placeholder = 'Configure an agent first';
 	}
 
-	function addUserMsg(text) {
+	// formatMsgTime renders a bubble caption. tsSeconds is Unix seconds.
+	// Falsy/0 -> '' (caption omitted). Same calendar day as now -> time
+	// only ("2:32 PM"); older -> "Jun 12, 2:32 PM". Locale/zone aware.
+	function formatMsgTime(tsSeconds) {
+		if (!tsSeconds) return '';
+		var d = new Date(tsSeconds * 1000);
+		if (isNaN(d.getTime())) return '';
+		var now = new Date();
+		var sameDay = d.getFullYear() === now.getFullYear() &&
+			d.getMonth() === now.getMonth() &&
+			d.getDate() === now.getDate();
+		var time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+		if (sameDay) return time;
+		var date = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+		return date + ', ' + time;
+	}
+	// appendMsgTime adds a .msg-time caption to a bubble element when ts
+	// is renderable. Shared by user + assistant bubbles.
+	function appendMsgTime(bubbleEl, tsSeconds) {
+		var label = formatMsgTime(tsSeconds);
+		if (!label) return;
+		var t = document.createElement('div');
+		t.className = 'msg-time';
+		t.textContent = label;
+		bubbleEl.appendChild(t);
+	}
+	function addUserMsg(text, tsSeconds) {
 		var div = document.createElement('div');
 		div.className = 'msg user';
 		div.textContent = text;
+		// Live sends pass no ts -> stamp now. History passes the
+		// persisted Unix-seconds value. An explicit 0 suppresses the
+		// caption (used by run-replay where no message time exists).
+		var ts = (tsSeconds === undefined) ? Math.floor(Date.now() / 1000) : tsSeconds;
+		appendMsgTime(div, ts);
 		messagesEl.appendChild(div);
 		scrollToBottom();
 	}
 
-	function addAssistantMsg() {
+	function addAssistantMsg(tsSeconds) {
 		var div = document.createElement('div');
 		div.className = 'msg assistant';
 		var content = document.createElement('div');
 		content.className = 'content';
 		div.appendChild(content);
+		// Caption is a sibling of .content (appended to the bubble div),
+		// so re-rendering .content's innerHTML during streaming does NOT
+		// clobber it. Live replies pass no ts -> first-token time (~=
+		// completion within seconds). Explicit 0 suppresses (run-replay).
+		var ts = (tsSeconds === undefined) ? Math.floor(Date.now() / 1000) : tsSeconds;
+		appendMsgTime(div, ts);
 		messagesEl.appendChild(div);
 		scrollToBottom();
 		return { el: div, content: content, raw: '' };
