@@ -144,6 +144,69 @@ func TestOverlay_CronDedupsInToolDefs(t *testing.T) {
 	}
 }
 
+// sharedSliceBase returns the SAME backing slices on every call (stored
+// as fields), so an in-place [:0] filter inside the overlay visibly
+// corrupts the caller-owned backing array. Used to prove the overlay
+// allocates fresh slices instead of aliasing Base's.
+type sharedSliceBase struct {
+	defs  []llm.ToolDef
+	names []string
+}
+
+func (s *sharedSliceBase) Execute(_ context.Context, name string, _ json.RawMessage) (tools.ToolResult, error) {
+	return tools.ToolResult{Output: "base:" + name}, nil
+}
+func (s *sharedSliceBase) ToolDefs() []llm.ToolDef         { return s.defs }
+func (s *sharedSliceBase) Names() []string                 { return s.names }
+func (s *sharedSliceBase) Get(_ string) (tools.Tool, bool) { return nil, false }
+
+// TestOverlay_ToolDefsDoesNotMutateBaseSlice verifies ToolDefs does not
+// filter+re-sort in place over Base's backing array. Base returns an
+// UNSORTED slice; with a [:0] alias the overlay drops/re-appends the cron
+// def into that same backing array and then re-sorts it in place,
+// corrupting the caller-owned order. With a fresh allocation Base's slice
+// is left exactly as returned.
+func TestOverlay_ToolDefsDoesNotMutateBaseSlice(t *testing.T) {
+	base := &sharedSliceBase{defs: []llm.ToolDef{
+		{Name: "write_file"},
+		{Name: "cron", Description: "stale base cron"},
+		{Name: "read_file"},
+	}}
+	want := []string{"write_file", "cron", "read_file"}
+	overlay := &ChatToolOverlay{Base: base, Cron: &tools.CronTool{}}
+	_ = overlay.ToolDefs()
+	for i, w := range want {
+		if base.defs[i].Name != w {
+			t.Fatalf("Base defs = %v, want %v — overlay mutated Base's backing array",
+				defNames(base.defs), want)
+		}
+	}
+}
+
+// TestOverlay_NamesDoesNotMutateBaseSlice verifies Names does not
+// filter+re-sort in place over Base's backing array. Base returns an
+// UNSORTED slice; a [:0] alias would reorder it in place.
+func TestOverlay_NamesDoesNotMutateBaseSlice(t *testing.T) {
+	base := &sharedSliceBase{names: []string{"write_file", "cron", "read_file"}}
+	want := []string{"write_file", "cron", "read_file"}
+	overlay := &ChatToolOverlay{Base: base, Cron: &tools.CronTool{}}
+	_ = overlay.Names()
+	for i, w := range want {
+		if base.names[i] != w {
+			t.Fatalf("Base names = %v, want %v — overlay mutated Base's backing array",
+				base.names, want)
+		}
+	}
+}
+
+func defNames(d []llm.ToolDef) []string {
+	out := make([]string, len(d))
+	for i, x := range d {
+		out[i] = x.Name
+	}
+	return out
+}
+
 // TestOverlay_CronDedupsInNames verifies the same dedup in Names():
 // when Base lists "cron" and the overlay also has Cron set, Names
 // returns exactly one "cron" (alphabetically sorted with the rest).

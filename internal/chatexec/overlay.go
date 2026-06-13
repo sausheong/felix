@@ -68,7 +68,7 @@ func (e *ChatToolOverlay) ToolDefs() []llm.ToolDef {
 	// stopped registering it globally), but a stale def would still break
 	// prompt-cache stability if we duplicated it.
 	if e.Cron != nil {
-		filtered := defs[:0]
+		filtered := make([]llm.ToolDef, 0, len(defs))
 		for _, d := range defs {
 			if d.Name != e.Cron.Name() {
 				filtered = append(filtered, d)
@@ -92,7 +92,7 @@ func (e *ChatToolOverlay) ToolDefs() []llm.ToolDef {
 		// Drop any same-named def from Base so the per-chat cortex tool
 		// wins. In normal wiring Base never registers cortex tools, but
 		// guarding here keeps prompt-cache stability if it ever does.
-		filtered := defs[:0]
+		filtered := make([]llm.ToolDef, 0, len(defs))
 		for _, d := range defs {
 			if d.Name != ct.Name() {
 				filtered = append(filtered, d)
@@ -115,7 +115,7 @@ func (e *ChatToolOverlay) ToolDefs() []llm.ToolDef {
 func (e *ChatToolOverlay) Names() []string {
 	names := e.Base.Names()
 	if e.Cron != nil {
-		filtered := names[:0]
+		filtered := make([]string, 0, len(names))
 		for _, n := range names {
 			if n != e.Cron.Name() {
 				filtered = append(filtered, n)
@@ -128,7 +128,7 @@ func (e *ChatToolOverlay) Names() []string {
 		names = append(names, e.Task.Name())
 	}
 	for _, ct := range e.Cortex {
-		filtered := names[:0]
+		filtered := make([]string, 0, len(names))
 		for _, n := range names {
 			if n != ct.Name() {
 				filtered = append(filtered, n)
