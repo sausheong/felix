@@ -56,6 +56,22 @@ func TestHealthEndpointContentType(t *testing.T) {
 	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
 }
 
+func TestHandleHealth_ValidJSON(t *testing.T) {
+	s := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	s.handleHealth(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	var body struct {
+		Status    string `json:"status"`
+		Timestamp string `json:"timestamp"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, "ok", body.Status)
+	require.NotEmpty(t, body.Timestamp)
+}
+
 // TestShutdownBeforeStart — Shutdown must be safe to call before
 // Start has run. The startup.StartGateway cleanup chain calls
 // Shutdown unconditionally on error teardown paths that may run

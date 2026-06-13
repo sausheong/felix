@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -155,7 +156,10 @@ func (s *Server) routes() {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"status":"ok","timestamp":"%s"}`, time.Now().UTC().Format(time.RFC3339))
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":    "ok",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 // Start begins listening and serving.
