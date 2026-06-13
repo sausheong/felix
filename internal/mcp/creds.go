@@ -41,13 +41,33 @@ func LoadEnvFile(path string) (map[string]string, error) {
 		if key == "" {
 			return nil, fmt.Errorf("env file %s: line %d: empty key", path, lineNo)
 		}
-		val := strings.TrimSpace(line[eq+1:])
-		out[key] = val
+		out[key] = parseEnvValue(line[eq+1:])
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read env file: %w", err)
 	}
 	return out, nil
+}
+
+// parseEnvValue applies the common .env conventions: surrounding single or
+// double quotes are stripped (and their contents taken literally, including
+// any '#'); otherwise a trailing inline comment introduced by whitespace+'#'
+// is removed. It intentionally does NOT do shell escaping or variable
+// interpolation.
+func parseEnvValue(raw string) string {
+	v := strings.TrimSpace(raw)
+	if len(v) >= 2 {
+		if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
+			return v[1 : len(v)-1]
+		}
+	}
+	// Strip a trailing inline comment: a '#' preceded by whitespace.
+	if i := strings.Index(v, " #"); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	} else if i := strings.Index(v, "\t#"); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	}
+	return v
 }
 
 // RequireKeys returns an error listing any missing keys from the supplied env

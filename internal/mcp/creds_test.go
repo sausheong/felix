@@ -3,6 +3,7 @@ package mcp
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -57,6 +58,28 @@ func TestLoadEnvFile_EmptyKey(t *testing.T) {
 	_, err := LoadEnvFile(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty key")
+}
+
+func TestLoadEnvFile_QuotingAndComments(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ".env")
+	content := strings.Join([]string{
+		`A="double"`,
+		`B='single'`,
+		`C=plain # trailing comment`,
+		`D=a#b`,
+		`E="has # hash inside"`,
+		`F=  spaced  `,
+	}, "\n")
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o600))
+	env, err := LoadEnvFile(p)
+	require.NoError(t, err)
+	require.Equal(t, "double", env["A"])
+	require.Equal(t, "single", env["B"])
+	require.Equal(t, "plain", env["C"])
+	require.Equal(t, "a#b", env["D"])
+	require.Equal(t, "has # hash inside", env["E"])
+	require.Equal(t, "spaced", env["F"])
 }
 
 func TestRequireKeys(t *testing.T) {
