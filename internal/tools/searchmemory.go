@@ -92,7 +92,10 @@ func (t *SearchMemoryTool) Execute(_ context.Context, input json.RawMessage) (To
 
 	var b strings.Builder
 	for _, e := range entries {
-		snippet := truncateRunes(strings.TrimSpace(e.Content), searchMemorySnippetRunes)
+		// Collapse newlines/tabs/space-runs to single spaces so each entry stays
+		// on one line (Content is markdown and routinely contains newlines),
+		// then truncate so the rune budget isn't spent on whitespace.
+		snippet := truncateRunes(strings.Join(strings.Fields(e.Content), " "), searchMemorySnippetRunes)
 		if title := strings.TrimSpace(e.Title); title != "" {
 			fmt.Fprintf(&b, "- %s — %s: %s\n", e.ID, title, snippet)
 		} else {

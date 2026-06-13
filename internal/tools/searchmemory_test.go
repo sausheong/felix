@@ -100,3 +100,15 @@ func TestSearchMemory_SnippetUTF8Safe(t *testing.T) {
 	res := exec(t, &SearchMemoryTool{Searcher: fs}, searchMemoryInput{Query: "q"})
 	require.True(t, utf8.ValidString(res.Output), "snippet must not split a rune")
 }
+
+func TestSearchMemory_SnippetSingleLine(t *testing.T) {
+	fs := &fakeSearcher{entries: []memory.Entry{
+		{ID: "m1", Title: "Note", Content: "first line\nsecond line\n\nthird"},
+	}}
+	res := exec(t, &SearchMemoryTool{Searcher: fs}, searchMemoryInput{Query: "q"})
+	require.Empty(t, res.Error)
+	// Exactly one output line for one hit — no embedded newline in the snippet.
+	lines := strings.Split(strings.TrimRight(res.Output, "\n"), "\n")
+	require.Len(t, lines, 1, "each hit must render on a single line")
+	require.Contains(t, res.Output, "first line second line third")
+}
