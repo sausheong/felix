@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/sausheong/felix/internal/memory"
@@ -65,8 +67,39 @@ type searchMemoryInput struct {
 }
 
 func (t *SearchMemoryTool) Execute(_ context.Context, input json.RawMessage) (ToolResult, error) {
-	// Implemented in a later task.
-	return ToolResult{}, nil
+	var in searchMemoryInput
+	if err := json.Unmarshal(input, &in); err != nil {
+		return ToolResult{Error: fmt.Sprintf("invalid input: %v", err)}, nil
+	}
+
+	query := strings.TrimSpace(in.Query)
+	if query == "" {
+		return ToolResult{Error: "query is required"}, nil
+	}
+
+	limit := in.MaxResults
+	if limit <= 0 {
+		limit = searchMemoryDefaultResults
+	}
+	if limit > searchMemoryMaxResults {
+		limit = searchMemoryMaxResults
+	}
+
+	entries := t.Searcher.Search(query, limit)
+	if len(entries) == 0 {
+		return ToolResult{Output: "no matching memory entries"}, nil
+	}
+
+	var b strings.Builder
+	for _, e := range entries {
+		snippet := truncateRunes(strings.TrimSpace(e.Content), searchMemorySnippetRunes)
+		if title := strings.TrimSpace(e.Title); title != "" {
+			fmt.Fprintf(&b, "- %s — %s: %s\n", e.ID, title, snippet)
+		} else {
+			fmt.Fprintf(&b, "- %s: %s\n", e.ID, snippet)
+		}
+	}
+	return ToolResult{Output: strings.TrimRight(b.String(), "\n")}, nil
 }
 
 // truncateRunes returns s truncated to at most n runes, never splitting a
