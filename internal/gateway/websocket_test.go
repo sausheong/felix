@@ -111,3 +111,29 @@ func TestWriteJSONIsGoroutineSafe(t *testing.T) {
 	const expected = 50 * 4
 	assert.Equal(t, expected, got, "every write should arrive intact, none dropped")
 }
+
+func TestRunSemaphore_BoundsConcurrentRuns(t *testing.T) {
+	h := &WebSocketHandler{}
+	h.initLimits()
+	acquired := 0
+	for i := 0; i < maxConcurrentRuns; i++ {
+		if h.acquireRun() {
+			acquired++
+		}
+	}
+	require.Equal(t, maxConcurrentRuns, acquired)
+	require.False(t, h.acquireRun(), "must reject beyond the cap")
+	h.releaseRun()
+	require.True(t, h.acquireRun(), "permit freed after release")
+}
+
+func TestConnCap_BoundsConnections(t *testing.T) {
+	h := &WebSocketHandler{}
+	h.initLimits()
+	for i := 0; i < maxConnections; i++ {
+		require.True(t, h.acquireConn())
+	}
+	require.False(t, h.acquireConn(), "must reject beyond the connection cap")
+	h.releaseConn()
+	require.True(t, h.acquireConn())
+}

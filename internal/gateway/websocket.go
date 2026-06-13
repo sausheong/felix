@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -63,6 +64,8 @@ type WebSocketHandler struct {
 	metrics           *Metrics                              // optional; chat-turn and tool-call counters; SetMetrics wires it
 	upgrader          websocket.Upgrader
 	mu                sync.RWMutex
+	runSem            chan struct{} // bounds concurrent chat.send runs; nil until initLimits
+	connCount         atomic.Int64  // current open WebSocket connections
 }
 
 // NewWebSocketHandler creates a new WebSocket handler.
@@ -73,7 +76,7 @@ func NewWebSocketHandler(
 	cfg *config.Config,
 	sessionsBaseDir string,
 ) *WebSocketHandler {
-	return &WebSocketHandler{
+	h := &WebSocketHandler{
 		providers:         providers,
 		tools:             toolReg,
 		sessionStore:      sessionStore,
@@ -85,6 +88,8 @@ func NewWebSocketHandler(
 			CheckOrigin: AllowedOrigins(nil), // default: localhost-only; overridden by SetOriginChecker
 		},
 	}
+	h.initLimits()
+	return h
 }
 
 // SetOriginChecker sets the WebSocket origin validation function.
@@ -228,6 +233,11 @@ func (h *WebSocketHandler) BroadcastNewRun(scope runs.SessionScope, run *runs.Ru
 
 // Handle upgrades an HTTP connection to WebSocket and processes messages.
 func (h *WebSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
+	if !h.acquireConn() {
+		http.Error(w, `{"error":"too many connections"}`, http.StatusServiceUnavailable)
+		return
+	}
+	defer h.releaseConn()
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("websocket upgrade failed", "error", err)
@@ -436,7 +446,12 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 
 	sub := &wsSubscriber{conn: conn, rpcID: rpcID}
 
+	if !h.acquireRun() {
+		writeRPCError(conn, metrics, rpcID, -32000, "server busy: too many concurrent runs, retry shortly")
+		return
+	}
 	go func() {
+		defer h.releaseRun()
 		_, err := chatexec.RunTurn(context.Background(), deps, scope, params.Text, sub)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("chatexec.RunTurn", "agent", scope.AgentID, "session", scope.SessionKey, "error", err)
@@ -958,7 +973,14 @@ func (h *WebSocketHandler) handleChatCompact(conn *websocket.Conn, req JSONRPCRe
 		return
 	}
 
-	res, err := mgr.MaybeCompact(context.Background(), sess, compaction.ReasonManual, params.Instructions)
+	// Tie manual compaction to the server context so it unwinds on shutdown.
+	// The summarizer already self-bounds with its own per-call deadline, so no
+	// extra timeout is needed here. serverCtx is nil-able. (G4)
+	compactCtx := h.serverCtx
+	if compactCtx == nil {
+		compactCtx = context.Background()
+	}
+	res, err := mgr.MaybeCompact(compactCtx, sess, compaction.ReasonManual, params.Instructions)
 	if err != nil {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",

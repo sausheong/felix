@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBearerAuthMiddlewareNoToken(t *testing.T) {
@@ -66,15 +67,51 @@ func TestBearerAuthMiddlewareHealthBypass(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-func TestBearerAuthMiddlewareQueryParam(t *testing.T) {
-	handler := BearerAuthMiddleware("secret123")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestBearerAuth_RejectsQueryParamToken(t *testing.T) {
+	mw := BearerAuthMiddleware("secret")
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
+	req := httptest.NewRequest(http.MethodGet, "/settings/api/config?token=secret", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code, "query-param token must NOT authenticate")
+}
 
-	req := httptest.NewRequest("GET", "/ws?token=secret123", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusOK, w.Code)
+func TestBearerAuth_AcceptsHeader(t *testing.T) {
+	mw := BearerAuthMiddleware("secret")
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/settings/api/config", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestBearerAuth_AcceptsSubprotocol(t *testing.T) {
+	mw := BearerAuthMiddleware("secret")
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	req.Header.Set("Sec-WebSocket-Protocol", "felix, Bearer.secret")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "Bearer.<token> subprotocol must authenticate")
+}
+
+func TestBearerAuth_RejectsBadSubprotocolToken(t *testing.T) {
+	mw := BearerAuthMiddleware("secret")
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	req.Header.Set("Sec-WebSocket-Protocol", "Bearer.wrong")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
 func TestAllowedOriginsDefault(t *testing.T) {
