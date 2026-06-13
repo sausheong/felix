@@ -640,6 +640,9 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		// existing markdown store. The pre-existing read-only
 		// load_memory tool stays registered too — agents see both.
 		tools.RegisterMemoryTool(toolReg, memory.NewHarnessAdapter(memMgr))
+		// Read-side companion to the memory write tool: semantic/BM25
+		// search over the same store (memMgr satisfies MemorySearcher).
+		tools.RegisterSearchMemoryTool(toolReg, memMgr)
 	}
 
 	// Register cortex tool DEFINITIONS on the shared registry (without a
@@ -860,6 +863,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 		// visible to the parent's next load_memory call.
 		if memMgr != nil {
 			tools.RegisterMemoryTool(reg, memory.NewHarnessAdapter(memMgr))
+			tools.RegisterSearchMemoryTool(reg, memMgr)
 		}
 		// Cortex tools: per-subagent client resolved via resolveCortex.
 		// Passes through to a no-op when cortex is disabled (resolveCortex
@@ -926,6 +930,7 @@ func StartGateway(configPath, version string, opts ...Options) (*Result, error) 
 			tools.RegisterSendMessage(cronToolReg, sendMsgConfigFn)
 			if memMgr != nil {
 				tools.RegisterMemoryTool(cronToolReg, memory.NewHarnessAdapter(memMgr))
+				tools.RegisterSearchMemoryTool(cronToolReg, memMgr)
 			}
 			// Cortex tools: same pattern as the subagent registry — per-agent
 			// cortex client via resolveCortex, no-op when cortex is disabled.
