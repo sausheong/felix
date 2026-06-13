@@ -40,6 +40,18 @@ func TestRouterPeerMatch(t *testing.T) {
 	assert.Equal(t, "default-tg", r.Route(msg))
 }
 
+func TestRoute_SpecificBeatsBroadRegardlessOfOrder(t *testing.T) {
+	// A broad peer.kind binding declared BEFORE a specific peer.id binding
+	// must NOT win — peer.id has higher precedence.
+	r := NewRouter([]config.Binding{
+		{AgentID: "broad", Match: config.BindingMatch{Peer: &config.PeerMatch{Kind: "group"}}},
+		{AgentID: "specific", Match: config.BindingMatch{Peer: &config.PeerMatch{ID: "u123"}}},
+	}, "fb")
+
+	msg := channel.InboundMessage{SenderID: "u123", ChatType: channel.ChatTypeGroup}
+	assert.Equal(t, "specific", r.Route(msg))
+}
+
 func TestRouterFallback(t *testing.T) {
 	r := NewRouter([]config.Binding{
 		{AgentID: "agent-tg", Match: config.BindingMatch{Channel: "telegram"}},

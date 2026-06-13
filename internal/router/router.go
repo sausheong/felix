@@ -22,40 +22,50 @@ func NewRouter(bindings []config.Binding, fallbackAgentID string) *Router {
 // Route returns the agent ID that should handle the given message.
 // Matching priority: peer.id > peer.kind > accountId > channel > default.
 func (r *Router) Route(msg channel.InboundMessage) string {
-	var channelMatch string
+	const (
+		rankNone = iota
+		rankChannel
+		rankAccount
+		rankKind
+		rankPeerID
+	)
+	bestRank := rankNone
+	bestAgent := ""
+
+	consider := func(rank int, agentID string) {
+		if rank > bestRank {
+			bestRank = rank
+			bestAgent = agentID
+		}
+	}
 
 	for _, b := range r.bindings {
 		m := b.Match
+		channelOK := m.Channel == "" || m.Channel == msg.Channel
 
 		// Most specific: peer.id match
-		if m.Peer != nil && m.Peer.ID != "" && m.Peer.ID == msg.SenderID {
-			if m.Channel == "" || m.Channel == msg.Channel {
-				return b.AgentID
-			}
+		if m.Peer != nil && m.Peer.ID != "" && m.Peer.ID == msg.SenderID && channelOK {
+			consider(rankPeerID, b.AgentID)
 		}
 
 		// Peer kind match
-		if m.Peer != nil && m.Peer.Kind != "" && m.Peer.Kind == string(msg.ChatType) {
-			if m.Channel == "" || m.Channel == msg.Channel {
-				return b.AgentID
-			}
+		if m.Peer != nil && m.Peer.Kind != "" && m.Peer.Kind == string(msg.ChatType) && channelOK {
+			consider(rankKind, b.AgentID)
 		}
 
 		// Account ID match
-		if m.AccountID != "" && m.AccountID == msg.AccountID {
-			if m.Channel == "" || m.Channel == msg.Channel {
-				return b.AgentID
-			}
+		if m.AccountID != "" && m.AccountID == msg.AccountID && channelOK {
+			consider(rankAccount, b.AgentID)
 		}
 
 		// Channel match (least specific of the explicit matches)
 		if m.Channel == msg.Channel && m.Peer == nil && m.AccountID == "" {
-			channelMatch = b.AgentID
+			consider(rankChannel, b.AgentID)
 		}
 	}
 
-	if channelMatch != "" {
-		return channelMatch
+	if bestAgent != "" {
+		return bestAgent
 	}
 
 	return r.fallback
