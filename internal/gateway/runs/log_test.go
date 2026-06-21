@@ -158,3 +158,33 @@ func TestLogWriter_MeaningfulReadable(t *testing.T) {
 		t.Fatalf("want 1 tool_result event, got %d (%+v)", len(got), got)
 	}
 }
+
+// A buffered (within-interval, unsynced) text_delta must survive Close():
+// Close flushes and syncs the tail so a cleanly-closed run is fully durable.
+func TestLogWriter_CloseFlushesTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "r3.jsonl")
+	w, err := openLogWriter(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// Prime lastSync with a meaningful event, then append a delta that is
+	// within the interval (so Append does NOT sync it) and immediately close.
+	if err := w.Append(Event{Seq: 1, Type: EventTypeToolResult}); err != nil {
+		t.Fatalf("append meaningful: %v", err)
+	}
+	if err := w.Append(Event{Seq: 2, Type: EventTypeTextDelta, Payload: json.RawMessage(`{"text":"tail"}`)}); err != nil {
+		t.Fatalf("append delta: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	got, err := ReadLog(path, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got) != 2 || got[1].Seq != 2 {
+		t.Fatalf("want 2 events incl. buffered tail delta, got %d (%+v)", len(got), got)
+	}
+}

@@ -33,7 +33,7 @@ func shouldSync(t EventType, sinceLastSync, interval time.Duration) bool {
 type logWriter struct {
 	f        *os.File
 	w        *bufio.Writer
-	lastSync time.Time
+	lastSync time.Time // time of last successful fsync; zero value forces a sync on the first event
 }
 
 func openLogWriter(path string) (*logWriter, error) {
@@ -77,6 +77,7 @@ func (l *logWriter) Close() error {
 		return nil
 	}
 	_ = l.w.Flush()
+	_ = l.f.Sync()
 	return l.f.Close()
 }
 
