@@ -649,8 +649,20 @@ func TestSubscribe_AfterFinish_NoDuplicateTerminal(t *testing.T) {
 	for _, e := range past {
 		seqs = append(seqs, e.Seq)
 	}
-	for e := range ch { // must be already closed → loop exits promptly
-		seqs = append(seqs, e.Seq)
+	// Drain the live channel, but fail fast (rather than hang until the
+	// package test timeout) if a regression leaves it un-closed.
+	deadline := time.After(2 * time.Second)
+drain:
+	for {
+		select {
+		case e, ok := <-ch:
+			if !ok {
+				break drain // channel closed — expected for a finished run
+			}
+			seqs = append(seqs, e.Seq)
+		case <-deadline:
+			t.Fatal("live channel not closed within 2s — finished-run Subscribe must return an already-closed channel")
+		}
 	}
 	var prev int64
 	for _, s := range seqs {
