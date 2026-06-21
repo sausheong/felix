@@ -417,3 +417,48 @@ func TestHandleChatSend_RejectsPathTraversal(t *testing.T) {
 		})
 	}
 }
+
+// Every streamed frame from a chat.send must carry the originating scope so
+// the client can route it to the right session and never spill over.
+func TestHandleChatSend_FramesCarryScope(t *testing.T) {
+	h, _, _ := testHandler(t, "hello world")
+	clientConn, serverConn := wsPair(t, h)
+
+	h.handleChatSend(serverConn, makeReq(t, "chat.send",
+		map[string]string{"agentId": "default", "sessionKey": "ws_alpha", "text": "hi"},
+		1))
+
+	// Drain frames until the terminal one; assert each result frame that has
+	// a "type" also carries agentId/sessionKey == the send scope.
+	sawScoped := false
+	for i := 0; i < 60; i++ {
+		msg := readJSON(t, clientConn)
+		r, _ := msg["result"].(map[string]any)
+		if r == nil {
+			continue
+		}
+		typ, _ := r["type"].(string)
+		if typ == "" {
+			continue
+		}
+		// "trace" frames come from the separate trace-mark forwarder, whose
+		// scope stamping is Task 2; they are diagnostic, not session-routed
+		// content. This task scopes only the wsSubscriber stream.
+		if typ == "trace" {
+			continue
+		}
+		aid, _ := r["agentId"].(string)
+		sk, _ := r["sessionKey"].(string)
+		if aid != "default" || sk != "ws_alpha" {
+			t.Fatalf("frame type=%q has scope (%q,%q), want (default,ws_alpha)", typ, aid, sk)
+		}
+		sawScoped = true
+		if typ == "done" || typ == "run_terminal" {
+			time.Sleep(100 * time.Millisecond) // let RunTurn deferred cleanup settle
+			break
+		}
+	}
+	if !sawScoped {
+		t.Fatal("no scoped result frames observed")
+	}
+}

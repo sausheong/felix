@@ -53,10 +53,10 @@ type WebSocketHandler struct {
 	jobScheduler      tools.JobScheduler
 	skills            *skill.Loader
 	memory            *memory.Manager
-	cortexProvider    *cortexadapter.Provider // per-agent cortex client factory
-	permission        tools.PermissionChecker // dispatch-time tool gate; nil → allow-all
-	subagentBuild     agent.SubagentBuildFn   // builds RuntimeInputs for subagent dispatch via task tool
-	calibratorStore   *tokens.CalibratorStore // per-session token-estimate calibration; cleared on session.clear
+	cortexProvider    *cortexadapter.Provider               // per-agent cortex client factory
+	permission        tools.PermissionChecker               // dispatch-time tool gate; nil → allow-all
+	subagentBuild     agent.SubagentBuildFn                 // builds RuntimeInputs for subagent dispatch via task tool
+	calibratorStore   *tokens.CalibratorStore               // per-session token-estimate calibration; cleared on session.clear
 	activeSessionKeys map[*websocket.Conn]map[string]string // conn → agentID → sessionKey
 	sessionsBaseDir   string                                // root of session storage; passed to constructor; used by handleChatReplay to read on-disk run logs
 	runs              *runs.Registry                        // durable in-flight run registry; nil until SetRunsRegistry; chat.send fails with RPC -32000 if still nil
@@ -457,7 +457,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		return
 	}
 
-	sub := &wsSubscriber{conn: conn, rpcID: rpcID}
+	sub := &wsSubscriber{conn: conn, rpcID: rpcID, scope: scope}
 
 	if !h.acquireRun() {
 		writeRPCError(conn, metrics, rpcID, -32000, "server busy: too many concurrent runs, retry shortly")
@@ -706,6 +706,7 @@ func forwardEvents(conn *websocket.Conn, ch <-chan runs.Event) {
 type wsSubscriber struct {
 	conn  *websocket.Conn
 	rpcID any
+	scope runs.SessionScope
 }
 
 // OnAttached writes the JSON-RPC response carrying {runID} so the
@@ -714,8 +715,13 @@ type wsSubscriber struct {
 func (s *wsSubscriber) OnAttached(runID string) {
 	writeJSON(s.conn, JSONRPCResponse{
 		JSONRPC: "2.0",
-		Result:  map[string]any{"type": "run_attached", "runID": runID},
-		ID:      s.rpcID,
+		Result: map[string]any{
+			"type":       "run_attached",
+			"runID":      runID,
+			"agentId":    s.scope.AgentID,
+			"sessionKey": s.scope.SessionKey,
+		},
+		ID: s.rpcID,
 	})
 }
 
@@ -727,6 +733,8 @@ func (s *wsSubscriber) OnEvent(e runs.Event) {
 	if res == nil {
 		return
 	}
+	res["agentId"] = s.scope.AgentID
+	res["sessionKey"] = s.scope.SessionKey
 	writeJSON(s.conn, JSONRPCResponse{
 		JSONRPC: "2.0",
 		Result:  res,
