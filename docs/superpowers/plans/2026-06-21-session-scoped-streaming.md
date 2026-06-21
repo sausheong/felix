@@ -368,6 +368,23 @@ git commit -m "test(gateway): concurrent-scope isolation guard for stream frames
 
 ### Task 4: Client — per-scope render state + scoped DOM routing
 
+> **DESIGN CORRECTION (applied during execution).** The per-scope `turnState`
+> map below (making `assistant`/`toolEls` per-scope and deleting the globals)
+> was found to be unworkable: `appendToAssistant`/`finalizeAssistant` and the
+> read-only replay path both render *through* the global `currentAssistant`, so
+> it cannot be removed. The spec only requires `sending` to be per-session (the
+> visible pane is inherently single-session). The implemented design instead:
+> **keeps `currentAssistant`/`toolEls` global**, **scope-gates** every live
+> streaming case (`if (eventScope(r) === displayedScope())`), and makes **only
+> `sending` per-scope** via a `sendingByScope` Map with `isSending`/`setSending`
+> helpers (plus `displayedScope()`/`eventScope(r)`). Terminal cases
+> (`done`/`aborted`/`error`) clear the event scope's `sending` even when not
+> displayed. Task 5 below is likewise adjusted: it uses the global
+> `currentAssistant` and `liveRunIdBySession`, not `st.assistant`/`turnState`.
+> The original per-scope-`turnState` text is retained below for history; follow
+> the correction.
+
+
 **Files:**
 - Modify: `internal/gateway/chat.go` (state vars ~3390; streaming cases ~3814-3917; `text_delta`/`tool_*`/`done`/etc.; `updateSendBtn`/`sendMessage`; switch handlers ~3327/3347)
 
