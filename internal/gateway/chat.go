@@ -3427,6 +3427,17 @@ html.dark #stop-btn {
 	}
 	function displayedScope() { return runsKey(agentSelect.value, sessionSelect.value); }
 	function eventScope(r) { return runsKey(r.agentId, r.sessionKey); }
+	// clearLiveRun drops the in-flight marker for a frame's scope and refreshes
+	// the sidebar running dot. Called on every terminal frame (done/aborted/
+	// error/run_terminal) so a turn that starts AND finishes while displayed
+	// (the live chat.send path, which delivers 'done' not 'run_terminal') still
+	// clears its badge — not only the chat.subscribe re-attach path.
+	function clearLiveRun(r) {
+		if (r.agentId && r.sessionKey) {
+			liveRunIdBySession.delete(runsKey(r.agentId, r.sessionKey));
+			updateSessionBadges();
+		}
+	}
 	// When switching back to a live session we load session.history FIRST (to
 	// restore committed scrollback), then chain chat.subscribe to overlay the
 	// in-flight run. This holds the scope awaiting that chained subscribe so the
@@ -3679,6 +3690,7 @@ html.dark #stop-btn {
 				break;
 			case 'done':
 				setSending(eventScope(r), false);
+				clearLiveRun(r);
 				if (eventScope(r) === displayedScope()) {
 					if (currentAssistant) { finalizeAssistant(); }
 					currentAssistant = null;
@@ -3691,6 +3703,7 @@ html.dark #stop-btn {
 				break;
 			case 'aborted':
 				setSending(eventScope(r), false);
+				clearLiveRun(r);
 				if (eventScope(r) === displayedScope()) {
 					if (currentAssistant) { finalizeAssistant(); }
 					currentAssistant = null;
@@ -3699,6 +3712,7 @@ html.dark #stop-btn {
 				break;
 			case 'error':
 				setSending(eventScope(r), false);
+				clearLiveRun(r);
 				if (eventScope(r) === displayedScope()) {
 					addError(r.message);
 					currentAssistant = null;
@@ -3732,10 +3746,7 @@ html.dark #stop-btn {
 				break;
 			case 'run_terminal': {
 				setSending(eventScope(r), false);
-				if (r.agentId && r.sessionKey) {
-					liveRunIdBySession.delete(runsKey(r.agentId, r.sessionKey));
-					updateSessionBadges();
-				}
+				clearLiveRun(r);
 				if (eventScope(r) === displayedScope()) {
 					if (currentAssistant) { finalizeAssistant(); currentAssistant = null; }
 					updateSendBtn();
