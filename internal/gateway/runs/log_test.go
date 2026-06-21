@@ -110,3 +110,51 @@ func TestShouldSync(t *testing.T) {
 		t.Errorf("delta exactly at package syncInterval should not sync")
 	}
 }
+
+// A text_delta must be readable via ReadLog immediately after Append even
+// though it is (within the interval) not fsync'd — proving bufio.Flush still
+// runs on every event, which keeps mid-run reconnect/replay correct.
+func TestLogWriter_DeltaReadableWithoutSync(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "r1.jsonl")
+	w, err := openLogWriter(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer w.Close()
+
+	if err := w.Append(Event{Seq: 1, Type: EventTypeTextDelta, Payload: json.RawMessage(`{"text":"hi"}`)}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	got, err := ReadLog(path, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got) != 1 || got[0].Seq != 1 {
+		t.Fatalf("want 1 readable delta event, got %d (%+v)", len(got), got)
+	}
+}
+
+// A meaningful (non-delta) event is readable after Append.
+func TestLogWriter_MeaningfulReadable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "r2.jsonl")
+	w, err := openLogWriter(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer w.Close()
+
+	if err := w.Append(Event{Seq: 1, Type: EventTypeToolResult, Payload: json.RawMessage(`{"output":"ok"}`)}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	got, err := ReadLog(path, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got) != 1 || got[0].Type != EventTypeToolResult {
+		t.Fatalf("want 1 tool_result event, got %d (%+v)", len(got), got)
+	}
+}

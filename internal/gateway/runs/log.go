@@ -31,8 +31,9 @@ func shouldSync(t EventType, sinceLastSync, interval time.Duration) bool {
 // logWriter is the single-writer append-only handle to a <runID>.jsonl.
 // Only the drain goroutine of the owning Run may call Append.
 type logWriter struct {
-	f *os.File
-	w *bufio.Writer
+	f        *os.File
+	w        *bufio.Writer
+	lastSync time.Time
 }
 
 func openLogWriter(path string) (*logWriter, error) {
@@ -54,10 +55,21 @@ func (l *logWriter) Append(e Event) error {
 	if err := l.w.WriteByte('\n'); err != nil {
 		return err
 	}
+	// Flush on every event: bytes must be visible to ReadLog so a client
+	// reconnecting mid-run (Run.Subscribe gap-fill) sees all past events.
 	if err := l.w.Flush(); err != nil {
 		return err
 	}
-	return l.f.Sync()
+	// Physical-disk barrier only on resume-relevant events, or once the
+	// interval has elapsed for a long pure-text stream.
+	now := time.Now()
+	if shouldSync(e.Type, now.Sub(l.lastSync), syncInterval) {
+		if err := l.f.Sync(); err != nil {
+			return err
+		}
+		l.lastSync = now
+	}
+	return nil
 }
 
 func (l *logWriter) Close() error {
