@@ -100,4 +100,13 @@ func TestShouldSync(t *testing.T) {
 			}
 		})
 	}
+
+	// Pin the production syncInterval const to the truth table so the two
+	// cannot silently drift before Task 2 wires syncInterval into Append.
+	if !shouldSync(EventTypeTextDelta, syncInterval+time.Millisecond, syncInterval) {
+		t.Errorf("delta just past package syncInterval should sync")
+	}
+	if shouldSync(EventTypeTextDelta, syncInterval, syncInterval) {
+		t.Errorf("delta exactly at package syncInterval should not sync")
+	}
 }
