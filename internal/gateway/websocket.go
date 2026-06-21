@@ -53,10 +53,10 @@ type WebSocketHandler struct {
 	jobScheduler      tools.JobScheduler
 	skills            *skill.Loader
 	memory            *memory.Manager
-	cortexProvider    *cortexadapter.Provider // per-agent cortex client factory
-	permission        tools.PermissionChecker // dispatch-time tool gate; nil → allow-all
-	subagentBuild     agent.SubagentBuildFn   // builds RuntimeInputs for subagent dispatch via task tool
-	calibratorStore   *tokens.CalibratorStore // per-session token-estimate calibration; cleared on session.clear
+	cortexProvider    *cortexadapter.Provider               // per-agent cortex client factory
+	permission        tools.PermissionChecker               // dispatch-time tool gate; nil → allow-all
+	subagentBuild     agent.SubagentBuildFn                 // builds RuntimeInputs for subagent dispatch via task tool
+	calibratorStore   *tokens.CalibratorStore               // per-session token-estimate calibration; cleared on session.clear
 	activeSessionKeys map[*websocket.Conn]map[string]string // conn → agentID → sessionKey
 	sessionsBaseDir   string                                // root of session storage; passed to constructor; used by handleChatReplay to read on-disk run logs
 	runs              *runs.Registry                        // durable in-flight run registry; nil until SetRunsRegistry; chat.send fails with RPC -32000 if still nil
@@ -441,7 +441,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		JobScheduler:   h.jobScheduler,
 		Metrics:        h.metrics,
 		ServerCtx:      h.serverCtx,
-		OnTraceMark:    h.makeTraceMarkForwarder(conn, rpcID),
+		OnTraceMark:    h.makeTraceMarkForwarder(conn, rpcID, scope),
 	}
 	if h.cortexProvider != nil {
 		// Nil-guard so deps.CortexProvider stays nil-safe when cortex
@@ -457,7 +457,7 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 		return
 	}
 
-	sub := &wsSubscriber{conn: conn, rpcID: rpcID}
+	sub := &wsSubscriber{conn: conn, rpcID: rpcID, scope: scope}
 
 	if !h.acquireRun() {
 		writeRPCError(conn, metrics, rpcID, -32000, "server busy: too many concurrent runs, retry shortly")
@@ -488,16 +488,18 @@ func (h *WebSocketHandler) handleChatSend(conn *websocket.Conn, req JSONRPCReque
 // phase marks to the conn as JSON-RPC notifications shaped as the
 // existing felix wire format (matches the pre-refactor inline
 // SetOnMark callback at lines 498-510 of the prior websocket.go).
-func (h *WebSocketHandler) makeTraceMarkForwarder(conn *websocket.Conn, rpcID any) func(phase string, durMs, atMs int64, attrs []any) {
+func (h *WebSocketHandler) makeTraceMarkForwarder(conn *websocket.Conn, rpcID any, scope runs.SessionScope) func(phase string, durMs, atMs int64, attrs []any) {
 	return func(phase string, durMs, atMs int64, attrs []any) {
 		writeJSON(conn, JSONRPCResponse{
 			JSONRPC: "2.0",
 			Result: map[string]any{
-				"type":   "trace",
-				"phase":  phase,
-				"dur_ms": durMs,
-				"at_ms":  atMs,
-				"attrs":  flattenAttrs(attrs),
+				"type":       "trace",
+				"phase":      phase,
+				"dur_ms":     durMs,
+				"at_ms":      atMs,
+				"attrs":      flattenAttrs(attrs),
+				"agentId":    scope.AgentID,
+				"sessionKey": scope.SessionKey,
 			},
 			ID: rpcID,
 		})
@@ -651,20 +653,26 @@ func (h *WebSocketHandler) handleChatSubscribe(conn *websocket.Conn, req JSONRPC
 
 	pastJSON := make([]map[string]any, 0, len(past))
 	for _, e := range past {
-		pastJSON = append(pastJSON, eventToResult(e))
+		res := eventToResult(e)
+		if res == nil {
+			continue
+		}
+		pastJSON = append(pastJSON, res)
 	}
 	writeJSON(conn, JSONRPCResponse{
 		JSONRPC: "2.0",
 		Result: map[string]any{
-			"active":  true,
-			"runId":   run.ID,
-			"lastSeq": lastSeq,
-			"past":    pastJSON,
+			"active":     true,
+			"runId":      run.ID,
+			"lastSeq":    lastSeq,
+			"past":       pastJSON,
+			"agentId":    params.AgentID,
+			"sessionKey": params.SessionKey,
 		},
 		ID: req.ID,
 	})
 
-	go forwardEvents(conn, live)
+	go forwardEvents(conn, live, runs.SessionScope{AgentID: params.AgentID, SessionKey: params.SessionKey})
 }
 
 // forwardEvents drains live events to conn until the channel closes
@@ -672,12 +680,18 @@ func (h *WebSocketHandler) handleChatSubscribe(conn *websocket.Conn, req JSONRPC
 // chat.event JSON-RPC notification using eventToResult so the wire
 // shape matches the past-event payloads emitted in the subscribe
 // response.
-func forwardEvents(conn *websocket.Conn, ch <-chan runs.Event) {
+func forwardEvents(conn *websocket.Conn, ch <-chan runs.Event, scope runs.SessionScope) {
 	for e := range ch {
+		res := eventToResult(e)
+		if res == nil {
+			continue
+		}
+		res["agentId"] = scope.AgentID
+		res["sessionKey"] = scope.SessionKey
 		writeJSON(conn, map[string]any{
 			"jsonrpc": "2.0",
 			"method":  "chat.event",
-			"params":  eventToResult(e),
+			"params":  res,
 		})
 	}
 }
@@ -706,6 +720,7 @@ func forwardEvents(conn *websocket.Conn, ch <-chan runs.Event) {
 type wsSubscriber struct {
 	conn  *websocket.Conn
 	rpcID any
+	scope runs.SessionScope
 }
 
 // OnAttached writes the JSON-RPC response carrying {runID} so the
@@ -714,8 +729,13 @@ type wsSubscriber struct {
 func (s *wsSubscriber) OnAttached(runID string) {
 	writeJSON(s.conn, JSONRPCResponse{
 		JSONRPC: "2.0",
-		Result:  map[string]any{"type": "run_attached", "runID": runID},
-		ID:      s.rpcID,
+		Result: map[string]any{
+			"type":       "run_attached",
+			"runID":      runID,
+			"agentId":    s.scope.AgentID,
+			"sessionKey": s.scope.SessionKey,
+		},
+		ID: s.rpcID,
 	})
 }
 
@@ -727,6 +747,8 @@ func (s *wsSubscriber) OnEvent(e runs.Event) {
 	if res == nil {
 		return
 	}
+	res["agentId"] = s.scope.AgentID
+	res["sessionKey"] = s.scope.SessionKey
 	writeJSON(s.conn, JSONRPCResponse{
 		JSONRPC: "2.0",
 		Result:  res,

@@ -417,3 +417,142 @@ func TestHandleChatSend_RejectsPathTraversal(t *testing.T) {
 		})
 	}
 }
+
+// Every streamed frame from a chat.send must carry the originating scope so
+// the client can route it to the right session and never spill over.
+func TestHandleChatSend_FramesCarryScope(t *testing.T) {
+	h, _, _ := testHandler(t, "hello world")
+	clientConn, serverConn := wsPair(t, h)
+
+	h.handleChatSend(serverConn, makeReq(t, "chat.send",
+		map[string]string{"agentId": "default", "sessionKey": "ws_alpha", "text": "hi"},
+		1))
+
+	// Drain frames until the terminal one; assert each result frame that has
+	// a "type" also carries agentId/sessionKey == the send scope.
+	sawScoped := false
+	for i := 0; i < 60; i++ {
+		msg := readJSON(t, clientConn)
+		r, _ := msg["result"].(map[string]any)
+		if r == nil {
+			continue
+		}
+		typ, _ := r["type"].(string)
+		if typ == "" {
+			continue
+		}
+		aid, _ := r["agentId"].(string)
+		sk, _ := r["sessionKey"].(string)
+		if aid != "default" || sk != "ws_alpha" {
+			t.Fatalf("frame type=%q has scope (%q,%q), want (default,ws_alpha)", typ, aid, sk)
+		}
+		sawScoped = true
+		if typ == "done" || typ == "run_terminal" {
+			time.Sleep(100 * time.Millisecond) // let RunTurn deferred cleanup settle
+			break
+		}
+	}
+	if !sawScoped {
+		t.Fatal("no scoped result frames observed")
+	}
+}
+
+// The chat.subscribe response must identify the scope of the replayed run so
+// the client can confirm which session the past events belong to.
+func TestHandleChatSubscribe_ResponseCarriesScope(t *testing.T) {
+	h, reg, _ := testHandler(t)
+	clientConn, serverConn := wsPair(t, h)
+	scope := runs.SessionScope{AgentID: "default", SessionKey: "ws_beta"}
+
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	run, _ := reg.Create(scope, "live-run", cancel)
+	_, _ = run.Append(runs.EventTypeTextDelta, []byte(`{"text":"partial"}`))
+	defer run.Finish(runs.StatusCompleted, "", "")
+
+	h.mu.Lock()
+	if h.activeSessionKeys[serverConn] == nil {
+		h.activeSessionKeys[serverConn] = map[string]string{}
+	}
+	h.activeSessionKeys[serverConn]["default"] = "ws_beta"
+	h.mu.Unlock()
+
+	h.handleChatSubscribe(serverConn, makeReq(t, "chat.subscribe",
+		map[string]any{"agentId": "default", "sessionKey": "ws_beta", "fromSeq": 0}, "subscribe-x"))
+
+	resp := readJSON(t, clientConn)
+	result, _ := resp["result"].(map[string]any)
+	if result == nil {
+		t.Fatalf("no result in subscribe response: %v", resp)
+	}
+	if aid, _ := result["agentId"].(string); aid != "default" {
+		t.Errorf("subscribe response agentId=%q, want default; resp=%v", aid, resp)
+	}
+	if sk, _ := result["sessionKey"].(string); sk != "ws_beta" {
+		t.Errorf("subscribe response sessionKey=%q, want ws_beta; resp=%v", sk, resp)
+	}
+}
+
+// Two concurrent chat.send turns on different sessions over one connection
+// must produce frames that are each labeled with their own scope — never
+// cross-labeled. This is the regression guard for the cross-session
+// spill-over bug.
+func TestHandleChatSend_ConcurrentScopesNotCrossLabeled(t *testing.T) {
+	h, _, _ := testHandler(t, "alpha-reply", "beta-reply")
+	clientConn, serverConn := wsPair(t, h)
+
+	h.handleChatSend(serverConn, makeReq(t, "chat.send",
+		map[string]string{"agentId": "default", "sessionKey": "ws_alpha", "text": "a"}, 1))
+	h.handleChatSend(serverConn, makeReq(t, "chat.send",
+		map[string]string{"agentId": "default", "sessionKey": "ws_beta", "text": "b"}, 2))
+
+	// Collect frames from both runs; every scoped frame must have a sessionKey
+	// of either ws_alpha or ws_beta, and must match its rpc id's run. We map
+	// rpc id 1 → ws_alpha, 2 → ws_beta (the send order above).
+	wantByID := map[int]string{1: "ws_alpha", 2: "ws_beta"}
+	terminals := map[int]bool{}
+	sawScoped := map[int]bool{}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(terminals) < 2 && time.Now().Before(deadline) {
+		_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, data, err := clientConn.ReadMessage()
+		if err != nil {
+			break
+		}
+		var msg map[string]any
+		if json.Unmarshal(data, &msg) != nil {
+			continue
+		}
+		idf, _ := msg["id"].(float64)
+		id := int(idf)
+		r, _ := msg["result"].(map[string]any)
+		if r == nil {
+			continue
+		}
+		typ, _ := r["type"].(string)
+		if typ == "" || typ == "run_attached" {
+			// run_attached carries scope too, but assert only typed stream frames.
+			if typ != "run_attached" {
+				continue
+			}
+		}
+		if sk, ok := r["sessionKey"].(string); ok && sk != "" {
+			sawScoped[id] = true
+			if want := wantByID[id]; want != "" && sk != want {
+				t.Fatalf("frame for rpc id %d labeled session %q, want %q (cross-labeled!)", id, sk, want)
+			}
+		}
+		if typ == "done" || typ == "run_terminal" {
+			terminals[id] = true
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // settle deferred cleanup
+	if len(terminals) < 2 {
+		t.Fatalf("did not see both runs terminate; saw %v", terminals)
+	}
+	for id, want := range wantByID {
+		if !sawScoped[id] {
+			t.Fatalf("rpc id %d (%s) produced no scoped frame; scope stamping may have regressed", id, want)
+		}
+	}
+}

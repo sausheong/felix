@@ -486,6 +486,11 @@ body {
 .session-row .ses-chevron:hover { opacity: 1; }
 .session-row .ses-chevron.expanded { transform: rotate(90deg); }
 
+/* Running dot: pulses on sessions with a live run in flight (re-attach). */
+.ses-running { display: none; width: 8px; height: 8px; border-radius: 50%%; background: #16a34a; margin-left: 6px; flex: 0 0 auto; }
+.session-row.has-run .ses-running { display: inline-block; animation: ses-pulse 1.2s ease-in-out infinite; }
+@keyframes ses-pulse { 0%%,100%% { opacity: 1; } 50%% { opacity: 0.3; } }
+
 .runs-sublist {
 	margin: 0.25rem 0 0.5rem 1.75rem;
 	padding-left: 0.5rem;
@@ -2762,6 +2767,7 @@ html.dark #stop-btn {
 			row.innerHTML = '<svg class="ses-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>' +
 				'<span class="ses-icon">' + icon('chat') + '</span>' +
 				'<span class="ses-name" title="Double-click to rename"></span>' +
+				'<span class="ses-running" aria-label="Generating"></span>' +
 				'<span class="ses-count"></span>' +
 				'<button class="ses-clear" type="button" aria-label="Clear session" title="Clear session">' +
 					'<svg viewBox="0 0 24 24" class="icon"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14"/></svg>' +
@@ -2832,6 +2838,18 @@ html.dark #stop-btn {
 				sublist.classList.add('expanded');
 				renderRunsSublistFor(cachedKey);
 			}
+		}
+		updateSessionBadges();
+	}
+
+	// updateSessionBadges toggles the running dot on existing session rows
+	// from liveRunIdBySession, without a full re-render.
+	function updateSessionBadges() {
+		var aid = agentSelect.value;
+		var rows = sessionsList.querySelectorAll('.session-row[data-session-key]');
+		for (var i = 0; i < rows.length; i++) {
+			var key = rows[i].dataset.sessionKey;
+			rows[i].classList.toggle('has-run', liveRunIdBySession.has(runsKey(aid, key)));
 		}
 	}
 
@@ -3330,6 +3348,7 @@ html.dark #stop-btn {
 		toolEls = {};
 		resetTokenChip();
 		refreshEmptyState();
+		updateSendBtn();
 		// If the Files iframe panel is currently visible, reload it so it
 		// shows the new agent's workspace.
 		var filesIframe = document.getElementById('embed-frame');
@@ -3357,12 +3376,22 @@ html.dark #stop-btn {
 		toolEls = {};
 		resetTokenChip();
 		refreshEmptyState();
+		// Always load static history first. For a session with a live run in
+		// flight, history restores all COMMITTED prior turns (the in-flight turn
+		// is not yet in the JSONL), and we chain chat.subscribe afterwards to
+		// overlay just the in-flight run's events on top — preserving full
+		// scrollback instead of replacing it with only the last assistant turn.
+		// The chaining happens in the 'history' response handler so ordering is
+		// deterministic regardless of when responses arrive.
+		var sk = runsKey(agentSelect.value, sessionSelect.value);
+		pendingReattachScope = liveRunIdBySession.has(sk) ? sk : null;
 		ws.send(JSON.stringify({
 			jsonrpc: '2.0',
 			method: 'session.history',
 			params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
 			id: 'history'
 		}));
+		updateSendBtn();
 	});
 
 	function doNewSession() {
@@ -3388,7 +3417,21 @@ html.dark #stop-btn {
 	var ws = null;
 	var msgId = 0;
 	var currentAssistant = null;
-	var sending = false;
+	// Per-scope composer-lock state keyed by runsKey(agent, session). The
+	// composer lock is per-scope; the visible message pane (currentAssistant,
+	// toolEls) is inherently single-session, so those stay global.
+	var sendingByScope = new Map();
+	function isSending(scopeKey) { return sendingByScope.get(scopeKey) === true; }
+	function setSending(scopeKey, v) {
+		if (v) { sendingByScope.set(scopeKey, true); } else { sendingByScope.delete(scopeKey); }
+	}
+	function displayedScope() { return runsKey(agentSelect.value, sessionSelect.value); }
+	function eventScope(r) { return runsKey(r.agentId, r.sessionKey); }
+	// When switching back to a live session we load session.history FIRST (to
+	// restore committed scrollback), then chain chat.subscribe to overlay the
+	// in-flight run. This holds the scope awaiting that chained subscribe so the
+	// history response handler knows to fire it; null when no re-attach pending.
+	var pendingReattachScope = null;
 	var reconnectTimer = null;
 
 	// Inline markdown: code, bold, italic, links
@@ -3591,7 +3634,7 @@ html.dark #stop-btn {
 			connStatus.className = 'status-dot connecting';
 			connStatus.title = 'reconnecting...';
 			sendBtn.disabled = true;
-			sending = false;
+			sendingByScope.clear();
 			reconnectTimer = setTimeout(connect, 3000);
 		};
 
@@ -3599,6 +3642,124 @@ html.dark #stop-btn {
 			connStatus.className = 'status-dot error';
 			connStatus.title = 'connection error';
 		};
+
+		// handleStreamFrame renders a single live/replayed stream frame. It is
+		// the shared sink for both the primary chat.send stream (dispatched from
+		// ws.onmessage's result path) and the chat.event re-attach stream (after
+		// switching back to a session with a live run). Every case is gated by
+		// the EVENT's scope, not the displayed one, so background-session frames
+		// update the badge/runs state without leaking into the visible pane.
+		function handleStreamFrame(r) {
+			switch (r.type) {
+			case 'run_attached':
+				// Track the in-flight runId for the EVENT's scope (not the
+				// displayed one) so the badge + runs sublist are correct even
+				// when the run belongs to a background session.
+				if (r.runID && r.agentId && r.sessionKey) {
+					liveRunIdBySession.set(runsKey(r.agentId, r.sessionKey), r.runID);
+					updateSessionBadges();
+				}
+				break;
+			case 'text_delta':
+				if (eventScope(r) === displayedScope()) {
+					if (!currentAssistant) { currentAssistant = addAssistantMsg(); }
+					appendToAssistant(r.text);
+				}
+				break;
+			case 'tool_call_start':
+				if (eventScope(r) === displayedScope()) {
+					if (currentAssistant) { finalizeAssistant(); currentAssistant = null; }
+					addToolCall(r.tool, r.id, r.input);
+				}
+				break;
+			case 'tool_result':
+				if (eventScope(r) === displayedScope()) {
+					updateToolResult(r.tool, r.id, r.input, r.output, r.error, r.images, r.auth_required);
+				}
+				break;
+			case 'done':
+				setSending(eventScope(r), false);
+				if (eventScope(r) === displayedScope()) {
+					if (currentAssistant) { finalizeAssistant(); }
+					currentAssistant = null;
+					if (r.context_window && agentSelect && agentSelect.value) {
+						agentWindows[agentSelect.value] = r.context_window;
+					}
+					updateTokenChip(r.usage);
+					updateSendBtn();
+				}
+				break;
+			case 'aborted':
+				setSending(eventScope(r), false);
+				if (eventScope(r) === displayedScope()) {
+					if (currentAssistant) { finalizeAssistant(); }
+					currentAssistant = null;
+					updateSendBtn();
+				}
+				break;
+			case 'error':
+				setSending(eventScope(r), false);
+				if (eventScope(r) === displayedScope()) {
+					addError(r.message);
+					currentAssistant = null;
+					updateSendBtn();
+				}
+				break;
+			case 'compaction.start':
+				if (eventScope(r) === displayedScope()) {
+					if (!currentAssistant) { currentAssistant = addAssistantMsg(); }
+					appendToAssistant('\n*[Compacting context…]*\n');
+				}
+				break;
+			case 'compaction.done':
+				if (eventScope(r) === displayedScope() && currentAssistant) {
+					appendToAssistant('\n*[Context compacted.]*\n');
+				}
+				break;
+			case 'compaction.skipped':
+				break;
+			case 'trace':
+				if (eventScope(r) === displayedScope()) { addTraceRow(r); }
+				break;
+			case 'replay_done':
+				// Boundary marker between gap-fill and (if live) live stream.
+				// Release the per-scope lock for the run's scope when it's no
+				// longer in flight.
+				if (!r.live) {
+					setSending(eventScope(r), false);
+					if (eventScope(r) === displayedScope()) { updateSendBtn(); }
+				}
+				break;
+			case 'run_terminal': {
+				setSending(eventScope(r), false);
+				if (r.agentId && r.sessionKey) {
+					liveRunIdBySession.delete(runsKey(r.agentId, r.sessionKey));
+					updateSessionBadges();
+				}
+				if (eventScope(r) === displayedScope()) {
+					if (currentAssistant) { finalizeAssistant(); currentAssistant = null; }
+					updateSendBtn();
+					if (r.status === 'completed') { break; }
+					var marker = '';
+					switch (r.status) {
+					case 'cancelled':
+						marker = r.reason === 'superseded' ? '↳ replaced by next turn' : '⏹ cancelled';
+						break;
+					case 'interrupted':
+						marker = '↯ interrupted by server restart';
+						break;
+					case 'failed':
+						marker = '⚠ failed' + (r.error ? ': ' + r.error : '');
+						break;
+					default:
+						marker = '— ' + r.status;
+					}
+					addSystemMarker(marker);
+				}
+				break;
+			}
+			}
+		}
 
 		ws.onmessage = function(e) {
 			try {
@@ -3608,6 +3769,17 @@ html.dark #stop-btn {
 					// the sublist or replay flow and must not lock the chat
 					// composer. Surface them in-place; the chat send path is
 					// unaffected.
+					if (typeof resp.id === 'string' && resp.id.indexOf('subscribe-') === 0) {
+						// Re-attach failed. chat.subscribe is now only ever sent
+						// AFTER session.history has rendered the committed turns, so
+						// the pane is already populated — we just lose the live
+						// overlay for the in-flight turn (acceptable degradation; it
+						// appears once the turn commits and the user reloads/switches).
+						// Re-requesting history here would double-render the committed
+						// turns (the history branch appends, it doesn't wipe), so do
+						// nothing.
+						return;
+					}
 					if (typeof resp.id === 'string' &&
 						(resp.id.indexOf('runs-') === 0 ||
 						 resp.id.indexOf('del-') === 0 ||
@@ -3630,7 +3802,7 @@ html.dark #stop-btn {
 						return;
 					}
 					addError(typeof resp.error === 'string' ? resp.error : resp.error.message || JSON.stringify(resp.error));
-					sending = false;
+					setSending(displayedScope(), false);
 					updateSendBtn();
 					return;
 				}
@@ -3643,6 +3815,14 @@ html.dark #stop-btn {
 					if (!agentSelect || !agentSelect.value || stp.agentId === agentSelect.value) {
 						loadSessions();
 					}
+					return;
+				}
+				// Re-attach live stream: chat.subscribe (after a session switch
+				// back to a session with a live run) leaves the server pushing
+				// live frames as chat.event notifications. Feed them through the
+				// same scope-gated handler as the primary chat.send stream.
+				if (resp.method === 'chat.event') {
+					if (resp.params) { handleStreamFrame(resp.params); }
 					return;
 				}
 				if (!resp.result) return;
@@ -3755,6 +3935,59 @@ html.dark #stop-btn {
 						}
 					}
 					scrollToBottom();
+					// If a live-session re-attach is pending and we're still on
+					// that scope with a live run, chain chat.subscribe now to
+					// overlay the in-flight run's events on top of the committed
+					// history just rendered. The subscribe response APPENDS (it no
+					// longer wipes), so no double-render. Cleared so a later plain
+					// history response won't re-trigger.
+					if (pendingReattachScope &&
+						pendingReattachScope === displayedScope() &&
+						liveRunIdBySession.has(pendingReattachScope)) {
+						var rsk = pendingReattachScope;
+						pendingReattachScope = null;
+						ws.send(JSON.stringify({
+							jsonrpc: '2.0',
+							method: 'chat.subscribe',
+							params: { agentId: agentSelect.value, sessionKey: sessionSelect.value, fromSeq: 0 },
+							id: 'subscribe-' + rsk
+						}));
+					} else {
+						pendingReattachScope = null;
+					}
+					return;
+				}
+
+				// Handle chat.subscribe response (re-attach on switch-back).
+				// Shape: { active, runId, lastSeq, past:[event], agentId, sessionKey }
+				// or { active:false } when the run finished between switch and
+				// subscribe. Replay the past frames through handleStreamFrame;
+				// any subsequent live frames arrive as chat.event notifications.
+				if (typeof resp.id === 'string' && resp.id.indexOf('subscribe-') === 0) {
+					var subScope = resp.id.slice('subscribe-'.length);
+					// Ignore a stale response for a scope we've since switched away
+					// from — its events must not paint into the current session.
+					if (subScope !== displayedScope()) { return; }
+					var sres = resp.result || {};
+					if (sres.active === false) {
+						// Run finished between switch and subscribe. History was
+						// already loaded by the chaining handler and, once the turn
+						// committed, includes it — so there's nothing to overlay.
+						// Just return (re-requesting history would double-render).
+						return;
+					}
+					// This response APPENDS the in-flight run's events on top of the
+					// committed history already rendered by the chained 'history'
+					// response — do NOT wipe the pane. The in-flight turn is not yet
+					// in the JSONL, so there is no overlap with history. Live
+					// chat.event frames after this snapshot re-append in order.
+					var pastEv = sres.past || [];
+					for (var pi = 0; pi < pastEv.length; pi++) {
+						var pe = pastEv[pi];
+						if (!pe) { continue; } // Fix C: skip nil past entries
+						pe.agentId = sres.agentId; pe.sessionKey = sres.sessionKey;
+						handleStreamFrame(pe);
+					}
 					return;
 				}
 
@@ -3810,124 +4043,7 @@ html.dark #stop-btn {
 				}
 
 				var r = resp.result;
-
-				switch (r.type) {
-				case 'run_attached':
-					// Track the in-flight runId for the current scope so the
-					// runs sublist hides the delete button next to this row.
-					if (r.runID && agentSelect && agentSelect.value && sessionSelect && sessionSelect.value) {
-						liveRunIdBySession.set(runsKey(agentSelect.value, sessionSelect.value), r.runID);
-					}
-					break;
-				case 'text_delta':
-					if (!currentAssistant) {
-						currentAssistant = addAssistantMsg();
-					}
-					appendToAssistant(r.text);
-					break;
-				case 'tool_call_start':
-					if (currentAssistant) {
-						finalizeAssistant();
-						currentAssistant = null;
-					}
-					addToolCall(r.tool, r.id, r.input);
-					break;
-				case 'tool_result':
-					updateToolResult(r.tool, r.id, r.input, r.output, r.error, r.images, r.auth_required);
-					break;
-				case 'done':
-					if (currentAssistant) {
-						finalizeAssistant();
-					}
-					currentAssistant = null;
-					sending = false;
-					updateSendBtn();
-					if (r.context_window && agentSelect && agentSelect.value) {
-					// Per-turn context_window is the freshest server value
-					// (config hot-reload could have changed it since
-					// agent.status fired). Cache it back so subsequent
-					// renders stay consistent.
-					agentWindows[agentSelect.value] = r.context_window;
-				}
-				updateTokenChip(r.usage);
-					break;
-				case 'aborted':
-					if (currentAssistant) {
-						finalizeAssistant();
-					}
-					currentAssistant = null;
-					sending = false;
-					updateSendBtn();
-					break;
-				case 'error':
-					addError(r.message);
-					currentAssistant = null;
-					sending = false;
-					updateSendBtn();
-					break;
-				case 'compaction.start':
-					if (!currentAssistant) {
-						currentAssistant = addAssistantMsg();
-					}
-					appendToAssistant('\n*[Compacting context…]*\n');
-					break;
-				case 'compaction.done':
-					if (currentAssistant) {
-						appendToAssistant('\n*[Context compacted.]*\n');
-					}
-					break;
-				case 'compaction.skipped':
-					break;
-				case 'trace':
-					addTraceRow(r);
-					break;
-				case 'replay_done':
-					// Boundary marker between gap-fill and (if live:true) live stream.
-					// Nothing visual — the message rendering already handled the
-					// historical events. If r.live is false, the run is no longer
-					// in flight, so release the sending lock.
-					if (!r.live) {
-						sending = false;
-						updateSendBtn();
-					}
-					break;
-				case 'run_terminal':
-					// Final lifecycle marker from the runs subsystem. Distinguish
-					// from the agent's per-turn 'done' event which has already been
-					// processed above. Render a visible marker for non-happy states.
-					if (currentAssistant) {
-						finalizeAssistant();
-						currentAssistant = null;
-					}
-					sending = false;
-					updateSendBtn();
-					// Clear the live runId for this scope so the delete button
-					// reappears in the runs sublist on next render.
-					if (agentSelect && agentSelect.value && sessionSelect && sessionSelect.value) {
-						liveRunIdBySession.delete(runsKey(agentSelect.value, sessionSelect.value));
-					}
-					if (r.status === 'completed') {
-						// Happy path — no marker needed (the 'done' event already
-						// finalized the assistant message).
-						break;
-					}
-					var marker = '';
-					switch (r.status) {
-					case 'cancelled':
-						marker = r.reason === 'superseded' ? '↳ replaced by next turn' : '⏹ cancelled';
-						break;
-					case 'interrupted':
-						marker = '↯ interrupted by server restart';
-						break;
-					case 'failed':
-						marker = '⚠ failed' + (r.error ? ': ' + r.error : '');
-						break;
-					default:
-						marker = '— ' + r.status;
-					}
-					addSystemMarker(marker);
-					break;
-				}
+				handleStreamFrame(r);
 			} catch(err) {
 				console.error('parse error:', err);
 			}
@@ -4313,7 +4429,7 @@ html.dark #stop-btn {
 	}
 
 	function updateSendBtn() {
-		if (sending) {
+		if (isSending(displayedScope())) {
 			sendBtn.style.display = 'none';
 			stopBtn.style.display = 'flex';
 		} else {
@@ -4512,11 +4628,11 @@ html.dark #stop-btn {
 
 	function sendMessage() {
 		var text = inputEl.value.trim();
-		if (sending) return;
+		if (isSending(displayedScope())) return;
 		if (!ws || ws.readyState !== WebSocket.OPEN) return;
 		if (!text && attachments.length === 0) return;
 
-		sending = true;
+		setSending(displayedScope(), true);
 		updateSendBtn();
 
 		uploadAllAttachments().then(function() {
@@ -4543,7 +4659,7 @@ html.dark #stop-btn {
 			inputEl.value = '';
 			inputEl.style.height = 'auto';
 		}).catch(function(err) {
-			sending = false;
+			setSending(displayedScope(), false);
 			updateSendBtn();
 			alert('Upload failed: ' + err.message + '\n\nClick the × on any failed chip to remove it, then try again.');
 		});
