@@ -188,3 +188,20 @@ func TestLogWriter_CloseFlushesTail(t *testing.T) {
 		t.Fatalf("want 2 events incl. buffered tail delta, got %d (%+v)", len(got), got)
 	}
 }
+
+// BenchmarkAppendDeltas documents the fsync-coalescing win. Timing is
+// machine-dependent so it asserts nothing; run with -bench to observe.
+func BenchmarkAppendDeltas(b *testing.B) {
+	dir := b.TempDir()
+	path := filepath.Join(dir, "bench.jsonl")
+	w, err := openLogWriter(path)
+	if err != nil {
+		b.Fatalf("open: %v", err)
+	}
+	defer w.Close()
+	payload := json.RawMessage(`{"text":"a chunk of streamed assistant text"}`)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = w.Append(Event{Seq: int64(i), Type: EventTypeTextDelta, Payload: payload})
+	}
+}
