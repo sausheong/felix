@@ -511,6 +511,7 @@ func TestHandleChatSend_ConcurrentScopesNotCrossLabeled(t *testing.T) {
 	// rpc id 1 → ws_alpha, 2 → ws_beta (the send order above).
 	wantByID := map[int]string{1: "ws_alpha", 2: "ws_beta"}
 	terminals := map[int]bool{}
+	sawScoped := map[int]bool{}
 	deadline := time.Now().Add(5 * time.Second)
 	for len(terminals) < 2 && time.Now().Before(deadline) {
 		_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -536,6 +537,7 @@ func TestHandleChatSend_ConcurrentScopesNotCrossLabeled(t *testing.T) {
 			}
 		}
 		if sk, ok := r["sessionKey"].(string); ok && sk != "" {
+			sawScoped[id] = true
 			if want := wantByID[id]; want != "" && sk != want {
 				t.Fatalf("frame for rpc id %d labeled session %q, want %q (cross-labeled!)", id, sk, want)
 			}
@@ -547,5 +549,10 @@ func TestHandleChatSend_ConcurrentScopesNotCrossLabeled(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // settle deferred cleanup
 	if len(terminals) < 2 {
 		t.Fatalf("did not see both runs terminate; saw %v", terminals)
+	}
+	for id, want := range wantByID {
+		if !sawScoped[id] {
+			t.Fatalf("rpc id %d (%s) produced no scoped frame; scope stamping may have regressed", id, want)
+		}
 	}
 }
