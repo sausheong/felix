@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLogWriter_AppendAndRead(t *testing.T) {
@@ -73,5 +74,30 @@ func TestReadLog_TruncatedLastLine(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("want 2 valid events, got %d", len(got))
+	}
+}
+
+func TestShouldSync(t *testing.T) {
+	const interval = 250 * time.Millisecond
+	cases := []struct {
+		name          string
+		typ           EventType
+		sinceLastSync time.Duration
+		want          bool
+	}{
+		{"delta within interval -> no sync", EventTypeTextDelta, 10 * time.Millisecond, false},
+		{"delta past interval -> sync", EventTypeTextDelta, 300 * time.Millisecond, true},
+		{"tool_call_start always syncs", EventTypeToolCallStart, 1 * time.Millisecond, true},
+		{"tool_result always syncs", EventTypeToolResult, 1 * time.Millisecond, true},
+		{"done always syncs", EventTypeDone, 1 * time.Millisecond, true},
+		{"delta exactly at interval -> no sync", EventTypeTextDelta, interval, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldSync(tc.typ, tc.sinceLastSync, interval); got != tc.want {
+				t.Errorf("shouldSync(%q, %v, %v) = %v, want %v",
+					tc.typ, tc.sinceLastSync, interval, got, tc.want)
+			}
+		})
 	}
 }
