@@ -3770,6 +3770,20 @@ html.dark #stop-btn {
 					// the sublist or replay flow and must not lock the chat
 					// composer. Surface them in-place; the chat send path is
 					// unaffected.
+					if (typeof resp.id === 'string' && resp.id.indexOf('subscribe-') === 0) {
+						// Re-attach failed — fall back to history so the session
+						// isn't left blank. Only if still on that scope.
+						var sErrScope = resp.id.slice('subscribe-'.length);
+						if (sErrScope === displayedScope()) {
+							ws.send(JSON.stringify({
+								jsonrpc: '2.0',
+								method: 'session.history',
+								params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
+								id: 'history'
+							}));
+						}
+						return;
+					}
 					if (typeof resp.id === 'string' &&
 						(resp.id.indexOf('runs-') === 0 ||
 						 resp.id.indexOf('del-') === 0 ||
@@ -3934,10 +3948,14 @@ html.dark #stop-btn {
 				// subscribe. Replay the past frames through handleStreamFrame;
 				// any subsequent live frames arrive as chat.event notifications.
 				if (typeof resp.id === 'string' && resp.id.indexOf('subscribe-') === 0) {
+					var subScope = resp.id.slice('subscribe-'.length);
+					// Ignore a stale response for a scope we've since switched away
+					// from — its events must not paint into the current session.
+					if (subScope !== displayedScope()) { return; }
 					var sres = resp.result || {};
 					if (sres.active === false) {
-						// Run already finished — fall back to static history so
-						// the final transcript still paints.
+						// Run finished between switch and subscribe — load history
+						// for THIS (still-displayed) scope.
 						ws.send(JSON.stringify({
 							jsonrpc: '2.0',
 							method: 'session.history',
@@ -3946,9 +3964,17 @@ html.dark #stop-btn {
 						}));
 						return;
 					}
+					// Reset the pane before replay so a duplicate response for the
+					// same scope (rapid switch-away-and-back) rebuilds cleanly
+					// instead of double-rendering. Live chat.event frames after the
+					// snapshot re-append in order.
+					messagesEl.innerHTML = '';
+					currentAssistant = null;
+					toolEls = {};
 					var pastEv = sres.past || [];
 					for (var pi = 0; pi < pastEv.length; pi++) {
 						var pe = pastEv[pi];
+						if (!pe) { continue; } // Fix C: skip nil past entries
 						pe.agentId = sres.agentId; pe.sessionKey = sres.sessionKey;
 						handleStreamFrame(pe);
 					}
