@@ -303,7 +303,7 @@ func TestResolveMCPServers_LiteralBeatsEnv(t *testing.T) {
 				URL: "https://x",
 				Auth: MCPAuthConfig{
 					Kind: "oauth2_client_credentials", TokenURL: "https://t",
-					ClientID: "c",
+					ClientID:        "c",
 					ClientSecret:    "from-config",
 					ClientSecretEnv: "SECRET_THAT_SHOULD_NOT_WIN",
 				},
@@ -707,7 +707,7 @@ func TestConfig_ApplyTaskToolToAllowlists_Idempotent(t *testing.T) {
 		},
 	}
 	cfg.ApplyTaskToolToAllowlists()
-	cfg.ApplyTaskToolToAllowlists() // call twice
+	cfg.ApplyTaskToolToAllowlists()                                                // call twice
 	assert.Equal(t, []string{"read_file", "task"}, cfg.Agents.List[0].Tools.Allow) // no duplicate
 }
 
@@ -784,17 +784,95 @@ func TestCompactionConfigMessageCapDefault(t *testing.T) {
 	// meaningful trigger, and a 50-message cap fired on count alone for
 	// any tool-heavy run (each turn adds ≥2 messages).
 	cfg := DefaultConfig()
-	assert.Equal(t, 200, cfg.Agents.Defaults.Compaction.MessageCap,
+	require.NotNil(t, cfg.Agents.Defaults.Compaction.MessageCap)
+	assert.Equal(t, 200, *cfg.Agents.Defaults.Compaction.MessageCap,
 		"default MessageCap must be 200 (count is a backstop, not the primary trigger)")
 }
 
-func TestCompactionConfigMessageCapZeroDisablesCap(t *testing.T) {
-	// Documented contract: MessageCap == 0 disables the count-based trigger,
-	// leaving only the token-threshold check active. Verify the type and
-	// default behavior; runtime exercises this in agent_test.go.
-	var cfg CompactionConfig
-	cfg.MessageCap = 0
-	assert.Equal(t, 0, cfg.MessageCap)
+// TestCompactionMessageCap_LoadMerge exercises the documented "0 disables"
+// contract through Load — the merge path is where the previous plain-int field
+// silently clobbered an explicit 0 back to the default of 200.
+func TestCompactionMessageCap_LoadMerge(t *testing.T) {
+	load := func(t *testing.T, compactionBlock string) CompactionConfig {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "felix.json5")
+		contents := `{
+			"agents": {
+				"list": [{"id": "a", "model": "x/y"}],
+				"defaults": { "compaction": ` + compactionBlock + ` }
+			}
+		}`
+		require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+		cfg, err := Load(path)
+		require.NoError(t, err)
+		return cfg.Agents.Defaults.Compaction
+	}
+
+	t.Run("explicit zero disables the cap", func(t *testing.T) {
+		// The regression: a user who sets messageCap:0 to disable the count
+		// trigger must keep 0 — not have it backfilled to 200.
+		c := load(t, `{ "enabled": true, "threshold": 0.5, "messageCap": 0 }`)
+		require.NotNil(t, c.MessageCap, "explicit 0 must round-trip as non-nil")
+		assert.Equal(t, 0, *c.MessageCap, "explicit messageCap:0 must survive the Load merge")
+	})
+
+	t.Run("omitted cap is backfilled to the default", func(t *testing.T) {
+		// No messageCap key, but other numeric fields set so the merge takes
+		// the field-by-field branch (not the whole-block default copy).
+		c := load(t, `{ "enabled": true, "threshold": 0.5, "preserveTurns": 3 }`)
+		require.NotNil(t, c.MessageCap, "omitted cap must be backfilled")
+		assert.Equal(t, 200, *c.MessageCap, "omitted messageCap must default to 200")
+	})
+
+	t.Run("explicit positive cap is honored", func(t *testing.T) {
+		c := load(t, `{ "enabled": true, "threshold": 0.5, "messageCap": 42 }`)
+		require.NotNil(t, c.MessageCap)
+		assert.Equal(t, 42, *c.MessageCap)
+	})
+
+	t.Run("only messageCap:0 set does not trip the whole-block default copy", func(t *testing.T) {
+		// All other numeric fields are zero, so the "no compaction block at
+		// all" proxy could fire and overwrite with defaults. The nil check
+		// guards it: an explicit 0 means a block IS present.
+		c := load(t, `{ "enabled": true, "messageCap": 0 }`)
+		require.NotNil(t, c.MessageCap)
+		assert.Equal(t, 0, *c.MessageCap, "explicit 0 must not be lost to the whole-block default copy")
+		// The other fields still get backfilled field-by-field.
+		assert.Equal(t, 0.6, c.Threshold)
+		assert.Equal(t, 4, c.PreserveTurns)
+	})
+}
+
+// TestCompactionMessageCap_SaveLoadRoundTrip is the settings-page contract:
+// saving a config with an explicit messageCap:0 (cap disabled) and reloading
+// it must keep the cap disabled, not silently re-enable the 200 default.
+func TestCompactionMessageCap_SaveLoadRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "felix.json5")
+	contents := `{
+		"agents": {
+			"list": [{"id": "a", "model": "x/y"}],
+			"defaults": { "compaction": { "enabled": true, "threshold": 0.5, "messageCap": 0 } }
+		}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Agents.Defaults.Compaction.MessageCap)
+	require.Equal(t, 0, *cfg.Agents.Defaults.Compaction.MessageCap)
+
+	// Save back and reload — the disabled cap must persist.
+	cfg.SetPath(path)
+	require.NoError(t, cfg.Save())
+
+	reloaded, err := Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded.Agents.Defaults.Compaction.MessageCap,
+		"messageCap:0 must serialize (pointer + omitempty keeps an explicit 0)")
+	assert.Equal(t, 0, *reloaded.Agents.Defaults.Compaction.MessageCap,
+		"disabled cap must survive a Save/Load round-trip")
 }
 
 func TestAgentConfigReasoningValidation(t *testing.T) {

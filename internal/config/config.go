@@ -180,11 +180,18 @@ type CompactionConfig struct {
 	// MessageCap is a hard backstop on total message count before compaction
 	// fires, regardless of token threshold. Without a count cap, sessions
 	// with low-cost tool-heavy turns can grow indefinitely on models whose
-	// token threshold is never reached. 0 disables the cap (use only the
-	// token threshold). Default 200 — a backstop, not the primary trigger;
-	// each agent turn adds ≥2 messages, so the old default of 50 fired on
-	// count alone for any tool-heavy run even with huge token headroom.
-	MessageCap int `json:"messageCap"`
+	// token threshold is never reached. Default 200 — a backstop, not the
+	// primary trigger; each agent turn adds ≥2 messages, so the old default
+	// of 50 fired on count alone for any tool-heavy run even with huge token
+	// headroom.
+	//
+	// Pointer semantics distinguish "omitted" from "explicit 0":
+	//   - nil           → field absent; Load backfills the default (200).
+	//   - non-nil, 0    → explicitly disable the cap (token threshold only).
+	//   - non-nil, >0   → use that cap.
+	// A plain int could not express "disable", because 0 was indistinguishable
+	// from "unset" and was always backfilled to the default.
+	MessageCap *int `json:"messageCap,omitempty"`
 }
 
 type AgentConfig struct {
@@ -479,7 +486,7 @@ func Load(path string) (*Config, error) {
 			cur.Model = ""
 		}
 	}
-	if cur.Threshold == 0 && cur.PreserveTurns == 0 && cur.TimeoutSec == 0 {
+	if cur.Threshold == 0 && cur.PreserveTurns == 0 && cur.TimeoutSec == 0 && cur.MessageCap == nil {
 		cfg.Agents.Defaults.Compaction = d
 		// Preserve the cleared model from migration above.
 		cfg.Agents.Defaults.Compaction.Model = cur.Model
@@ -493,11 +500,10 @@ func Load(path string) (*Config, error) {
 		if cur.TimeoutSec == 0 {
 			cur.TimeoutSec = d.TimeoutSec
 		}
-		// TODO: 0 means "use default" here, but the field doc says 0 disables.
-		// Migrate to *int or a sentinel when the broader Compaction merge
-		// gets revisited (same dissonance affects Threshold/PreserveTurns/
-		// TimeoutSec).
-		if cur.MessageCap == 0 {
+		// MessageCap uses pointer semantics so an explicit 0 ("disable the
+		// cap") survives the merge. Only a nil (omitted) field is backfilled
+		// with the default; a non-nil 0 is honored as "disabled".
+		if cur.MessageCap == nil {
 			cur.MessageCap = d.MessageCap
 		}
 		cfg.Agents.Defaults.Compaction = cur
@@ -509,6 +515,11 @@ func Load(path string) (*Config, error) {
 
 	return &cfg, nil
 }
+
+// intPtr returns a pointer to v. Used for optional config fields whose zero
+// value carries meaning distinct from "unset" (e.g. CompactionConfig.MessageCap,
+// where 0 means "disable the cap" and nil means "use the default").
+func intPtr(v int) *int { return &v }
 
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
@@ -545,8 +556,8 @@ func DefaultConfig() *Config {
 					// 300s: summarizing a ~100K-token transcript takes well
 					// over a minute; at 60s large-session compaction always
 					// timed out and the session never shrank.
-					TimeoutSec:    300,
-					MessageCap:    200,
+					TimeoutSec: 300,
+					MessageCap: intPtr(200),
 				},
 			},
 		},

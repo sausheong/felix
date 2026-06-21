@@ -19,6 +19,9 @@ func cfgWith(compaction config.CompactionConfig, providers map[string]config.Pro
 	}
 }
 
+// ptr returns a pointer to v, for setting pointer-typed config fields in tests.
+func ptr[T any](v T) *T { return &v }
+
 // localProvider is a provider that NewProvider can build without any network
 // access (the "local" kind just constructs an OpenAI-compatible client).
 var localProvider = map[string]config.ProviderConfig{
@@ -139,7 +142,7 @@ func TestBuildManagerForModel_ExplicitTimeoutAndFields(t *testing.T) {
 			TimeoutSec:    42,
 			PreserveTurns: 7,
 			Threshold:     0.75,
-			MessageCap:    99,
+			MessageCap:    ptr(99),
 		},
 		localProvider,
 	)
