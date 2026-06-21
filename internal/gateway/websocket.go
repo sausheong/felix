@@ -653,7 +653,11 @@ func (h *WebSocketHandler) handleChatSubscribe(conn *websocket.Conn, req JSONRPC
 
 	pastJSON := make([]map[string]any, 0, len(past))
 	for _, e := range past {
-		pastJSON = append(pastJSON, eventToResult(e))
+		res := eventToResult(e)
+		if res == nil {
+			continue
+		}
+		pastJSON = append(pastJSON, res)
 	}
 	writeJSON(conn, JSONRPCResponse{
 		JSONRPC: "2.0",

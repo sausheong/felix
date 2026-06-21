@@ -3376,27 +3376,21 @@ html.dark #stop-btn {
 		toolEls = {};
 		resetTokenChip();
 		refreshEmptyState();
-		// If the target session has a live run in flight, re-attach via
-		// chat.subscribe (replays past frames + resumes the live stream as
-		// chat.event notifications). This rebuilds one clean bubble from the
-		// server and avoids the split-bubble artifact of switching mid-stream.
-		// Otherwise just load the static history.
+		// Always load static history first. For a session with a live run in
+		// flight, history restores all COMMITTED prior turns (the in-flight turn
+		// is not yet in the JSONL), and we chain chat.subscribe afterwards to
+		// overlay just the in-flight run's events on top — preserving full
+		// scrollback instead of replacing it with only the last assistant turn.
+		// The chaining happens in the 'history' response handler so ordering is
+		// deterministic regardless of when responses arrive.
 		var sk = runsKey(agentSelect.value, sessionSelect.value);
-		if (liveRunIdBySession.has(sk)) {
-			ws.send(JSON.stringify({
-				jsonrpc: '2.0',
-				method: 'chat.subscribe',
-				params: { agentId: agentSelect.value, sessionKey: sessionSelect.value, fromSeq: 0 },
-				id: 'subscribe-' + sk
-			}));
-		} else {
-			ws.send(JSON.stringify({
-				jsonrpc: '2.0',
-				method: 'session.history',
-				params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
-				id: 'history'
-			}));
-		}
+		pendingReattachScope = liveRunIdBySession.has(sk) ? sk : null;
+		ws.send(JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'session.history',
+			params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
+			id: 'history'
+		}));
 		updateSendBtn();
 	});
 
@@ -3433,6 +3427,11 @@ html.dark #stop-btn {
 	}
 	function displayedScope() { return runsKey(agentSelect.value, sessionSelect.value); }
 	function eventScope(r) { return runsKey(r.agentId, r.sessionKey); }
+	// When switching back to a live session we load session.history FIRST (to
+	// restore committed scrollback), then chain chat.subscribe to overlay the
+	// in-flight run. This holds the scope awaiting that chained subscribe so the
+	// history response handler knows to fire it; null when no re-attach pending.
+	var pendingReattachScope = null;
 	var reconnectTimer = null;
 
 	// Inline markdown: code, bold, italic, links
@@ -3771,17 +3770,14 @@ html.dark #stop-btn {
 					// composer. Surface them in-place; the chat send path is
 					// unaffected.
 					if (typeof resp.id === 'string' && resp.id.indexOf('subscribe-') === 0) {
-						// Re-attach failed — fall back to history so the session
-						// isn't left blank. Only if still on that scope.
-						var sErrScope = resp.id.slice('subscribe-'.length);
-						if (sErrScope === displayedScope()) {
-							ws.send(JSON.stringify({
-								jsonrpc: '2.0',
-								method: 'session.history',
-								params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
-								id: 'history'
-							}));
-						}
+						// Re-attach failed. chat.subscribe is now only ever sent
+						// AFTER session.history has rendered the committed turns, so
+						// the pane is already populated — we just lose the live
+						// overlay for the in-flight turn (acceptable degradation; it
+						// appears once the turn commits and the user reloads/switches).
+						// Re-requesting history here would double-render the committed
+						// turns (the history branch appends, it doesn't wipe), so do
+						// nothing.
 						return;
 					}
 					if (typeof resp.id === 'string' &&
@@ -3939,6 +3935,26 @@ html.dark #stop-btn {
 						}
 					}
 					scrollToBottom();
+					// If a live-session re-attach is pending and we're still on
+					// that scope with a live run, chain chat.subscribe now to
+					// overlay the in-flight run's events on top of the committed
+					// history just rendered. The subscribe response APPENDS (it no
+					// longer wipes), so no double-render. Cleared so a later plain
+					// history response won't re-trigger.
+					if (pendingReattachScope &&
+						pendingReattachScope === displayedScope() &&
+						liveRunIdBySession.has(pendingReattachScope)) {
+						var rsk = pendingReattachScope;
+						pendingReattachScope = null;
+						ws.send(JSON.stringify({
+							jsonrpc: '2.0',
+							method: 'chat.subscribe',
+							params: { agentId: agentSelect.value, sessionKey: sessionSelect.value, fromSeq: 0 },
+							id: 'subscribe-' + rsk
+						}));
+					} else {
+						pendingReattachScope = null;
+					}
 					return;
 				}
 
@@ -3954,23 +3970,17 @@ html.dark #stop-btn {
 					if (subScope !== displayedScope()) { return; }
 					var sres = resp.result || {};
 					if (sres.active === false) {
-						// Run finished between switch and subscribe — load history
-						// for THIS (still-displayed) scope.
-						ws.send(JSON.stringify({
-							jsonrpc: '2.0',
-							method: 'session.history',
-							params: { agentId: agentSelect.value, sessionKey: sessionSelect.value },
-							id: 'history'
-						}));
+						// Run finished between switch and subscribe. History was
+						// already loaded by the chaining handler and, once the turn
+						// committed, includes it — so there's nothing to overlay.
+						// Just return (re-requesting history would double-render).
 						return;
 					}
-					// Reset the pane before replay so a duplicate response for the
-					// same scope (rapid switch-away-and-back) rebuilds cleanly
-					// instead of double-rendering. Live chat.event frames after the
-					// snapshot re-append in order.
-					messagesEl.innerHTML = '';
-					currentAssistant = null;
-					toolEls = {};
+					// This response APPENDS the in-flight run's events on top of the
+					// committed history already rendered by the chained 'history'
+					// response — do NOT wipe the pane. The in-flight turn is not yet
+					// in the JSONL, so there is no overlap with history. Live
+					// chat.event frames after this snapshot re-append in order.
 					var pastEv = sres.past || [];
 					for (var pi = 0; pi < pastEv.length; pi++) {
 						var pe = pastEv[pi];
