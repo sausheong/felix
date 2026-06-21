@@ -441,12 +441,6 @@ func TestHandleChatSend_FramesCarryScope(t *testing.T) {
 		if typ == "" {
 			continue
 		}
-		// "trace" frames come from the separate trace-mark forwarder, whose
-		// scope stamping is Task 2; they are diagnostic, not session-routed
-		// content. This task scopes only the wsSubscriber stream.
-		if typ == "trace" {
-			continue
-		}
 		aid, _ := r["agentId"].(string)
 		sk, _ := r["sessionKey"].(string)
 		if aid != "default" || sk != "ws_alpha" {
@@ -460,5 +454,41 @@ func TestHandleChatSend_FramesCarryScope(t *testing.T) {
 	}
 	if !sawScoped {
 		t.Fatal("no scoped result frames observed")
+	}
+}
+
+// The chat.subscribe response must identify the scope of the replayed run so
+// the client can confirm which session the past events belong to.
+func TestHandleChatSubscribe_ResponseCarriesScope(t *testing.T) {
+	h, reg, _ := testHandler(t)
+	clientConn, serverConn := wsPair(t, h)
+	scope := runs.SessionScope{AgentID: "default", SessionKey: "ws_beta"}
+
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	run, _ := reg.Create(scope, "live-run", cancel)
+	_, _ = run.Append(runs.EventTypeTextDelta, []byte(`{"text":"partial"}`))
+	defer run.Finish(runs.StatusCompleted, "", "")
+
+	h.mu.Lock()
+	if h.activeSessionKeys[serverConn] == nil {
+		h.activeSessionKeys[serverConn] = map[string]string{}
+	}
+	h.activeSessionKeys[serverConn]["default"] = "ws_beta"
+	h.mu.Unlock()
+
+	h.handleChatSubscribe(serverConn, makeReq(t, "chat.subscribe",
+		map[string]any{"agentId": "default", "sessionKey": "ws_beta", "fromSeq": 0}, "subscribe-x"))
+
+	resp := readJSON(t, clientConn)
+	result, _ := resp["result"].(map[string]any)
+	if result == nil {
+		t.Fatalf("no result in subscribe response: %v", resp)
+	}
+	if aid, _ := result["agentId"].(string); aid != "default" {
+		t.Errorf("subscribe response agentId=%q, want default; resp=%v", aid, resp)
+	}
+	if sk, _ := result["sessionKey"].(string); sk != "ws_beta" {
+		t.Errorf("subscribe response sessionKey=%q, want ws_beta; resp=%v", sk, resp)
 	}
 }
