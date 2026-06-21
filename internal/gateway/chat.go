@@ -3330,6 +3330,7 @@ html.dark #stop-btn {
 		toolEls = {};
 		resetTokenChip();
 		refreshEmptyState();
+		updateSendBtn();
 		// If the Files iframe panel is currently visible, reload it so it
 		// shows the new agent's workspace.
 		var filesIframe = document.getElementById('embed-frame');
@@ -3357,6 +3358,7 @@ html.dark #stop-btn {
 		toolEls = {};
 		resetTokenChip();
 		refreshEmptyState();
+		updateSendBtn();
 		ws.send(JSON.stringify({
 			jsonrpc: '2.0',
 			method: 'session.history',
@@ -3389,6 +3391,16 @@ html.dark #stop-btn {
 	var msgId = 0;
 	var currentAssistant = null;
 	var sending = false;
+	// Per-scope composer-lock state keyed by runsKey(agent, session).
+	// Only ` + "`" + `sending` + "`" + ` is per-scope; the visible message pane (currentAssistant,
+	// toolEls) is inherently single-session, so those stay global.
+	var sendingByScope = new Map();
+	function isSending(scopeKey) { return sendingByScope.get(scopeKey) === true; }
+	function setSending(scopeKey, v) {
+		if (v) { sendingByScope.set(scopeKey, true); } else { sendingByScope.delete(scopeKey); }
+	}
+	function displayedScope() { return runsKey(agentSelect.value, sessionSelect.value); }
+	function eventScope(r) { return runsKey(r.agentId, r.sessionKey); }
 	var reconnectTimer = null;
 
 	// Inline markdown: code, bold, italic, links
@@ -3591,7 +3603,7 @@ html.dark #stop-btn {
 			connStatus.className = 'status-dot connecting';
 			connStatus.title = 'reconnecting...';
 			sendBtn.disabled = true;
-			sending = false;
+			sendingByScope.clear();
 			reconnectTimer = setTimeout(connect, 3000);
 		};
 
@@ -3630,7 +3642,7 @@ html.dark #stop-btn {
 						return;
 					}
 					addError(typeof resp.error === 'string' ? resp.error : resp.error.message || JSON.stringify(resp.error));
-					sending = false;
+					setSending(displayedScope(), false);
 					updateSendBtn();
 					return;
 				}
@@ -3820,66 +3832,65 @@ html.dark #stop-btn {
 					}
 					break;
 				case 'text_delta':
-					if (!currentAssistant) {
-						currentAssistant = addAssistantMsg();
+					if (eventScope(r) === displayedScope()) {
+						if (!currentAssistant) { currentAssistant = addAssistantMsg(); }
+						appendToAssistant(r.text);
 					}
-					appendToAssistant(r.text);
 					break;
 				case 'tool_call_start':
-					if (currentAssistant) {
-						finalizeAssistant();
-						currentAssistant = null;
+					if (eventScope(r) === displayedScope()) {
+						if (currentAssistant) { finalizeAssistant(); currentAssistant = null; }
+						addToolCall(r.tool, r.id, r.input);
 					}
-					addToolCall(r.tool, r.id, r.input);
 					break;
 				case 'tool_result':
-					updateToolResult(r.tool, r.id, r.input, r.output, r.error, r.images, r.auth_required);
+					if (eventScope(r) === displayedScope()) {
+						updateToolResult(r.tool, r.id, r.input, r.output, r.error, r.images, r.auth_required);
+					}
 					break;
 				case 'done':
-					if (currentAssistant) {
-						finalizeAssistant();
+					setSending(eventScope(r), false);
+					if (eventScope(r) === displayedScope()) {
+						if (currentAssistant) { finalizeAssistant(); }
+						currentAssistant = null;
+						if (r.context_window && agentSelect && agentSelect.value) {
+							agentWindows[agentSelect.value] = r.context_window;
+						}
+						updateTokenChip(r.usage);
+						updateSendBtn();
 					}
-					currentAssistant = null;
-					sending = false;
-					updateSendBtn();
-					if (r.context_window && agentSelect && agentSelect.value) {
-					// Per-turn context_window is the freshest server value
-					// (config hot-reload could have changed it since
-					// agent.status fired). Cache it back so subsequent
-					// renders stay consistent.
-					agentWindows[agentSelect.value] = r.context_window;
-				}
-				updateTokenChip(r.usage);
 					break;
 				case 'aborted':
-					if (currentAssistant) {
-						finalizeAssistant();
+					setSending(eventScope(r), false);
+					if (eventScope(r) === displayedScope()) {
+						if (currentAssistant) { finalizeAssistant(); }
+						currentAssistant = null;
+						updateSendBtn();
 					}
-					currentAssistant = null;
-					sending = false;
-					updateSendBtn();
 					break;
 				case 'error':
-					addError(r.message);
-					currentAssistant = null;
-					sending = false;
-					updateSendBtn();
+					setSending(eventScope(r), false);
+					if (eventScope(r) === displayedScope()) {
+						addError(r.message);
+						currentAssistant = null;
+						updateSendBtn();
+					}
 					break;
 				case 'compaction.start':
-					if (!currentAssistant) {
-						currentAssistant = addAssistantMsg();
+					if (eventScope(r) === displayedScope()) {
+						if (!currentAssistant) { currentAssistant = addAssistantMsg(); }
+						appendToAssistant('\n*[Compacting context…]*\n');
 					}
-					appendToAssistant('\n*[Compacting context…]*\n');
 					break;
 				case 'compaction.done':
-					if (currentAssistant) {
+					if (eventScope(r) === displayedScope() && currentAssistant) {
 						appendToAssistant('\n*[Context compacted.]*\n');
 					}
 					break;
 				case 'compaction.skipped':
 					break;
 				case 'trace':
-					addTraceRow(r);
+					if (eventScope(r) === displayedScope()) { addTraceRow(r); }
 					break;
 				case 'replay_done':
 					// Boundary marker between gap-fill and (if live:true) live stream.
@@ -4313,7 +4324,7 @@ html.dark #stop-btn {
 	}
 
 	function updateSendBtn() {
-		if (sending) {
+		if (isSending(displayedScope())) {
 			sendBtn.style.display = 'none';
 			stopBtn.style.display = 'flex';
 		} else {
@@ -4512,11 +4523,11 @@ html.dark #stop-btn {
 
 	function sendMessage() {
 		var text = inputEl.value.trim();
-		if (sending) return;
+		if (isSending(displayedScope())) return;
 		if (!ws || ws.readyState !== WebSocket.OPEN) return;
 		if (!text && attachments.length === 0) return;
 
-		sending = true;
+		setSending(displayedScope(), true);
 		updateSendBtn();
 
 		uploadAllAttachments().then(function() {
@@ -4543,7 +4554,7 @@ html.dark #stop-btn {
 			inputEl.value = '';
 			inputEl.style.height = 'auto';
 		}).catch(function(err) {
-			sending = false;
+			setSending(displayedScope(), false);
 			updateSendBtn();
 			alert('Upload failed: ' + err.message + '\n\nClick the × on any failed chip to remove it, then try again.');
 		});
