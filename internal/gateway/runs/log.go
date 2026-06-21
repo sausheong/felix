@@ -28,8 +28,12 @@ func shouldSync(t EventType, sinceLastSync, interval time.Duration) bool {
 	return sinceLastSync > interval
 }
 
-// logWriter is the single-writer append-only handle to a <runID>.jsonl.
-// Only the drain goroutine of the owning Run may call Append.
+// logWriter is the append-only handle to a <runID>.jsonl. Its methods are
+// not internally synchronized: callers must serialize access. The owning
+// Run does so by holding Run.mu across every Append/Close (from both the
+// drain goroutine via Run.Append and the abort goroutine via Run.Finish),
+// which is also what makes the lastSync field race-free. recovery.go uses a
+// fresh, unshared logWriter per interrupted run.
 type logWriter struct {
 	f        *os.File
 	w        *bufio.Writer
