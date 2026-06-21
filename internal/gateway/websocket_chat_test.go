@@ -492,3 +492,60 @@ func TestHandleChatSubscribe_ResponseCarriesScope(t *testing.T) {
 		t.Errorf("subscribe response sessionKey=%q, want ws_beta; resp=%v", sk, resp)
 	}
 }
+
+// Two concurrent chat.send turns on different sessions over one connection
+// must produce frames that are each labeled with their own scope — never
+// cross-labeled. This is the regression guard for the cross-session
+// spill-over bug.
+func TestHandleChatSend_ConcurrentScopesNotCrossLabeled(t *testing.T) {
+	h, _, _ := testHandler(t, "alpha-reply", "beta-reply")
+	clientConn, serverConn := wsPair(t, h)
+
+	h.handleChatSend(serverConn, makeReq(t, "chat.send",
+		map[string]string{"agentId": "default", "sessionKey": "ws_alpha", "text": "a"}, 1))
+	h.handleChatSend(serverConn, makeReq(t, "chat.send",
+		map[string]string{"agentId": "default", "sessionKey": "ws_beta", "text": "b"}, 2))
+
+	// Collect frames from both runs; every scoped frame must have a sessionKey
+	// of either ws_alpha or ws_beta, and must match its rpc id's run. We map
+	// rpc id 1 → ws_alpha, 2 → ws_beta (the send order above).
+	wantByID := map[int]string{1: "ws_alpha", 2: "ws_beta"}
+	terminals := map[int]bool{}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(terminals) < 2 && time.Now().Before(deadline) {
+		_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, data, err := clientConn.ReadMessage()
+		if err != nil {
+			break
+		}
+		var msg map[string]any
+		if json.Unmarshal(data, &msg) != nil {
+			continue
+		}
+		idf, _ := msg["id"].(float64)
+		id := int(idf)
+		r, _ := msg["result"].(map[string]any)
+		if r == nil {
+			continue
+		}
+		typ, _ := r["type"].(string)
+		if typ == "" || typ == "run_attached" {
+			// run_attached carries scope too, but assert only typed stream frames.
+			if typ != "run_attached" {
+				continue
+			}
+		}
+		if sk, ok := r["sessionKey"].(string); ok && sk != "" {
+			if want := wantByID[id]; want != "" && sk != want {
+				t.Fatalf("frame for rpc id %d labeled session %q, want %q (cross-labeled!)", id, sk, want)
+			}
+		}
+		if typ == "done" || typ == "run_terminal" {
+			terminals[id] = true
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // settle deferred cleanup
+	if len(terminals) < 2 {
+		t.Fatalf("did not see both runs terminate; saw %v", terminals)
+	}
+}
