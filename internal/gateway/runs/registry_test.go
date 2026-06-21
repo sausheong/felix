@@ -620,3 +620,47 @@ func TestRegistry_DeleteRun_TolerantOfMissingLog(t *testing.T) {
 		t.Fatalf("expected 0 runs after delete-with-missing-log, got %d", len(snap))
 	}
 }
+
+// A Subscribe on an already-finished run must return the terminal event in
+// `past` exactly once and a closed live channel — never deliver it twice.
+func TestSubscribe_AfterFinish_NoDuplicateTerminal(t *testing.T) {
+	base := t.TempDir()
+	reg := NewRegistry(base)
+	_, cancel := context.WithCancel(context.Background())
+	run, err := reg.Create(SessionScope{AgentID: "a", SessionKey: "k"}, "r1", cancel)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := run.Append(EventTypeTextDelta, []byte(`{}`)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := run.Finish(StatusCompleted, "", ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	conn := &websocket.Conn{}
+	past, ch, _, err := run.Subscribe(conn, 0)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	// Collect past + any live events; assert strictly monotonic (no dup).
+	var seqs []int64
+	for _, e := range past {
+		seqs = append(seqs, e.Seq)
+	}
+	for e := range ch { // must be already closed → loop exits promptly
+		seqs = append(seqs, e.Seq)
+	}
+	var prev int64
+	for _, s := range seqs {
+		if s <= prev {
+			t.Fatalf("duplicate/non-monotonic terminal seq: %v", seqs)
+		}
+		prev = s
+	}
+	// The terminal done event is seq 2 (1 delta + 1 done); ensure present once.
+	if len(seqs) == 0 || seqs[len(seqs)-1] != 2 {
+		t.Fatalf("want terminal seq 2 present once, got %v", seqs)
+	}
+}

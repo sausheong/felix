@@ -399,6 +399,19 @@ func (r *Run) Subscribe(conn *websocket.Conn, fromSeq int64) ([]Event, <-chan Ev
 		}
 	}
 
+	// Terminal short-circuit: if the run has already finished (Finish set
+	// r.closed under this same r.mu after writing the terminal event to
+	// disk), then `past` already contains every event including the
+	// terminal one. Return an already-closed live channel and do NOT
+	// register a subscriber — otherwise Finish's fanout (which runs in a
+	// later, separate lock acquisition) would deliver the terminal event a
+	// second time, duplicating it across the past/live boundary.
+	if r.closed {
+		closed := make(chan Event)
+		close(closed)
+		return past, closed, lastSeq, nil
+	}
+
 	// Double-subscribe guard: if conn already has a subscriber on this run,
 	// close its channel so the orphaned forwardEvents goroutine exits.
 	// Otherwise the old goroutine blocks on a now-unreachable channel until
