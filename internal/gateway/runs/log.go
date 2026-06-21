@@ -8,13 +8,36 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"time"
 )
 
-// logWriter is the single-writer append-only handle to a <runID>.jsonl.
-// Only the drain goroutine of the owning Run may call Append.
+// syncInterval bounds how long buffered (un-synced) text_delta events may sit
+// in the OS page cache before we force a physical-disk barrier, so a long
+// pure-text generation still reaches disk periodically.
+const syncInterval = 250 * time.Millisecond
+
+// shouldSync reports whether an event of type t, written sinceLastSync after
+// the previous fsync, warrants a physical-disk barrier. Every non-text_delta
+// (resume-relevant) event syncs; a text_delta syncs only once the interval has
+// elapsed. This keeps the hot streaming path cheap while bounding worst-case
+// loss of cosmetic trailing deltas on an unclean crash.
+func shouldSync(t EventType, sinceLastSync, interval time.Duration) bool {
+	if t != EventTypeTextDelta {
+		return true
+	}
+	return sinceLastSync > interval
+}
+
+// logWriter is the append-only handle to a <runID>.jsonl. Its methods are
+// not internally synchronized: callers must serialize access. The owning
+// Run does so by holding Run.mu across every Append/Close (from both the
+// drain goroutine via Run.Append and the abort goroutine via Run.Finish),
+// which is also what makes the lastSync field race-free. recovery.go uses a
+// fresh, unshared logWriter per interrupted run.
 type logWriter struct {
-	f *os.File
-	w *bufio.Writer
+	f        *os.File
+	w        *bufio.Writer
+	lastSync time.Time // time of last successful fsync; zero value forces a sync on the first event
 }
 
 func openLogWriter(path string) (*logWriter, error) {
@@ -36,10 +59,21 @@ func (l *logWriter) Append(e Event) error {
 	if err := l.w.WriteByte('\n'); err != nil {
 		return err
 	}
+	// Flush on every event: bytes must be visible to ReadLog so a client
+	// reconnecting mid-run (Run.Subscribe gap-fill) sees all past events.
 	if err := l.w.Flush(); err != nil {
 		return err
 	}
-	return l.f.Sync()
+	// Physical-disk barrier only on resume-relevant events, or once the
+	// interval has elapsed for a long pure-text stream.
+	now := time.Now()
+	if shouldSync(e.Type, now.Sub(l.lastSync), syncInterval) {
+		if err := l.f.Sync(); err != nil {
+			return err
+		}
+		l.lastSync = now
+	}
+	return nil
 }
 
 func (l *logWriter) Close() error {
@@ -47,6 +81,7 @@ func (l *logWriter) Close() error {
 		return nil
 	}
 	_ = l.w.Flush()
+	_ = l.f.Sync()
 	return l.f.Close()
 }
 
