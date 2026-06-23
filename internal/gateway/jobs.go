@@ -5,11 +5,15 @@ import (
 	"net/http"
 )
 
-// NewJobsHandler returns an HTTP handler that serves the cron jobs management page.
+// NewJobsHandler returns an HTTP handler that serves the cron jobs management
+// page. The page derives its WebSocket endpoint from the browser's own origin
+// (scheme + host), so the port parameter is retained only for call-site
+// stability — the served HTML is fully static.
 func NewJobsHandler(port int) http.HandlerFunc {
+	_ = port
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, jobsHTML, port)
+		fmt.Fprint(w, jobsHTML)
 	}
 }
 
@@ -334,7 +338,6 @@ body {
 
 <script>
 (function() {
-	var PORT = %d;
 	var jobsList = document.getElementById('jobs-list');
 	var connStatus = document.getElementById('conn-status');
 	var themeBtn = document.getElementById('theme-btn');
@@ -671,7 +674,8 @@ body {
 	}
 
 	function connect() {
-		ws = new WebSocket('ws://localhost:' + PORT + '/ws');
+		var wsProto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+		ws = new WebSocket(wsProto + location.host + '/ws');
 
 		ws.onopen = function() {
 			connStatus.textContent = 'connected';

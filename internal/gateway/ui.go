@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"html"
 	"net/http"
 	"time"
 
@@ -19,17 +20,27 @@ func NewUIHandler(cfg *config.Config, version string) http.Handler {
 }
 
 func renderAgents(cfg *config.Config) string {
-	html := ""
+	// Agent fields come from the (user-editable) config file and are
+	// interpolated into HTML, so they must be escaped: a name containing '<'
+	// would otherwise break the page, and the values are stored-XSS vectors
+	// if the config is ever attacker-writable.
+	rows := ""
 	for _, a := range cfg.Agents.List {
-		html += fmt.Sprintf(`<tr>
+		rows += fmt.Sprintf(`<tr>
 			<td>%s</td>
 			<td>%s</td>
 			<td>%s</td>
 			<td>%s</td>
 			<td>%s</td>
-		</tr>`, a.ID, a.Name, a.Model, a.Workspace, a.Sandbox)
+		</tr>`,
+			html.EscapeString(a.ID),
+			html.EscapeString(a.Name),
+			html.EscapeString(a.Model),
+			html.EscapeString(a.Workspace),
+			html.EscapeString(a.Sandbox),
+		)
 	}
-	return html
+	return rows
 }
 
 const uiHTML = `<!DOCTYPE html>
