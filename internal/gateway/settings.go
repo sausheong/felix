@@ -29,6 +29,20 @@ const redactedSentinel = "***redacted***"
 // APITOKEN / OPENAIAPIKEY / GITHUBTOKEN are caught.
 var secretEnvKeyPattern = regexp.MustCompile(`(?i)(secret|key|token|password|passwd|pwd|credential|bearer)$`)
 
+// writeJSONError writes a {"error": msg} body with the given status. It
+// marshals the message so any quotes, backslashes, or newlines in msg (common
+// in json.Unmarshal / validation errors) are escaped — hand-built JSON via
+// fmt.Fprintf produced invalid JSON for exactly those messages, breaking the
+// client's JSON.parse and hiding the real reason. Caller must not have written
+// a status yet. Assumes a fresh response (sets Content-Type and status here).
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	// Encode a map so the value is always valid JSON; ignore the encode error
+	// (the only realistic failure is a broken connection, already unrecoverable).
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
 // redactSecretEnvMap returns a NEW map with secret-keyed values replaced
 // by redactedSentinel. Input is not mutated.
 func redactSecretEnvMap(in map[string]string) map[string]string {
@@ -160,9 +174,7 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 
 			var newCfg config.Config
 			if err := json.Unmarshal(body, &newCfg); err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprintf(w, `{"error":"invalid JSON: %s"}`, err.Error())
+				writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 				return
 			}
 
@@ -176,9 +188,7 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 			restoreSecretScalars(&newCfg, cfg)
 
 			if err := newCfg.Validate(); err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprintf(w, `{"error":"validation: %s"}`, err.Error())
+				writeJSONError(w, http.StatusBadRequest, "validation: "+err.Error())
 				return
 			}
 
@@ -194,9 +204,7 @@ func NewSettingsHandlers(cfg *config.Config, toolReg *tools.Registry, bootstrap 
 			cfg.StripCortexAutoAdded(&newCfg)
 
 			if err := newCfg.Save(); err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, `{"error":"save: %s"}`, err.Error())
+				writeJSONError(w, http.StatusInternalServerError, "save: "+err.Error())
 				return
 			}
 
