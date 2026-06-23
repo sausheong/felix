@@ -98,6 +98,13 @@ func buildManagerForModel(cfg *config.Config, modelStr string) *Manager {
 	if timeout == 0 {
 		timeout = 300 * time.Second
 	}
+	// MessageCap is a *int: nil means "unset" (Load backfills the default, so
+	// a nil here only occurs when a Manager is built from a hand-constructed
+	// Config that skipped Load — treat it as the harness default of 0/disabled).
+	messageCap := 0
+	if c.MessageCap != nil {
+		messageCap = *c.MessageCap
+	}
 	slog.Info("compaction manager built", "provider", provider, "model", model)
 	return &Manager{
 		Summarizer: &Summarizer{
@@ -107,6 +114,6 @@ func buildManagerForModel(cfg *config.Config, modelStr string) *Manager {
 		},
 		PreserveTurns: c.PreserveTurns,
 		Threshold:     c.Threshold,
-		MessageCap:    c.MessageCap,
+		MessageCap:    messageCap,
 	}
 }
