@@ -12,7 +12,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/sashabaranov/go-openai v1.41.2
-	github.com/sausheong/cortex v0.0.0-20260527043339-cda76b67bf44
+	github.com/sausheong/cortex v0.4.0
 	github.com/sausheong/harness v0.0.0-00010101000000-000000000000
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
