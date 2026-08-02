@@ -13,7 +13,7 @@ require (
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/sausheong/cortex v0.4.0
-	github.com/sausheong/harness v0.0.0-00010101000000-000000000000
+	github.com/sausheong/harness v0.3.5
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/bridges/otelslog v0.18.0
@@ -113,5 +113,3 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	modernc.org/sqlite v1.48.2 // indirect
 )
-
-replace github.com/sausheong/harness => /Users/sausheong/projects/harness
